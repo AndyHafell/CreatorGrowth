@@ -850,6 +850,11 @@ def save_video_details(vid):
                VALUES (?, ?, ?, ?, ?, ?)""",
             (vid, *values.values()),
         )
+    # If a custom thumbnail (My Thumbnails slot 1) is set, update the card thumbnail
+    original_thumbs = data.get("original_thumbs", ["", "", ""])
+    if original_thumbs and original_thumbs[0]:
+        conn.execute("UPDATE videos SET thumbnail_url = ? WHERE id = ?", (original_thumbs[0], vid))
+
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
