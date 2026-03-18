@@ -2155,7 +2155,7 @@
             const arr = prefix === 'inspo' ? modalDetails.inspo_thumbs : modalDetails.original_thumbs;
             arr[index] = '';
             renderThumbRow(prefix === "inspo" ? "inspoThumbRow" : "originalThumbRow", arr, prefix);
-                    await saveModalData();
+            saveModalData();
         }
 
         function updateTitle(prefix, index, value) {
