@@ -2485,9 +2485,20 @@
             renderContentFiles();
         }
 
+        let contentFoldersCache = [];
+
         function renderContentFiles() {
             const list = document.getElementById('contentList');
             list.innerHTML = '';
+            // Render folders first (not sorted)
+            contentFoldersCache.forEach(f => {
+                const div = document.createElement('div');
+                div.className = 'content-folder';
+                div.innerHTML = '<span style="font-size:18px;">&#128193;</span><span style="color:#fff;">' + f.name + '</span><span style="color:#666; font-size:12px; margin-left:auto;">' + f.file_count + ' files</span>';
+                div.onclick = () => loadContentList(f.path);
+                list.appendChild(div);
+            });
+            // Render files with sort
             let sorted = [...contentFilesCache];
             if (contentSort === 'name') sorted.sort((a,b) => a.name.localeCompare(b.name));
             else if (contentSort === 'name-desc') sorted.sort((a,b) => b.name.localeCompare(a.name));
@@ -2500,7 +2511,7 @@
                 div.onclick = () => openContentFile(f.path, f.name);
                 list.appendChild(div);
             });
-            if (sorted.length === 0) {
+            if (contentFoldersCache.length === 0 && sorted.length === 0) {
                 list.innerHTML = '<div style="color:#666; padding:20px; text-align:center;">No content docs found</div>';
             }
         }
@@ -2526,17 +2537,8 @@
                         a.onclick = () => loadContentList(b.path);
                         bc.appendChild(a);
                     });
-                    // Folders first (not sorted)
-                    const list = document.getElementById('contentList');
-                    list.innerHTML = '';
-                    data.folders.forEach(f => {
-                        const div = document.createElement('div');
-                        div.className = 'content-folder';
-                        div.innerHTML = '<span style="font-size:18px;">&#128193;</span><span style="color:#fff;">' + f.name + '</span><span style="color:#666; font-size:12px; margin-left:auto;">' + f.file_count + ' files</span>';
-                        div.onclick = () => loadContentList(f.path);
-                        list.appendChild(div);
-                    });
-                    // Cache files and render with current sort
+                    // Cache folders and files, then render
+                    contentFoldersCache = data.folders;
                     contentFilesCache = data.files;
                     renderContentFiles();
                 });
