@@ -1187,31 +1187,33 @@
         .content-sort-btn { background:#1a1a2e; color:#888; border:1px solid #333; border-radius:6px; padding:5px 12px; font-size:12px; cursor:pointer; transition:all 0.15s; }
         .content-sort-btn:hover { color:#fff; border-color:#555; }
         .content-sort-btn.active { color:#5b9bd5; border-color:#5b9bd5; background:#1a2a47; }
-        .content-toolbar { display:flex; gap:4px; padding:8px; background:#111; border:1px solid #333; border-bottom:none; border-radius:8px 8px 0 0; flex-wrap:wrap; }
-        .content-toolbar button { background:#222; color:#ccc; border:1px solid #444; border-radius:4px; padding:4px 10px; font-size:13px; cursor:pointer; transition:all 0.15s; }
-        .content-toolbar button:hover { background:#333; color:#fff; border-color:#666; }
-        .content-mode-toggle { display:flex; gap:0; margin-left:auto; }
-        .content-mode-toggle button { border-radius:0; }
-        .content-mode-toggle button:first-child { border-radius:4px 0 0 4px; }
-        .content-mode-toggle button:last-child { border-radius:0 4px 4px 0; }
-        .content-mode-toggle button.active { background:#5b9bd5; color:#fff; border-color:#5b9bd5; }
-        .content-preview { width:100%; min-height:70vh; background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:0 0 8px 8px; padding:24px 32px; font-family:'Roboto',sans-serif; font-size:15px; line-height:1.8; overflow-y:auto; }
-        .content-preview h1 { color:#fff; font-size:24px; margin:20px 0 12px; border-bottom:1px solid #333; padding-bottom:8px; }
-        .content-preview h2 { color:#ddd; font-size:20px; margin:18px 0 10px; }
-        .content-preview h3 { color:#ccc; font-size:17px; margin:14px 0 8px; }
-        .content-preview p { margin:8px 0; }
-        .content-preview ul, .content-preview ol { margin:8px 0 8px 24px; }
-        .content-preview li { margin:4px 0; }
-        .content-preview code { background:#252545; padding:2px 6px; border-radius:4px; font-size:13px; }
-        .content-preview pre { background:#0d0d1a; padding:16px; border-radius:8px; overflow-x:auto; margin:12px 0; }
-        .content-preview pre code { background:none; padding:0; }
-        .content-preview blockquote { border-left:3px solid #5b9bd5; padding-left:16px; color:#aaa; margin:12px 0; }
-        .content-preview a { color:#5b9bd5; }
-        .content-preview strong { color:#fff; }
-        .content-preview hr { border:none; border-top:1px solid #333; margin:16px 0; }
-        .content-preview table { border-collapse:collapse; width:100%; margin:12px 0; }
-        .content-preview th, .content-preview td { border:1px solid #333; padding:8px 12px; text-align:left; }
-        .content-preview th { background:#1a1a2e; color:#fff; }
+        .notion-toolbar { display:flex; gap:2px; padding:8px 12px; background:#141420; border:1px solid rgba(255,255,255,0.08); border-bottom:none; border-radius:8px 8px 0 0; flex-wrap:wrap; align-items:center; }
+        .notion-toolbar button { background:transparent; color:#777; border:none; border-radius:4px; padding:5px 10px; font-size:13px; cursor:pointer; transition:all 0.15s; }
+        .notion-toolbar button:hover { background:rgba(255,255,255,0.08); color:#fff; }
+        .toolbar-sep { width:1px; height:18px; background:rgba(255,255,255,0.1); margin:0 4px; }
+        .notion-editor { width:100%; min-height:75vh; max-height:85vh; overflow-y:auto; background:#0f0f1a; color:#e0e0e0; border:1px solid rgba(255,255,255,0.08); border-radius:0 0 8px 8px; padding:32px 40px; font-family:'Roboto',sans-serif; font-size:15px; line-height:1.8; outline:none; cursor:text; }
+        .notion-editor:empty:before { content:attr(data-placeholder); color:#444; pointer-events:none; }
+        .notion-editor h1 { color:#fff; font-size:28px; font-weight:700; margin:28px 0 12px; padding-bottom:8px; border-bottom:1px solid rgba(255,255,255,0.06); }
+        .notion-editor h2 { color:#eee; font-size:22px; font-weight:600; margin:24px 0 10px; }
+        .notion-editor h3 { color:#ddd; font-size:18px; font-weight:600; margin:20px 0 8px; }
+        .notion-editor p { margin:6px 0; }
+        .notion-editor ul, .notion-editor ol { margin:8px 0 8px 24px; }
+        .notion-editor li { margin:4px 0; }
+        .notion-editor li::marker { color:#555; }
+        .notion-editor code { background:rgba(255,255,255,0.06); padding:2px 6px; border-radius:4px; font-size:13px; font-family:'SF Mono',Monaco,monospace; color:#e8a0bf; }
+        .notion-editor pre { background:#0a0a14; padding:16px 20px; border-radius:8px; overflow-x:auto; margin:14px 0; border:1px solid rgba(255,255,255,0.05); }
+        .notion-editor pre code { background:none; padding:0; color:#b8d4e8; }
+        .notion-editor blockquote { border-left:3px solid rgba(91,155,213,0.5); padding-left:20px; color:#999; margin:14px 0; font-style:italic; }
+        .notion-editor a { color:#5b9bd5; text-decoration:none; border-bottom:1px solid rgba(91,155,213,0.3); }
+        .notion-editor a:hover { border-bottom-color:#5b9bd5; }
+        .notion-editor strong { color:#fff; font-weight:600; }
+        .notion-editor em { color:#ccc; }
+        .notion-editor hr { border:none; border-top:1px solid rgba(255,255,255,0.08); margin:24px 0; }
+        .notion-editor table { border-collapse:collapse; width:100%; margin:14px 0; }
+        .notion-editor th, .notion-editor td { border:1px solid rgba(255,255,255,0.08); padding:8px 14px; text-align:left; }
+        .notion-editor th { background:rgba(255,255,255,0.04); color:#fff; font-weight:600; }
+        .notion-editor img { max-width:100%; border-radius:6px; margin:8px 0; }
+        .notion-editor ::selection { background:rgba(91,155,213,0.3); }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/turndown/dist/turndown.js"></script>
@@ -1360,33 +1362,30 @@
         <div id="contentList" style="display:grid; gap:8px;"></div>
         <div id="contentEditor" style="display:none;">
             <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
-                <button onclick="closeContentEditor()" style="background:#333; color:#fff; border:1px solid #555; border-radius:6px; padding:6px 14px; cursor:pointer;">Back</button>
-                <span id="contentFileName" style="color:#fff; font-size:16px; font-weight:500;"></span>
+                <button onclick="closeContentEditor()" style="background:rgba(255,255,255,0.06); color:#aaa; border:1px solid rgba(255,255,255,0.1); border-radius:6px; padding:6px 14px; cursor:pointer; font-size:13px; transition:all 0.15s;" onmouseover="this.style.background='rgba(255,255,255,0.1)';this.style.color='#fff'" onmouseout="this.style.background='rgba(255,255,255,0.06)';this.style.color='#aaa'">Back</button>
+                <span id="contentFileName" style="color:#fff; font-size:18px; font-weight:600;"></span>
                 <span id="contentSaveStatus" style="color:#4caf50; font-size:12px; margin-left:auto;"></span>
             </div>
-            <div class="content-toolbar" id="contentToolbar">
-                <button onclick="insertMd('# ')" title="Heading 1"><b>H1</b></button>
-                <button onclick="insertMd('## ')" title="Heading 2"><b>H2</b></button>
-                <button onclick="insertMd('### ')" title="Heading 3"><b>H3</b></button>
-                <button onclick="wrapMd('**')" title="Bold"><b>B</b></button>
-                <button onclick="wrapMd('*')" title="Italic"><i>I</i></button>
-                <button onclick="insertMd('- ')" title="Bullet list">List</button>
-                <button onclick="insertMd('1. ')" title="Numbered list">1.</button>
-                <button onclick="insertMd('> ')" title="Blockquote">"</button>
-                <button onclick="insertMd('---\n')" title="Horizontal rule">---</button>
-                <button onclick="wrapMd('`')" title="Inline code">Code</button>
-                <button onclick="insertMd('```\n\n```\n')" title="Code block">Block</button>
-                <button onclick="insertLink()" title="Insert link">Link</button>
-                <div class="content-mode-toggle">
-                    <button id="modeEdit" class="active" onclick="setEditorMode('edit')">Edit</button>
-                    <button id="modePreview" onclick="setEditorMode('preview')">Preview</button>
-                    <button id="modeSplit" onclick="setEditorMode('split')">Split</button>
-                </div>
+            <div class="notion-toolbar" id="notionToolbar">
+                <button onclick="execCmd('bold')" title="Bold (Cmd+B)"><b>B</b></button>
+                <button onclick="execCmd('italic')" title="Italic (Cmd+I)"><i>I</i></button>
+                <button onclick="execCmd('underline')" title="Underline (Cmd+U)"><u>U</u></button>
+                <button onclick="execCmd('strikeThrough')" title="Strikethrough"><s>S</s></button>
+                <span class="toolbar-sep"></span>
+                <button onclick="execBlock('h1')" title="Heading 1">H1</button>
+                <button onclick="execBlock('h2')" title="Heading 2">H2</button>
+                <button onclick="execBlock('h3')" title="Heading 3">H3</button>
+                <span class="toolbar-sep"></span>
+                <button onclick="execCmd('insertUnorderedList')" title="Bullet list">&#8226; List</button>
+                <button onclick="execCmd('insertOrderedList')" title="Numbered list">1. List</button>
+                <button onclick="execBlock('blockquote')" title="Quote">&#8220; Quote</button>
+                <span class="toolbar-sep"></span>
+                <button onclick="insertCodeBlock()" title="Code block">&lt;/&gt;</button>
+                <button onclick="execLink()" title="Insert link">Link</button>
+                <button onclick="insertHr()" title="Divider">&#8212;</button>
             </div>
-            <div id="editorContainer" style="display:flex; gap:0; min-height:70vh;">
-                <textarea id="contentTextarea" style="flex:1; min-height:70vh; background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:0 0 0 8px; padding:16px; font-family:monospace; font-size:14px; line-height:1.6; resize:none;" oninput="contentChanged()"></textarea>
-                <div id="contentPreview" class="content-preview" style="flex:1; display:none; border-radius:0 0 8px 0;"></div>
-            </div>
+            <div id="notionEditor" class="notion-editor" contenteditable="true" spellcheck="true"></div>
+            <textarea id="contentTextarea" style="display:none;"></textarea>
         </div>
     </div>
 
@@ -2544,6 +2543,15 @@
                 });
         }
 
+        let turndownService = null;
+
+        function getTurndown() {
+            if (!turndownService && typeof TurndownService !== 'undefined') {
+                turndownService = new TurndownService({ headingStyle: 'atx', codeBlockStyle: 'fenced', bulletListMarker: '-' });
+            }
+            return turndownService;
+        }
+
         function openContentFile(path, name) {
             fetch('/api/content/file?path=' + encodeURIComponent(path))
                 .then(r => r.json())
@@ -2556,9 +2564,9 @@
                     const ta = document.getElementById('contentTextarea');
                     ta.value = data.content;
                     ta.dataset.path = path;
+                    const editor = document.getElementById('notionEditor');
+                    editor.innerHTML = typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content;
                     document.getElementById('contentSaveStatus').textContent = '';
-                    setEditorMode(contentEditorMode);
-                    updatePreview();
                 });
         }
 
@@ -2568,92 +2576,85 @@
             document.getElementById('contentSortBar').style.display = 'flex';
         }
 
-        function contentChanged() {
+        function notionEditorChanged() {
             clearTimeout(contentSaveTimer);
             document.getElementById('contentSaveStatus').textContent = 'Saving...';
-            document.getElementById('contentSaveStatus').style.color = '#aaa';
-            updatePreview();
+            document.getElementById('contentSaveStatus').style.color = '#777';
             contentSaveTimer = setTimeout(() => {
+                const editor = document.getElementById('notionEditor');
                 const ta = document.getElementById('contentTextarea');
+                const td = getTurndown();
+                const md = td ? td.turndown(editor.innerHTML) : editor.innerText;
+                ta.value = md;
                 fetch('/api/content/file', {
                     method: 'PUT',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ path: ta.dataset.path, content: ta.value })
+                    body: JSON.stringify({ path: ta.dataset.path, content: md })
                 }).then(r => r.json()).then(d => {
                     document.getElementById('contentSaveStatus').textContent = d.ok ? 'Saved' : 'Error';
                     document.getElementById('contentSaveStatus').style.color = d.ok ? '#4caf50' : '#e74c3c';
+                    if (d.ok) setTimeout(() => { document.getElementById('contentSaveStatus').textContent = ''; }, 2000);
                 });
-            }, 1000);
+            }, 1200);
         }
 
-        function updatePreview() {
-            const ta = document.getElementById('contentTextarea');
-            const preview = document.getElementById('contentPreview');
-            if (preview.style.display !== 'none' && typeof marked !== 'undefined') {
-                preview.innerHTML = marked.parse(ta.value || '');
+        // Attach input listener to notion editor
+        document.addEventListener('DOMContentLoaded', () => {
+            const editor = document.getElementById('notionEditor');
+            if (editor) {
+                editor.addEventListener('input', notionEditorChanged);
+                editor.setAttribute('data-placeholder', 'Start writing...');
             }
+        });
+
+        function execCmd(cmd, val) {
+            document.execCommand(cmd, false, val || null);
+            document.getElementById('notionEditor').focus();
         }
 
-        function setEditorMode(mode) {
-            contentEditorMode = mode;
-            const ta = document.getElementById('contentTextarea');
-            const preview = document.getElementById('contentPreview');
-            document.getElementById('modeEdit').classList.toggle('active', mode === 'edit');
-            document.getElementById('modePreview').classList.toggle('active', mode === 'preview');
-            document.getElementById('modeSplit').classList.toggle('active', mode === 'split');
-            if (mode === 'edit') {
-                ta.style.display = 'block'; ta.style.flex = '1'; ta.style.borderRadius = '0 0 8px 8px';
-                preview.style.display = 'none';
-            } else if (mode === 'preview') {
-                ta.style.display = 'none';
-                preview.style.display = 'block'; preview.style.flex = '1'; preview.style.borderRadius = '0 0 8px 8px';
+        function execBlock(tag) {
+            const editor = document.getElementById('notionEditor');
+            if (tag === 'blockquote') {
+                document.execCommand('formatBlock', false, 'blockquote');
             } else {
-                ta.style.display = 'block'; ta.style.flex = '1'; ta.style.borderRadius = '0 0 0 8px';
-                preview.style.display = 'block'; preview.style.flex = '1'; preview.style.borderRadius = '0 0 8px 0';
+                document.execCommand('formatBlock', false, tag);
             }
-            updatePreview();
+            editor.focus();
+            notionEditorChanged();
         }
 
-        function insertMd(text) {
-            const ta = document.getElementById('contentTextarea');
-            const start = ta.selectionStart;
-            const end = ta.selectionEnd;
-            ta.value = ta.value.substring(0, start) + text + ta.value.substring(end);
-            ta.selectionStart = ta.selectionEnd = start + text.length;
-            ta.focus();
-            contentChanged();
-        }
-
-        function wrapMd(wrapper) {
-            const ta = document.getElementById('contentTextarea');
-            const start = ta.selectionStart;
-            const end = ta.selectionEnd;
-            const selected = ta.value.substring(start, end);
-            const wrapped = wrapper + (selected || 'text') + wrapper;
-            ta.value = ta.value.substring(0, start) + wrapped + ta.value.substring(end);
-            if (selected) {
-                ta.selectionStart = start;
-                ta.selectionEnd = start + wrapped.length;
-            } else {
-                ta.selectionStart = start + wrapper.length;
-                ta.selectionEnd = start + wrapper.length + 4;
-            }
-            ta.focus();
-            contentChanged();
-        }
-
-        function insertLink() {
+        function execLink() {
             const url = prompt('Enter URL:');
-            if (!url) return;
-            const ta = document.getElementById('contentTextarea');
-            const start = ta.selectionStart;
-            const end = ta.selectionEnd;
-            const selected = ta.value.substring(start, end) || 'link text';
-            const link = '[' + selected + '](' + url + ')';
-            ta.value = ta.value.substring(0, start) + link + ta.value.substring(end);
-            ta.selectionStart = ta.selectionEnd = start + link.length;
-            ta.focus();
-            contentChanged();
+            if (url) {
+                document.execCommand('createLink', false, url);
+                notionEditorChanged();
+            }
+        }
+
+        function insertCodeBlock() {
+            const editor = document.getElementById('notionEditor');
+            const sel = window.getSelection();
+            const text = sel.toString() || 'code here';
+            const pre = document.createElement('pre');
+            const code = document.createElement('code');
+            code.textContent = text;
+            pre.appendChild(code);
+            if (sel.rangeCount) {
+                const range = sel.getRangeAt(0);
+                range.deleteContents();
+                range.insertNode(pre);
+                range.setStartAfter(pre);
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }
+            notionEditorChanged();
+        }
+
+        function insertHr() {
+            const editor = document.getElementById('notionEditor');
+            document.execCommand('insertHorizontalRule', false, null);
+            editor.focus();
+            notionEditorChanged();
         }
 
     </script>
