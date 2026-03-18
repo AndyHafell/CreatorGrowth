@@ -2095,6 +2095,7 @@
             // Check if content doc already exists and show View button
             const existingDoc = modalDetails.custom_fields.find(f => f.key === 'Content Doc' && f.value);
             showViewContentDocBtn(existingDoc ? existingDoc.value : null);
+                makeContentDocFieldClickable();
             document.getElementById('contentDocStatus').textContent = '';
 
             document.getElementById('savedIndicator').classList.remove('show');
@@ -2279,6 +2280,40 @@
             }, 1200);
         }
 
+        function makeContentDocFieldClickable() {
+            // Find the Content Doc custom field input and make its value a clickable link
+            setTimeout(() => {
+                const fields = document.querySelectorAll('#customFieldsList .custom-field-row');
+                fields.forEach(row => {
+                    const keyInput = row.querySelector('input:first-child');
+                    const valInput = row.querySelector('input:nth-child(2)');
+                    if (keyInput && valInput && keyInput.value === 'Content Doc' && valInput.value) {
+                        // Add a small "open" button next to the field
+                        if (!row.querySelector('.doc-open-btn')) {
+                            const btn = document.createElement('button');
+                            btn.className = 'doc-open-btn';
+                            btn.textContent = 'Open';
+                            btn.style.cssText = 'background:rgba(91,155,213,0.15); color:#5b9bd5; border:1px solid rgba(91,155,213,0.3); border-radius:4px; padding:2px 8px; font-size:11px; cursor:pointer; margin-left:4px;';
+                            btn.onclick = () => {
+                                const path = valInput.value;
+                                if (path) {
+                                    // Load in the inline editor
+                                    showViewContentDocBtn(path);
+                                    // Scroll to the editor
+                                    document.getElementById('modalDocEditor').scrollIntoView({ behavior: 'smooth' });
+                                }
+                            };
+                            valInput.parentNode.insertBefore(btn, valInput.nextSibling);
+                        }
+                        // Also: when the value changes, reload the doc
+                        valInput.addEventListener('change', () => {
+                            if (valInput.value) showViewContentDocBtn(valInput.value);
+                        });
+                    }
+                });
+            }, 100);
+        }
+
         function modalExecCmd(cmd) {
             document.execCommand(cmd, false, null);
             document.getElementById('modalDocContent').focus();
@@ -2295,7 +2330,25 @@
         document.addEventListener('DOMContentLoaded', () => {
             const ed = document.getElementById('modalDocContent');
             if (ed) ed.addEventListener('input', modalDocChanged);
+            // Handle hash routing on load
+            handleHashRoute();
         });
+
+        window.addEventListener('hashchange', handleHashRoute);
+
+        function handleHashRoute() {
+            const hash = window.location.hash.slice(1); // remove #
+            if (!hash.startsWith('content')) return;
+            const path = hash.replace(/^content\/?/, '');
+            setTab('content');
+            if (path && path.endsWith('.md')) {
+                // It's a file — open it
+                openContentFile(path);
+            } else if (path) {
+                // It's a folder — navigate to it
+                loadContentList(path);
+            }
+        }
 
         async function createContentDoc() {
             if (!modalVideoId) return;
@@ -2323,6 +2376,7 @@
                     modalDetails.custom_fields.push({ key: 'Content Doc', value: data.path || data.filename });
                 }
                 renderCustomFields();
+                makeContentDocFieldClickable();
                 await saveModalData();
                 if (data.exists) {
                     status.textContent = 'Content doc already exists';
@@ -2604,6 +2658,10 @@
 
         function loadContentList(path) {
             if (path !== undefined) contentCurrentPath = path;
+            // Update URL hash for copyable links
+            if (currentTab === 'content') {
+                window.location.hash = contentCurrentPath ? 'content/' + contentCurrentPath : 'content';
+            }
             const qs = contentCurrentPath ? '?path=' + encodeURIComponent(contentCurrentPath) : '';
             fetch('/api/content' + qs)
                 .then(r => r.json())
@@ -2647,7 +2705,9 @@
                     document.getElementById('contentList').style.display = 'none';
                     document.getElementById('contentSortBar').style.display = 'none';
                     document.getElementById('contentEditor').style.display = 'block';
-                    document.getElementById('contentFileName').textContent = name;
+                    document.getElementById('contentFileName').textContent = name || data.name;
+                    // Update URL hash
+                    window.location.hash = 'content/' + path;
                     const ta = document.getElementById('contentTextarea');
                     ta.value = data.content;
                     ta.dataset.path = path;
@@ -2661,6 +2721,7 @@
             document.getElementById('contentEditor').style.display = 'none';
             document.getElementById('contentList').style.display = 'grid';
             document.getElementById('contentSortBar').style.display = 'flex';
+            window.location.hash = contentCurrentPath ? 'content/' + contentCurrentPath : 'content';
         }
 
         function notionEditorChanged() {
