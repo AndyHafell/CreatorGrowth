@@ -1129,6 +1129,28 @@
         }
         .modal-saved-indicator.show { opacity: 1; }
 
+
+        .modal-content-doc-section { margin:8px 0; }
+        .modal-doc-toolbar { display:flex; gap:2px; padding:6px 10px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08); border-bottom:none; border-radius:6px 6px 0 0; align-items:center; }
+        .modal-doc-toolbar button { background:transparent; color:#666; border:none; border-radius:3px; padding:3px 8px; font-size:12px; cursor:pointer; transition:all 0.15s; }
+        .modal-doc-toolbar button:hover { background:rgba(255,255,255,0.08); color:#fff; }
+        .modal-doc-editor { min-height:300px; max-height:50vh; overflow-y:auto; background:#0f0f1a; color:#e0e0e0; border:1px solid rgba(255,255,255,0.08); border-radius:0 0 6px 6px; padding:20px 24px; font-family:'Roboto',sans-serif; font-size:14px; line-height:1.7; outline:none; cursor:text; }
+        .modal-doc-editor:empty:before { content:'Start writing...'; color:#444; pointer-events:none; }
+        .modal-doc-editor h1 { color:#fff; font-size:22px; font-weight:700; margin:20px 0 8px; padding-bottom:6px; border-bottom:1px solid rgba(255,255,255,0.06); }
+        .modal-doc-editor h2 { color:#eee; font-size:18px; font-weight:600; margin:16px 0 6px; }
+        .modal-doc-editor h3 { color:#ddd; font-size:15px; font-weight:600; margin:14px 0 6px; }
+        .modal-doc-editor p { margin:4px 0; }
+        .modal-doc-editor ul, .modal-doc-editor ol { margin:6px 0 6px 20px; }
+        .modal-doc-editor li { margin:3px 0; }
+        .modal-doc-editor li::marker { color:#555; }
+        .modal-doc-editor code { background:rgba(255,255,255,0.06); padding:2px 5px; border-radius:3px; font-size:12px; font-family:'SF Mono',Monaco,monospace; color:#e8a0bf; }
+        .modal-doc-editor pre { background:#0a0a14; padding:12px 16px; border-radius:6px; margin:10px 0; border:1px solid rgba(255,255,255,0.05); }
+        .modal-doc-editor pre code { background:none; padding:0; color:#b8d4e8; }
+        .modal-doc-editor blockquote { border-left:3px solid rgba(91,155,213,0.5); padding-left:16px; color:#999; margin:10px 0; font-style:italic; }
+        .modal-doc-editor a { color:#5b9bd5; }
+        .modal-doc-editor strong { color:#fff; }
+        .modal-doc-editor hr { border:none; border-top:1px solid rgba(255,255,255,0.08); margin:16px 0; }
+        .modal-doc-editor ::selection { background:rgba(91,155,213,0.3); }
         .content-doc-bar {
             display: flex;
             align-items: center;
@@ -1417,16 +1439,34 @@
             </div>
 
             <hr class="modal-divider">
-            <div class="content-doc-bar">
-                <button class="create-content-doc-btn" id="createContentDocBtn" onclick="createContentDoc()">
-                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zM6 20V4h5v7h7v9H6z"/></svg>
-                    Create Content Doc
-                </button>
-                <a class="view-content-doc-btn" id="viewContentDocBtn" href="#" target="_blank" style="display:none;">
-                    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
-                    View Content Doc
-                </a>
-                <span class="content-doc-status" id="contentDocStatus"></span>
+            <div class="modal-content-doc-section">
+                <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+                    <h3 style="margin:0; color:#fff; font-size:14px; text-transform:uppercase; letter-spacing:1px; color:#888;">Content Doc</h3>
+                    <span class="content-doc-status" id="contentDocStatus"></span>
+                    <span id="modalDocSaveStatus" style="font-size:11px; color:#4caf50; margin-left:auto;"></span>
+                </div>
+                <div id="modalDocEmpty" style="display:none;">
+                    <button class="create-content-doc-btn" id="createContentDocBtn" onclick="createContentDoc()">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zM6 20V4h5v7h7v9H6z"/></svg>
+                        Create Content Doc
+                    </button>
+                </div>
+                <div id="modalDocEditor" style="display:none;">
+                    <div class="modal-doc-toolbar">
+                        <button onclick="modalExecCmd('bold')" title="Bold"><b>B</b></button>
+                        <button onclick="modalExecCmd('italic')" title="Italic"><i>I</i></button>
+                        <button onclick="modalExecCmd('underline')" title="Underline"><u>U</u></button>
+                        <span class="toolbar-sep"></span>
+                        <button onclick="modalExecBlock('h1')" title="H1">H1</button>
+                        <button onclick="modalExecBlock('h2')" title="H2">H2</button>
+                        <button onclick="modalExecBlock('h3')" title="H3">H3</button>
+                        <span class="toolbar-sep"></span>
+                        <button onclick="modalExecCmd('insertUnorderedList')" title="Bullets">&#8226;</button>
+                        <button onclick="modalExecCmd('insertOrderedList')" title="Numbers">1.</button>
+                        <button onclick="modalExecBlock('blockquote')" title="Quote">&#8220;</button>
+                    </div>
+                    <div id="modalDocContent" class="modal-doc-editor" contenteditable="true" spellcheck="true"></div>
+                </div>
             </div>
 
             <div class="modal-save-bar">
@@ -2192,22 +2232,70 @@
             }
         }
 
+        let modalDocPath = null;
+        let modalDocSaveTimer = null;
+
         function showViewContentDocBtn(path) {
-            const viewBtn = document.getElementById('viewContentDocBtn');
+            const emptyDiv = document.getElementById('modalDocEmpty');
+            const editorDiv = document.getElementById('modalDocEditor');
             if (path) {
-                viewBtn.href = '#';
-                viewBtn.style.display = 'flex';
-                viewBtn.onclick = (e) => {
-                    e.preventDefault();
-                    closeModal();
-                    setTab('content');
-                    // Wait for content tab to load, then open the file
-                    setTimeout(() => openContentFile(path), 500);
-                };
+                modalDocPath = path;
+                emptyDiv.style.display = 'none';
+                editorDiv.style.display = 'block';
+                // Load the content doc
+                fetch('/api/content/file?path=' + encodeURIComponent(path))
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.error) { console.error(data.error); return; }
+                        const editor = document.getElementById('modalDocContent');
+                        editor.innerHTML = typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content;
+                    });
             } else {
-                viewBtn.style.display = 'none';
+                modalDocPath = null;
+                emptyDiv.style.display = 'block';
+                editorDiv.style.display = 'none';
+                document.getElementById('modalDocContent').innerHTML = '';
             }
         }
+
+        function modalDocChanged() {
+            clearTimeout(modalDocSaveTimer);
+            const status = document.getElementById('modalDocSaveStatus');
+            status.textContent = 'Saving...';
+            status.style.color = '#777';
+            modalDocSaveTimer = setTimeout(() => {
+                const editor = document.getElementById('modalDocContent');
+                const td = getTurndown();
+                const md = td ? td.turndown(editor.innerHTML) : editor.innerText;
+                fetch('/api/content/file', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ path: modalDocPath, content: md })
+                }).then(r => r.json()).then(d => {
+                    status.textContent = d.ok ? 'Saved' : 'Error';
+                    status.style.color = d.ok ? '#4caf50' : '#e74c3c';
+                    if (d.ok) setTimeout(() => { status.textContent = ''; }, 2000);
+                });
+            }, 1200);
+        }
+
+        function modalExecCmd(cmd) {
+            document.execCommand(cmd, false, null);
+            document.getElementById('modalDocContent').focus();
+            modalDocChanged();
+        }
+
+        function modalExecBlock(tag) {
+            document.execCommand('formatBlock', false, tag);
+            document.getElementById('modalDocContent').focus();
+            modalDocChanged();
+        }
+
+        // Attach input listener
+        document.addEventListener('DOMContentLoaded', () => {
+            const ed = document.getElementById('modalDocContent');
+            if (ed) ed.addEventListener('input', modalDocChanged);
+        });
 
         async function createContentDoc() {
             if (!modalVideoId) return;
