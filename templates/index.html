@@ -2334,18 +2334,26 @@
             handleHashRoute();
         });
 
-        window.addEventListener('hashchange', handleHashRoute);
+        let settingHash = false;
+
+        function setHash(h) {
+            settingHash = true;
+            window.location.hash = h;
+            setTimeout(() => { settingHash = false; }, 50);
+        }
+
+        window.addEventListener('hashchange', () => {
+            if (!settingHash) handleHashRoute();
+        });
 
         function handleHashRoute() {
-            const hash = window.location.hash.slice(1); // remove #
+            const hash = window.location.hash.slice(1);
             if (!hash.startsWith('content')) return;
             const path = hash.replace(/^content\/?/, '');
             setTab('content');
             if (path && path.endsWith('.md')) {
-                // It's a file — open it
                 openContentFile(path);
             } else if (path) {
-                // It's a folder — navigate to it
                 loadContentList(path);
             }
         }
@@ -2660,7 +2668,7 @@
             if (path !== undefined) contentCurrentPath = path;
             // Update URL hash for copyable links
             if (currentTab === 'content') {
-                window.location.hash = contentCurrentPath ? 'content/' + contentCurrentPath : 'content';
+                setHash(contentCurrentPath ? 'content/' + contentCurrentPath : 'content');
             }
             const qs = contentCurrentPath ? '?path=' + encodeURIComponent(contentCurrentPath) : '';
             fetch('/api/content' + qs)
@@ -2707,7 +2715,7 @@
                     document.getElementById('contentEditor').style.display = 'block';
                     document.getElementById('contentFileName').textContent = name || data.name;
                     // Update URL hash
-                    window.location.hash = 'content/' + path;
+                    setHash('content/' + path);
                     const ta = document.getElementById('contentTextarea');
                     ta.value = data.content;
                     ta.dataset.path = path;
@@ -2721,7 +2729,7 @@
             document.getElementById('contentEditor').style.display = 'none';
             document.getElementById('contentList').style.display = 'grid';
             document.getElementById('contentSortBar').style.display = 'flex';
-            window.location.hash = contentCurrentPath ? 'content/' + contentCurrentPath : 'content';
+            setHash(contentCurrentPath ? 'content/' + contentCurrentPath : 'content');
         }
 
         function notionEditorChanged() {
