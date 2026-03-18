@@ -1,0 +1,2659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Content Mate: Ideas Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        /* ---- Auth Overlay ---- */
+        .auth-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 9999;
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            background: rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .auth-overlay.hidden { display: none; }
+        .auth-card {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 16px;
+            padding: 40px;
+            width: 380px;
+            text-align: center;
+        }
+        .auth-card img { width: 48px; height: 48px; border-radius: 8px; margin-bottom: 16px; }
+        .auth-card h2 {
+            font-size: 22px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 6px;
+        }
+        .auth-card p {
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 24px;
+        }
+        .auth-input {
+            width: 100%;
+            background: #0f0f0f;
+            border: 1px solid #333;
+            border-radius: 10px;
+            padding: 12px 16px;
+            color: #f1f1f1;
+            font-size: 14px;
+            outline: none;
+            margin-bottom: 12px;
+            transition: border-color 0.15s;
+        }
+        .auth-input:focus { border-color: #1c62b9; }
+        .auth-input::placeholder { color: #555; }
+        .auth-btn {
+            width: 100%;
+            padding: 12px;
+            background: #1c62b9;
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.15s;
+            margin-bottom: 8px;
+        }
+        .auth-btn:hover { background: #2471cc; }
+        .auth-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .auth-error {
+            color: #e74c3c;
+            font-size: 13px;
+            margin-bottom: 12px;
+            min-height: 18px;
+        }
+        .auth-divider {
+            border-top: 1px solid #333;
+            margin: 20px 0;
+        }
+        .auth-cta {
+            font-size: 13px;
+            color: #888;
+        }
+        .auth-cta a {
+            color: #1c62b9;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .auth-cta a:hover { text-decoration: underline; }
+
+        body {
+            font-family: 'Roboto', Arial, sans-serif;
+            background: #0f0f0f;
+            color: #f1f1f1;
+            min-height: 100vh;
+        }
+
+        /* ---- Header ---- */
+        .header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: #0f0f0f;
+            padding: 8px 24px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .logo {
+            font-size: 18px;
+            font-weight: 700;
+            color: #fff;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
+        }
+
+        .logo svg { width: 28px; height: 28px; }
+        .logo img { width: 32px; height: 32px; border-radius: 4px; }
+
+        .search-bar {
+            flex: 1;
+            max-width: 640px;
+            margin: 0 auto;
+            display: flex;
+        }
+
+        .search-input {
+            flex: 1;
+            background: #121212;
+            border: 1px solid #303030;
+            border-right: none;
+            border-radius: 20px 0 0 20px;
+            padding: 8px 16px;
+            color: #fff;
+            font-size: 16px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .search-input:focus { border-color: #1c62b9; }
+        .search-input::placeholder { color: #888; }
+
+        .search-btn {
+            background: #222222;
+            border: 1px solid #303030;
+            border-radius: 0 20px 20px 0;
+            padding: 0 24px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+
+        .search-btn:hover { background: #333; }
+        .search-btn svg { width: 20px; height: 20px; fill: #f1f1f1; }
+
+        .header-actions {
+            display: flex;
+            gap: 8px;
+            flex-shrink: 0;
+            align-items: center;
+        }
+
+        .clear-btn {
+            background: #272727;
+            color: #aaa;
+            border: none;
+            border-radius: 18px;
+            padding: 8px 16px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .clear-btn:hover { background: #3a3a3a; color: #fff; }
+
+        .video-count {
+            color: #aaa;
+            font-size: 13px;
+            padding: 0 8px;
+            white-space: nowrap;
+        }
+
+        /* ---- Tabs (YouTube chip style) ---- */
+        .tabs-bar {
+            max-width: 1800px;
+            margin: 0 auto;
+            padding: 12px 16px 0;
+            display: flex;
+            gap: 8px;
+        }
+
+        .tab {
+            background: #272727;
+            color: #f1f1f1;
+            border: none;
+            border-radius: 8px;
+            padding: 8px 16px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .tab:hover { background: #3a3a3a; }
+
+        .tab.active { background: #f1f1f1; color: #0f0f0f; }
+
+        .tab-count {
+            background: rgba(255,255,255,0.15);
+            color: inherit;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 1px 6px;
+            border-radius: 10px;
+            min-width: 18px;
+            text-align: center;
+        }
+
+        .tab.active .tab-count { background: rgba(0,0,0,0.1); }
+
+        /* ---- Sort bar ---- */
+        .sort-bar {
+            max-width: 1800px;
+            margin: 0 auto;
+            padding: 8px 16px 0;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .sort-label {
+            font-size: 12px;
+            color: #666;
+            margin-right: 2px;
+            white-space: nowrap;
+        }
+
+        .sort-btn {
+            background: #1a1a1a;
+            color: #aaa;
+            border: 1px solid #303030;
+            border-radius: 16px;
+            padding: 5px 12px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+
+        .sort-btn:hover { background: #2a2a2a; color: #fff; border-color: #555; }
+        .sort-btn.active { background: #272727; color: #fff; border-color: #f1f1f1; }
+
+        .sort-divider { color: #2a2a2a; margin: 0 4px; font-size: 16px; }
+
+        .creator-select {
+            background: #1a1a1a;
+            color: #aaa;
+            border: 1px solid #303030;
+            border-radius: 16px;
+            padding: 5px 12px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            outline: none;
+            appearance: none;
+            -webkit-appearance: none;
+            padding-right: 26px;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 10px center;
+        }
+        .creator-select:hover { background-color: #2a2a2a; color: #fff; border-color: #555; }
+        .creator-select.active { background-color: #272727; color: #fff; border-color: #f1f1f1; }
+
+        .filter-btn {
+            background: #1a1a1a;
+            color: #aaa;
+            border: 1px solid #303030;
+            border-radius: 16px;
+            padding: 5px 12px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+        .filter-btn:hover { background: #2a2a2a; color: #fff; border-color: #555; }
+        .filter-btn.active { background: #272727; color: #fff; border-color: #f1f1f1; }
+
+        /* ---- Channels bar ---- */
+        .channels-bar {
+            max-width: 1800px;
+            margin: 0 auto;
+            padding: 8px 16px 0;
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 6px;
+            min-height: 28px;
+        }
+
+        .channels-label { font-size: 12px; color: #555; white-space: nowrap; }
+
+        .channel-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            background: #1a1a1a;
+            border: 1px solid #2d2d2d;
+            border-radius: 14px;
+            padding: 3px 4px 3px 10px;
+            font-size: 12px;
+            color: #bbb;
+            transition: border-color 0.15s;
+        }
+        .channel-chip:hover { border-color: #444; }
+        .channel-chip-name { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        .chip-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 2px 5px;
+            font-size: 13px;
+            line-height: 1;
+            color: #555;
+            border-radius: 10px;
+            transition: all 0.12s;
+        }
+        .chip-btn:hover { background: #2a2a2a; color: #fff; }
+        .chip-btn.scrape:hover { color: #4caf50; }
+        .chip-btn.remove:hover { color: #f44336; }
+        .chip-btn.spinning { color: #888; cursor: default; display: inline-block; animation: spin 0.8s linear infinite; pointer-events: none; }
+
+        .add-channel-chip {
+            background: none;
+            border: 1px dashed #2d2d2d;
+            border-radius: 14px;
+            padding: 3px 10px;
+            font-size: 12px;
+            color: #555;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .add-channel-chip:hover { border-color: #555; color: #aaa; }
+
+        .channel-add-form { display: none; align-items: center; gap: 6px; }
+        .channel-add-form.visible { display: flex; }
+
+        .channel-url-input {
+            background: #111;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 4px 10px;
+            color: #fff;
+            font-size: 12px;
+            outline: none;
+            width: 300px;
+            transition: border-color 0.2s;
+        }
+        .channel-url-input:focus { border-color: #555; }
+        .channel-url-input::placeholder { color: #444; }
+
+        .channel-save-btn, .channel-cancel-btn {
+            background: #1e1e1e;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 4px 10px;
+            font-size: 12px;
+            cursor: pointer;
+            color: #aaa;
+            transition: all 0.12s;
+        }
+        .channel-save-btn:hover { background: #2a2a2a; color: #fff; }
+        .channel-cancel-btn:hover { background: #2a1a1a; color: #f66; }
+
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* ---- Grid ---- */
+        .grid {
+            max-width: 1800px;
+            margin: 0 auto;
+            padding: 16px 16px 40px;
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 40px 16px;
+        }
+
+        @media (max-width: 1400px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+        @media (max-width: 1000px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        @media (max-width: 600px) { .grid { grid-template-columns: 1fr; padding: 12px; } }
+
+        /* ---- Card ---- */
+        .card { position: relative; cursor: pointer; }
+
+        .thumb-wrap {
+            position: relative;
+            width: 100%;
+            padding-top: 56.25%;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #1a1a1a;
+        }
+
+        .thumb-wrap img {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: transform 0.2s;
+        }
+
+        .card:hover .thumb-wrap img { transform: scale(1.02); }
+
+        .duration-badge {
+            position: absolute;
+            bottom: 4px;
+            right: 4px;
+            background: rgba(0,0,0,0.9);
+            color: #fff;
+            font-size: 12px;
+            font-weight: 500;
+            padding: 3px 4px;
+            border-radius: 4px;
+            letter-spacing: 0.5px;
+            line-height: 1;
+        }
+
+        /* Action buttons overlay — bottom-left of thumbnail */
+        .card-actions {
+            position: absolute;
+            bottom: 6px;
+            left: 6px;
+            display: flex;
+            gap: 4px;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 2;
+        }
+
+        .card:hover .card-actions { opacity: 1; }
+
+        .action-btn {
+            background: rgba(0,0,0,0.85);
+            backdrop-filter: blur(4px);
+            border: none;
+            color: #fff;
+            font-size: 11px;
+            font-weight: 500;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.15s;
+            white-space: nowrap;
+        }
+
+        .action-btn:hover { background: rgba(60,60,60,0.95); }
+        .action-btn.move-best { color: #4caf50; }
+        .action-btn.move-best:hover { background: #4caf50; color: #fff; }
+        .action-btn.move-progress { color: #ff9800; }
+        .action-btn.move-progress:hover { background: #ff9800; color: #fff; }
+        .action-btn.move-back { color: #aaa; }
+        .action-btn.move-back:hover { background: #666; color: #fff; }
+
+        .delete-btn {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            background: rgba(0,0,0,0.75);
+            border: none;
+            color: #ccc;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 16px;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 2;
+            transition: all 0.15s;
+        }
+
+        .card:hover .delete-btn { display: flex; }
+        .delete-btn:hover { background: rgba(255,68,68,0.9); color: #fff; }
+
+        /* Card info */
+        .card-info { display: flex; gap: 12px; padding-top: 12px; }
+
+        .channel-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: #333;
+            flex-shrink: 0;
+            overflow: hidden;
+        }
+
+        .channel-avatar img { width: 100%; height: 100%; object-fit: cover; }
+
+        .card-text { flex: 1; min-width: 0; }
+
+        .card-title {
+            font-size: 14px;
+            font-weight: 500;
+            line-height: 20px;
+            color: #f1f1f1;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            margin-bottom: 4px;
+        }
+
+        .card-channel { font-size: 12px; color: #aaaaaa; line-height: 18px; }
+        .card-channel:hover { color: #f1f1f1; }
+        .card-stats { font-size: 12px; color: #aaaaaa; line-height: 18px; }
+
+        .card-stats .outlier {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 1px 6px;
+            border-radius: 4px;
+            margin-left: 4px;
+            vertical-align: middle;
+        }
+
+        .outlier.hot { background: #4caf50; color: #fff; }
+        .outlier.warm { background: #2196f3; color: #fff; }
+        .outlier.normal { background: #555; color: #ccc; }
+
+        /* ---- Keywords table ---- */
+        .keywords-container {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 20px 16px 40px;
+            display: none;
+        }
+        .keywords-container.visible { display: block; }
+        .keywords-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+        }
+        .keywords-header h2 { font-size: 20px; font-weight: 600; }
+        .keywords-header-actions { display: flex; align-items: center; gap: 12px; }
+        .kw-filter-bar { display: flex; gap: 4px; }
+        .kw-filter-btn {
+            background: transparent;
+            border: 1px solid #333;
+            color: #888;
+            padding: 6px 14px;
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .kw-filter-btn:hover { color: #f1f1f1; border-color: #555; }
+        .kw-filter-btn.active { background: #1c62b9; color: #fff; border-color: #1c62b9; }
+        .kw-table-wrap {
+            overflow-x: auto;
+            border-radius: 12px;
+            border: 1px solid #222;
+        }
+        .kw-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        .kw-table thead th {
+            background: #1a1a1a;
+            color: #888;
+            font-weight: 600;
+            text-align: left;
+            padding: 10px 14px;
+            border-bottom: 1px solid #333;
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+        .kw-table thead th:hover { color: #f1f1f1; }
+        .kw-th-keyword { min-width: 250px; }
+        .kw-table tbody td {
+            padding: 10px 14px;
+            border-bottom: 1px solid #1a1a1a;
+            color: #ddd;
+        }
+        .kw-table tbody tr:hover { background: #1a1a1a; }
+        .kw-keyword-cell {
+            font-weight: 500;
+            color: #f1f1f1;
+        }
+        .kw-num { text-align: right; font-variant-numeric: tabular-nums; }
+        .kw-actions { display: flex; gap: 6px; justify-content: center; }
+        .kw-action-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            background: transparent;
+            color: #888;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 15px;
+            transition: all 0.15s;
+        }
+        .kw-action-btn:hover { border-color: #555; color: #f1f1f1; }
+        .kw-action-btn.active-fav { color: #f5c518; border-color: #f5c518; }
+        .kw-action-btn.active-yt { color: #ff0000; border-color: #ff0000; }
+        .kw-score {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .kw-score.high { background: rgba(76,175,80,0.15); color: #4caf50; }
+        .kw-score.medium { background: rgba(255,152,0,0.15); color: #ff9800; }
+        .kw-score.low { background: rgba(244,67,54,0.15); color: #f44336; }
+        .kw-comp.low { color: #4caf50; }
+        .kw-comp.medium { color: #ff9800; }
+        .kw-comp.high { color: #f44336; }
+
+        /* ---- Creators list ---- */
+        .creators-container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px 16px 40px;
+            display: none;
+        }
+
+        .creators-container.visible { display: block; }
+
+        .creators-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .creators-header h2 {
+            font-size: 18px;
+            font-weight: 500;
+            color: #f1f1f1;
+            flex: 1;
+        }
+
+        .scrape-all-btn {
+            background: #272727;
+            color: #aaa;
+            border: 1px solid #303030;
+            border-radius: 20px;
+            padding: 8px 20px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .scrape-all-btn:hover { background: #3a3a3a; color: #fff; border-color: #555; }
+        .scrape-all-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .creator-add-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .creator-add-input {
+            flex: 1;
+            background: #121212;
+            border: 1px solid #303030;
+            border-radius: 8px;
+            padding: 10px 16px;
+            color: #fff;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .creator-add-input:focus { border-color: #1c62b9; }
+        .creator-add-input::placeholder { color: #555; }
+
+        .creator-add-btn {
+            background: #272727;
+            color: #f1f1f1;
+            border: 1px solid #303030;
+            border-radius: 8px;
+            padding: 10px 20px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .creator-add-btn:hover { background: #3a3a3a; border-color: #555; }
+
+        .creator-list { display: flex; flex-direction: column; gap: 2px; }
+
+        .creator-row {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 12px 16px;
+            background: #181818;
+            border-radius: 8px;
+            transition: background 0.15s;
+        }
+
+        .creator-row:hover { background: #1e1e1e; }
+
+        .creator-avatar {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            background: #333;
+            flex-shrink: 0;
+            overflow: hidden;
+        }
+
+        .creator-avatar img { width: 100%; height: 100%; object-fit: cover; }
+
+        .creator-info { flex: 1; min-width: 0; }
+
+        .creator-name {
+            font-size: 14px;
+            font-weight: 500;
+            color: #f1f1f1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .creator-url {
+            font-size: 12px;
+            color: #666;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .creator-stats {
+            display: flex;
+            gap: 20px;
+            flex-shrink: 0;
+        }
+
+        .creator-stat {
+            text-align: center;
+            min-width: 60px;
+        }
+
+        .creator-stat-value {
+            font-size: 14px;
+            font-weight: 500;
+            color: #f1f1f1;
+        }
+
+        .creator-stat-label {
+            font-size: 11px;
+            color: #666;
+        }
+
+        .creator-actions {
+            display: flex;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        .creator-action-btn {
+            background: #272727;
+            border: 1px solid #303030;
+            color: #aaa;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .creator-action-btn:hover { background: #3a3a3a; color: #fff; border-color: #555; }
+        .creator-action-btn.scraping { opacity: 0.5; cursor: not-allowed; }
+        .creator-action-btn.remove:hover { color: #f44336; border-color: #f44336; }
+
+        .creator-last-scraped {
+            font-size: 11px;
+            color: #555;
+            white-space: nowrap;
+        }
+
+        .creators-empty {
+            text-align: center;
+            padding: 60px 20px;
+            color: #555;
+        }
+
+        .creators-empty-title { font-size: 16px; color: #888; margin-bottom: 8px; }
+        .creators-empty-sub { font-size: 13px; }
+
+        /* ---- Empty state ---- */
+        .empty-state { grid-column: 1 / -1; text-align: center; padding: 100px 20px; }
+        .empty-icon { font-size: 48px; margin-bottom: 16px; opacity: 0.3; }
+        .empty-title { font-size: 20px; color: #aaa; margin-bottom: 8px; }
+        .empty-sub { font-size: 14px; color: #666; }
+
+        /* ---- Loading ---- */
+        .loading-card .thumb-wrap { background: #222; animation: pulse 1.5s infinite; }
+        .loading-card .card-info { visibility: hidden; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+        /* ---- Toast ---- */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%) translateY(80px);
+            background: #323232;
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 4px;
+            font-size: 14px;
+            z-index: 200;
+            transition: transform 0.3s ease;
+        }
+
+        .toast.show { transform: translateX(-50%) translateY(0); }
+        .toast.error { background: #d32f2f; }
+
+        /* ---- Video Detail Modal ---- */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.75);
+            z-index: 500;
+            justify-content: center;
+            align-items: flex-start;
+            padding: 40px 20px;
+            overflow-y: auto;
+        }
+        .modal-overlay.open { display: flex; }
+
+        .modal-card {
+            background: #1a1a1a;
+            border-radius: 16px;
+            width: 100%;
+            max-width: 920px;
+            padding: 28px 32px 32px;
+            position: relative;
+            box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+        }
+
+        .modal-close {
+            position: absolute;
+            top: 12px;
+            right: 16px;
+            background: none;
+            border: none;
+            color: #888;
+            font-size: 28px;
+            cursor: pointer;
+            line-height: 1;
+            padding: 4px 8px;
+            border-radius: 6px;
+            transition: all 0.15s;
+        }
+        .modal-close:hover { color: #fff; background: #333; }
+
+        .modal-header {
+            margin-bottom: 20px;
+            padding-right: 40px;
+        }
+        .modal-title {
+            font-size: 14px;
+            font-weight: 500;
+            color: #f1f1f1;
+            margin-bottom: 8px;
+            line-height: 20px;
+            max-width: 320px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .modal-meta {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 13px;
+            color: #888;
+            flex-wrap: wrap;
+        }
+        .modal-meta-item { display: flex; align-items: center; gap: 4px; }
+        .modal-yt-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: #272727;
+            border: 1px solid #404040;
+            color: #ccc;
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.15s;
+        }
+        .modal-yt-btn:hover { background: #3a3a3a; color: #fff; border-color: #666; }
+        .modal-yt-btn svg { width: 16px; height: 16px; fill: #ff0000; }
+
+        .modal-divider {
+            border: none;
+            border-top: 1px solid #2a2a2a;
+            margin: 16px 0;
+        }
+
+        /* Thumbnail grid sections */
+        .modal-section-label {
+            font-size: 12px;
+            font-weight: 600;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 10px;
+        }
+
+        .thumb-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+
+        .thumb-slot {
+            position: relative;
+            aspect-ratio: 16/9;
+            background: #222;
+            border: 2px dashed #404040;
+            border-radius: 10px;
+            overflow: hidden;
+            cursor: pointer;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .thumb-slot:hover { border-color: #666; background: #2a2a2a; }
+        .thumb-slot.has-image { border-style: solid; border-color: #333; }
+        .thumb-slot img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            position: absolute;
+            inset: 0;
+        }
+        .thumb-slot .upload-hint {
+            color: #555;
+            font-size: 13px;
+            text-align: center;
+            pointer-events: none;
+        }
+        .thumb-slot .upload-hint svg { width: 24px; height: 24px; fill: #555; display: block; margin: 0 auto 4px; }
+        .thumb-slot .remove-thumb {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            background: rgba(0,0,0,0.7);
+            border: none;
+            color: #ccc;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            font-size: 16px;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            line-height: 1;
+        }
+        .thumb-slot:hover .remove-thumb { display: flex; }
+        .thumb-slot .remove-thumb:hover { background: rgba(200,0,0,0.8); color: #fff; }
+
+        .title-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .title-input {
+            font-size: 14px;
+            font-weight: 500;
+            line-height: 20px;
+            color: #f1f1f1;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            width: 100%;
+            min-height: 40px;
+            cursor: text;
+            border-radius: 6px;
+            padding: 4px 6px;
+            transition: background 0.15s;
+        }
+        .title-input:hover { background: rgba(255,255,255,0.05); }
+        .title-input:focus {
+            background: #1e1e1e;
+            outline: 1px solid #1c62b9;
+            display: block;
+            -webkit-line-clamp: unset;
+            overflow: auto;
+        }
+        .title-input:empty::before {
+            content: attr(data-placeholder);
+            color: #555;
+        }
+
+        /* Custom fields */
+        .custom-fields-section { margin-top: 4px; }
+        .custom-field-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+            align-items: center;
+        }
+        .custom-field-key {
+            background: #1e1e1e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 8px 12px;
+            color: #f1f1f1;
+            font-size: 13px;
+            outline: none;
+            width: 140px;
+            flex-shrink: 0;
+            transition: border-color 0.15s;
+        }
+        .custom-field-key:focus { border-color: #1c62b9; }
+        .custom-field-key::placeholder { color: #555; }
+        .custom-field-value {
+            background: #1e1e1e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 8px 12px;
+            color: #f1f1f1;
+            font-size: 13px;
+            outline: none;
+            flex: 1;
+            transition: border-color 0.15s;
+        }
+        .custom-field-value:focus { border-color: #1c62b9; }
+        .custom-field-value::placeholder { color: #555; }
+        .custom-field-value a { color: #4ea8de; }
+        .custom-field-remove {
+            background: none;
+            border: none;
+            color: #555;
+            font-size: 18px;
+            cursor: pointer;
+            padding: 4px 6px;
+            border-radius: 4px;
+            flex-shrink: 0;
+        }
+        .custom-field-remove:hover { color: #f44336; }
+
+        .add-field-btn {
+            background: #222;
+            border: 1px dashed #404040;
+            color: #888;
+            padding: 6px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .add-field-btn:hover { background: #2a2a2a; color: #ccc; border-color: #666; }
+
+        .modal-save-bar {
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid #2a2a2a;
+        }
+        .modal-save-btn {
+            background: #1c62b9;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: 8px 24px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .modal-save-btn:hover { background: #2478d9; }
+        .modal-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .modal-saved-indicator {
+            color: #4caf50;
+            font-size: 13px;
+            align-self: center;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .modal-saved-indicator.show { opacity: 1; }
+
+        .content-doc-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-top: 12px;
+        }
+        .create-content-doc-btn {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: #1a472a;
+            color: #4caf50;
+            border: 1px solid #2d6b3f;
+            border-radius: 8px;
+            padding: 8px 16px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .create-content-doc-btn:hover { background: #225533; border-color: #4caf50; color: #6fcf7c; }
+        .create-content-doc-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .view-content-doc-btn {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: #1a2a47;
+            color: #5b9bd5;
+            border: 1px solid #2d4a6b;
+            border-radius: 8px;
+            padding: 8px 16px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.15s;
+        }
+        .view-content-doc-btn:hover { background: #223355; border-color: #5b9bd5; color: #7fb8e8; }
+        .content-doc-status {
+            font-size: 12px;
+            color: #888;
+        }
+        .content-doc-status.success { color: #4caf50; }
+        .content-doc-status.error { color: #e74c3c; }
+    
+        .content-container { display: none; padding: 20px; }
+        .content-container.visible { display: block !important; }
+        .content-folder { display:flex; align-items:center; gap:10px; padding:12px 16px; background:#1a1a2e; border:1px solid #2a2a4a; border-radius:8px; cursor:pointer; transition:all 0.15s; }
+        .content-folder:hover { background:#252545; border-color:#4a4a7a; }
+        .content-file { display:flex; align-items:center; gap:10px; padding:12px 16px; background:#1a1a2e; border:1px solid #2a2a4a; border-radius:8px; cursor:pointer; transition:all 0.15s; }
+        .content-file:hover { background:#252545; border-color:#4a4a7a; }
+        .content-breadcrumb { color:#5b9bd5; cursor:pointer; font-size:13px; }
+        .content-breadcrumb:hover { text-decoration:underline; }
+        .content-breadcrumb-sep { color:#555; font-size:13px; }
+        .content-sort-bar { display:flex; gap:8px; align-items:center; margin-bottom:12px; }
+        .content-sort-btn { background:#1a1a2e; color:#888; border:1px solid #333; border-radius:6px; padding:5px 12px; font-size:12px; cursor:pointer; transition:all 0.15s; }
+        .content-sort-btn:hover { color:#fff; border-color:#555; }
+        .content-sort-btn.active { color:#5b9bd5; border-color:#5b9bd5; background:#1a2a47; }
+        .content-toolbar { display:flex; gap:4px; padding:8px; background:#111; border:1px solid #333; border-bottom:none; border-radius:8px 8px 0 0; flex-wrap:wrap; }
+        .content-toolbar button { background:#222; color:#ccc; border:1px solid #444; border-radius:4px; padding:4px 10px; font-size:13px; cursor:pointer; transition:all 0.15s; }
+        .content-toolbar button:hover { background:#333; color:#fff; border-color:#666; }
+        .content-mode-toggle { display:flex; gap:0; margin-left:auto; }
+        .content-mode-toggle button { border-radius:0; }
+        .content-mode-toggle button:first-child { border-radius:4px 0 0 4px; }
+        .content-mode-toggle button:last-child { border-radius:0 4px 4px 0; }
+        .content-mode-toggle button.active { background:#5b9bd5; color:#fff; border-color:#5b9bd5; }
+        .content-preview { width:100%; min-height:70vh; background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:0 0 8px 8px; padding:24px 32px; font-family:'Roboto',sans-serif; font-size:15px; line-height:1.8; overflow-y:auto; }
+        .content-preview h1 { color:#fff; font-size:24px; margin:20px 0 12px; border-bottom:1px solid #333; padding-bottom:8px; }
+        .content-preview h2 { color:#ddd; font-size:20px; margin:18px 0 10px; }
+        .content-preview h3 { color:#ccc; font-size:17px; margin:14px 0 8px; }
+        .content-preview p { margin:8px 0; }
+        .content-preview ul, .content-preview ol { margin:8px 0 8px 24px; }
+        .content-preview li { margin:4px 0; }
+        .content-preview code { background:#252545; padding:2px 6px; border-radius:4px; font-size:13px; }
+        .content-preview pre { background:#0d0d1a; padding:16px; border-radius:8px; overflow-x:auto; margin:12px 0; }
+        .content-preview pre code { background:none; padding:0; }
+        .content-preview blockquote { border-left:3px solid #5b9bd5; padding-left:16px; color:#aaa; margin:12px 0; }
+        .content-preview a { color:#5b9bd5; }
+        .content-preview strong { color:#fff; }
+        .content-preview hr { border:none; border-top:1px solid #333; margin:16px 0; }
+        .content-preview table { border-collapse:collapse; width:100%; margin:12px 0; }
+        .content-preview th, .content-preview td { border:1px solid #333; padding:8px 12px; text-align:left; }
+        .content-preview th { background:#1a1a2e; color:#fff; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/turndown/dist/turndown.js"></script>
+</head>
+<body>
+    <!-- Auth Overlay -->
+    <div class="auth-overlay {% if authenticated %}hidden{% endif %}" id="authOverlay">
+        <div class="auth-card">
+            <img src="/static/logo.png" alt="Content Mate">
+            <h2>Content Mate</h2>
+            <p>Enter your email and password to access the dashboard</p>
+            <div class="auth-error" id="authError"></div>
+            <input type="email" class="auth-input" id="authEmail" placeholder="Email address" autocomplete="email">
+            <input type="password" class="auth-input" id="authPassword" placeholder="Password" autocomplete="current-password">
+            <button class="auth-btn" id="authBtn" onclick="handleLogin()">Log In</button>
+            <div class="auth-divider"></div>
+            <div class="auth-cta">
+                Don't have access? <a href="https://skool.com/Ai-mate" target="_blank">Join the free community</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="header">
+        <div class="logo">
+            <img src="/static/logo.png" alt="Content Mate: Ideas Dashboard">
+            Content Mate: Ideas Dashboard
+        </div>
+        <div class="search-bar">
+            <input type="text" class="search-input" id="urlInput"
+                   placeholder="Paste YouTube URL"
+                   autocomplete="off">
+            <button class="search-btn" onclick="addVideo()">
+                <svg viewBox="0 0 24 24"><path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6z"/></svg>
+            </button>
+        </div>
+        <div class="header-actions">
+            <span class="video-count" id="videoCount"></span>
+            <button class="clear-btn" onclick="clearAll()">Clear All</button>
+        </div>
+    </div>
+
+    <div class="tabs-bar" id="tabsBar">
+        <button class="tab active" data-tab="options" onclick="setTab('options')">
+            Options <span class="tab-count" id="countOptions">0</span>
+        </button>
+        <button class="tab" data-tab="best" onclick="setTab('best')">
+            Best <span class="tab-count" id="countBest">0</span>
+        </button>
+        <button class="tab" data-tab="in_progress" onclick="setTab('in_progress')">
+            In Progress <span class="tab-count" id="countProgress">0</span>
+        </button>
+        <button class="tab" data-tab="archived" onclick="setTab('archived')">
+            Archived <span class="tab-count" id="countArchived">0</span>
+        </button>
+        <button class="tab" data-tab="done" onclick="setTab('done')">
+            Done <span class="tab-count" id="countDone">0</span>
+        </button>
+        <button class="tab" data-tab="keywords" onclick="setTab('keywords')" style="margin-left:auto;">
+            Keywords <span class="tab-count" id="countKeywords">0</span>
+        </button>
+        <button class="tab" data-tab="creators" onclick="setTab('creators')">
+            Creators <span class="tab-count" id="countCreators">0</span>
+        </button>
+        <button class="tab" data-tab="content" onclick="setTab('content')">
+            Content
+        </button>
+    </div>
+
+    <div class="sort-bar">
+        <span class="sort-label">Sort:</span>
+        <button class="sort-btn active" data-sort="added" onclick="setSort('added')">Date Added</button>
+        <button class="sort-btn" data-sort="views" onclick="setSort('views')">Views</button>
+        <button class="sort-btn" data-sort="outlier" onclick="setSort('outlier')">Outlier</button>
+        <select class="creator-select" id="creatorFilter" onchange="setCreatorFilter(this.value)">
+            <option value="">Creator</option>
+        </select>
+        <span class="sort-divider">|</span>
+        <span class="sort-label">Published:</span>
+        <button class="filter-btn active" data-recency="all" onclick="setRecency('all')">All time</button>
+        <button class="filter-btn" data-recency="7" onclick="setRecency('7')">7 days</button>
+        <button class="filter-btn" data-recency="14" onclick="setRecency('14')">14 days</button>
+        <button class="filter-btn" data-recency="30" onclick="setRecency('30')">30 days</button>
+        <button class="filter-btn" data-recency="60" onclick="setRecency('60')">60 days</button>
+        <button class="filter-btn" data-recency="90" onclick="setRecency('90')">90 days</button>
+    </div>
+
+    <div class="channels-bar" id="channelsBar" style="display:none;"></div>
+
+    <div class="creators-container" id="creatorsContainer">
+        <div class="creators-header">
+            <h2>Creators</h2>
+            <button class="scrape-all-btn" id="scrapeAllBtn" onclick="scrapeAllChannels()">Scrape All</button>
+        </div>
+        <div class="creator-add-row">
+            <input type="text" class="creator-add-input" id="creatorInput"
+                   placeholder="@handle, channel name, or full YouTube URL"
+                   autocomplete="off"
+                   onkeydown="if(event.key==='Enter')addCreator()">
+            <button class="creator-add-btn" onclick="addCreator()">Add Creator</button>
+        </div>
+        <div class="creator-list" id="creatorList"></div>
+    </div>
+    <div class="keywords-container" id="keywordsContainer">
+        <div class="keywords-header">
+            <h2>Keywords</h2>
+            <div class="keywords-header-actions">
+                <div class="kw-filter-bar">
+                    <button class="kw-filter-btn active" data-kwfilter="all" onclick="setKwFilter('all')">All</button>
+                    <button class="kw-filter-btn" data-kwfilter="favorites" onclick="setKwFilter('favorites')">Favorites</button>
+                    <button class="kw-filter-btn" data-kwfilter="youtube" onclick="setKwFilter('youtube')">YouTube</button>
+                </div>
+                <button class="scrape-all-btn" id="importKwBtn" onclick="importKeywords()">Import from Airtable</button>
+            </div>
+        </div>
+        <div class="kw-table-wrap">
+            <table class="kw-table">
+                <thead>
+                    <tr>
+                        <th class="kw-th-keyword" onclick="setKwSort('keyword')">Keyword</th>
+                        <th onclick="setKwSort('search_volume')">Search Vol</th>
+                        <th onclick="setKwSort('competition')">Competition</th>
+                        <th onclick="setKwSort('overall')">Overall</th>
+                        <th onclick="setKwSort('searches_30d')">30d Searches</th>
+                        <th onclick="setKwSort('word_count')">Words</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="kwTableBody"></tbody>
+            </table>
+        </div>
+    </div>
+    <div class="grid" id="videoGrid"></div>
+    <!-- Video Detail Modal -->
+    
+    <div class="content-container" id="contentContainer">
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+            <h2 style="margin:0; color:#fff;">Content Docs</h2>
+        </div>
+        <div id="contentBreadcrumbs" style="margin-bottom:12px; display:flex; gap:6px; flex-wrap:wrap;"></div>
+        <div class="content-sort-bar" id="contentSortBar">
+            <span style="color:#666; font-size:12px;">Sort:</span>
+            <button class="content-sort-btn active" data-csort="modified" onclick="setContentSort('modified')">Recent</button>
+            <button class="content-sort-btn" data-csort="name" onclick="setContentSort('name')">Name</button>
+            <button class="content-sort-btn" data-csort="name-desc" onclick="setContentSort('name-desc')">Name Z-A</button>
+        </div>
+        <div id="contentList" style="display:grid; gap:8px;"></div>
+        <div id="contentEditor" style="display:none;">
+            <div style="display:flex; align-items:center; gap:12px; margin-bottom:12px;">
+                <button onclick="closeContentEditor()" style="background:#333; color:#fff; border:1px solid #555; border-radius:6px; padding:6px 14px; cursor:pointer;">Back</button>
+                <span id="contentFileName" style="color:#fff; font-size:16px; font-weight:500;"></span>
+                <span id="contentSaveStatus" style="color:#4caf50; font-size:12px; margin-left:auto;"></span>
+            </div>
+            <div class="content-toolbar" id="contentToolbar">
+                <button onclick="insertMd('# ')" title="Heading 1"><b>H1</b></button>
+                <button onclick="insertMd('## ')" title="Heading 2"><b>H2</b></button>
+                <button onclick="insertMd('### ')" title="Heading 3"><b>H3</b></button>
+                <button onclick="wrapMd('**')" title="Bold"><b>B</b></button>
+                <button onclick="wrapMd('*')" title="Italic"><i>I</i></button>
+                <button onclick="insertMd('- ')" title="Bullet list">List</button>
+                <button onclick="insertMd('1. ')" title="Numbered list">1.</button>
+                <button onclick="insertMd('> ')" title="Blockquote">"</button>
+                <button onclick="insertMd('---\n')" title="Horizontal rule">---</button>
+                <button onclick="wrapMd('`')" title="Inline code">Code</button>
+                <button onclick="insertMd('```\n\n```\n')" title="Code block">Block</button>
+                <button onclick="insertLink()" title="Insert link">Link</button>
+                <div class="content-mode-toggle">
+                    <button id="modeEdit" class="active" onclick="setEditorMode('edit')">Edit</button>
+                    <button id="modePreview" onclick="setEditorMode('preview')">Preview</button>
+                    <button id="modeSplit" onclick="setEditorMode('split')">Split</button>
+                </div>
+            </div>
+            <div id="editorContainer" style="display:flex; gap:0; min-height:70vh;">
+                <textarea id="contentTextarea" style="flex:1; min-height:70vh; background:#1a1a2e; color:#e0e0e0; border:1px solid #333; border-radius:0 0 0 8px; padding:16px; font-family:monospace; font-size:14px; line-height:1.6; resize:none;" oninput="contentChanged()"></textarea>
+                <div id="contentPreview" class="content-preview" style="flex:1; display:none; border-radius:0 0 8px 0;"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="modalOverlay">
+        <div class="modal-card" id="modalCard">
+            <button class="modal-close" onclick="closeModal()">&times;</button>
+            <div class="modal-header">
+                <div class="modal-title" id="modalTitle"></div>
+                <div class="modal-meta" id="modalMeta"></div>
+            </div>
+            <hr class="modal-divider">
+
+            <!-- Inspiration Row -->
+            <div class="modal-section-label">Inspiration Thumbnails</div>
+            <div class="thumb-row" id="inspoThumbRow"></div>
+            <div class="title-row" id="inspoTitleRow"></div>
+
+            <!-- Original Row -->
+            <div class="modal-section-label">My Thumbnails</div>
+            <div class="thumb-row" id="originalThumbRow"></div>
+            <div class="title-row" id="originalTitleRow"></div>
+
+            <hr class="modal-divider">
+
+            <!-- Custom Fields -->
+            <div class="custom-fields-section">
+                <div class="modal-section-label">Custom Fields</div>
+                <div id="customFieldsList"></div>
+                <button class="add-field-btn" onclick="addCustomField()">+ Add Field</button>
+            </div>
+
+            <hr class="modal-divider">
+            <div class="content-doc-bar">
+                <button class="create-content-doc-btn" id="createContentDocBtn" onclick="createContentDoc()">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zM6 20V4h5v7h7v9H6z"/></svg>
+                    Create Content Doc
+                </button>
+                <a class="view-content-doc-btn" id="viewContentDocBtn" href="#" target="_blank" style="display:none;">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+                    View Content Doc
+                </a>
+                <span class="content-doc-status" id="contentDocStatus"></span>
+            </div>
+
+            <div class="modal-save-bar">
+                <span class="modal-saved-indicator" id="savedIndicator">Saved</span>
+                <button class="modal-save-btn" id="modalSaveBtn" onclick="saveModalData()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        let videos = [];
+        let channels = [];
+        let loadingCount = 0;
+        let currentTab = 'options';
+        let currentSort = 'added';
+        let currentRecency = 'all';
+        let currentCreatorFilter = '';
+
+        document.getElementById('urlInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') addVideo();
+        });
+
+        // Load data then auto-scrape if stale, backfill missing dates
+        (async () => {
+            await loadVideos();
+            await loadChannels();
+            autoScrapeIfNeeded();
+            // Backfill dates: RSS first, then deep (yt-dlp individual lookups) for remaining
+            const missingCount = videos.filter(v => !v.time_ago).length;
+            if (missingCount > 0) {
+                fetch('/api/videos/backfill-dates', { method: 'POST' })
+                    .then(() => loadVideos())
+                    .then(() => {
+                        const stillMissing = videos.filter(v => !v.time_ago).length;
+                        if (stillMissing > 0) deepBackfillDates(stillMissing);
+                    });
+            }
+        })();
+
+        async function loadVideos() {
+            try {
+                const resp = await fetch('/api/videos');
+                videos = await resp.json();
+                updateCounts();
+                populateCreatorDropdown();
+                renderGrid();
+            } catch (err) {
+                showToast('Failed to load videos', true);
+            }
+        }
+
+        function populateCreatorDropdown() {
+            const select = document.getElementById('creatorFilter');
+            const creators = [...new Set(videos.map(v => v.channel_title).filter(Boolean))].sort();
+            const prev = select.value;
+            select.innerHTML = '<option value="">All Creators</option>' +
+                creators.map(c => `<option value="${esc(c)}"${c === prev ? ' selected' : ''}>${esc(c)}</option>`).join('');
+            select.classList.toggle('active', !!currentCreatorFilter);
+        }
+
+        function setCreatorFilter(val) {
+            currentCreatorFilter = val;
+            document.getElementById('creatorFilter').classList.toggle('active', !!val);
+            renderGrid();
+        }
+
+        function setTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.tab').forEach(t => {
+                t.classList.toggle('active', t.dataset.tab === tab);
+            });
+            const isCreators = tab === 'creators';
+            const isKeywords = tab === 'keywords';
+            const isContent = tab === 'content';
+            const isSpecial = isCreators || isKeywords || isContent;
+            document.getElementById('videoGrid').style.display = isSpecial ? 'none' : '';
+            document.getElementById('creatorsContainer').classList.toggle('visible', isCreators);
+            document.getElementById('keywordsContainer').classList.toggle('visible', isKeywords);
+            document.getElementById('contentContainer').style.display = isContent ? 'block' : 'none';
+            document.getElementById('channelsBar').style.display = isSpecial ? 'none' : '';
+            document.querySelector('.sort-bar').style.display = isSpecial ? 'none' : '';
+            if (isCreators) {
+                renderCreatorList();
+            } else if (isKeywords) {
+                loadKeywords();
+            } else if (isContent) {
+                loadContentList();
+            } else {
+                renderGrid();
+            }
+        }
+
+        function setSort(sort) {
+            currentSort = sort;
+            document.querySelectorAll('.sort-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.sort === sort);
+            });
+            renderGrid();
+        }
+
+        function setRecency(r) {
+            currentRecency = r;
+            document.querySelectorAll('.filter-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.recency === r);
+            });
+            renderGrid();
+        }
+
+        function sortVideos(list) {
+            let result = [...list];
+            // Apply creator filter
+            if (currentCreatorFilter) {
+                result = result.filter(v => v.channel_title === currentCreatorFilter);
+            }
+            // Apply recency filter
+            if (currentRecency !== 'all') {
+                const days = parseInt(currentRecency);
+                const cutoff = new Date();
+                cutoff.setDate(cutoff.getDate() - days);
+                result = result.filter(v => {
+                    if (!v.published_at) return true;
+                    return new Date(v.published_at) >= cutoff;
+                });
+            }
+            // Apply sort
+            if (currentSort === 'views') {
+                result.sort((a, b) => (b.view_count || 0) - (a.view_count || 0));
+            } else if (currentSort === 'outlier') {
+                result.sort((a, b) => (b.outlier_score || 0) - (a.outlier_score || 0));
+            } else if (currentSort === 'creator') {
+                result.sort((a, b) => (a.channel_title || '').localeCompare(b.channel_title || ''));
+            }
+            return result;
+        }
+
+        function updateCounts() {
+            const counts = { options: 0, best: 0, in_progress: 0, archived: 0, done: 0 };
+            videos.forEach(v => { counts[v.status] = (counts[v.status] || 0) + 1; });
+            document.getElementById('countOptions').textContent = counts.options;
+            document.getElementById('countBest').textContent = counts.best;
+            document.getElementById('countProgress').textContent = counts.in_progress;
+            document.getElementById('countArchived').textContent = counts.archived;
+            document.getElementById('countDone').textContent = counts.done;
+            document.getElementById('countCreators').textContent = channels.length;
+            document.getElementById('videoCount').textContent =
+                videos.length ? `${videos.length} total` : '';
+        }
+
+        async function addVideo() {
+            const input = document.getElementById('urlInput');
+            const url = input.value.trim();
+            if (!url) return;
+
+            input.value = '';
+            input.focus();
+
+            // Switch to Options tab so they see it loading
+            if (currentTab !== 'options') setTab('options');
+
+            const placeholderId = addLoadingCard();
+
+            try {
+                const resp = await fetch('/api/videos', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    showToast(data.error || 'Failed to add video', true);
+                    removeLoadingCard(placeholderId);
+                    return;
+                }
+                await loadVideos();
+                removeLoadingCard(placeholderId);
+            } catch (err) {
+                showToast('Network error', true);
+                removeLoadingCard(placeholderId);
+            }
+        }
+
+        async function moveVideo(id, newStatus, event) {
+            event.stopPropagation();
+            try {
+                await fetch(`/api/videos/${id}/status`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: newStatus }),
+                });
+                const v = videos.find(v => v.id === id);
+                if (v) v.status = newStatus;
+                updateCounts();
+                renderGrid();
+                const labels = { options: 'Options', best: 'Best', in_progress: 'In Progress' };
+                showToast(`Moved to ${labels[newStatus]}`);
+            } catch (err) {
+                showToast('Move failed', true);
+            }
+        }
+
+        async function deleteVideo(id, event) {
+            event.stopPropagation();
+            try {
+                await fetch(`/api/videos/${id}`, { method: 'DELETE' });
+                videos = videos.filter(v => v.id !== id);
+                updateCounts();
+                renderGrid();
+            } catch (err) {
+                showToast('Delete failed', true);
+            }
+        }
+
+        async function clearAll() {
+            if (!confirm('Clear all videos from all tabs?')) return;
+            try {
+                await fetch('/api/videos/clear', { method: 'POST' });
+                videos = [];
+                updateCounts();
+                renderGrid();
+            } catch (err) {
+                showToast('Clear failed', true);
+            }
+        }
+
+        function getActionButtons(v) {
+            if (v.status === 'options') {
+                return `
+                    <button class="action-btn move-best" onclick="moveVideo(${v.id}, 'best', event)">Best</button>
+                    <button class="action-btn move-progress" onclick="moveVideo(${v.id}, 'in_progress', event)">In Progress</button>
+                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'archived', event)">Archive</button>
+                `;
+            }
+            if (v.status === 'best') {
+                return `
+                    <button class="action-btn move-progress" onclick="moveVideo(${v.id}, 'in_progress', event)">In Progress</button>
+                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'options', event)">Back</button>
+                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'archived', event)">Archive</button>
+                `;
+            }
+            if (v.status === 'in_progress') {
+                return `
+                    <button class="action-btn move-best" onclick="moveVideo(${v.id}, 'done', event)">Done</button>
+                    <button class="action-btn move-best" onclick="moveVideo(${v.id}, 'best', event)">Best</button>
+                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'options', event)">Back</button>
+                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'archived', event)">Archive</button>
+                `;
+            }
+            if (v.status === 'archived') {
+                return `
+                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'options', event)">Restore</button>
+                `;
+            }
+            // done
+            return `
+                <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'in_progress', event)">Reopen</button>
+            `;
+        }
+
+        function renderGrid() {
+            const grid = document.getElementById('videoGrid');
+            const filtered = sortVideos(videos.filter(v => v.status === currentTab));
+
+            if (filtered.length === 0) {
+                const msgs = {
+                    options: { icon: '&#127909;', title: 'No ideas yet', sub: 'Paste a YouTube URL above to start' },
+                    best: { icon: '&#11088;', title: 'No best picks yet', sub: 'Move your top ideas here from Options' },
+                    in_progress: { icon: '&#128640;', title: 'Nothing in progress', sub: 'Move ideas here when you start working on them' },
+                    archived: { icon: '&#128193;', title: 'Nothing archived', sub: 'Archive videos you want to keep but not act on' },
+                    done: { icon: '&#9989;', title: 'Nothing done yet', sub: 'Mark In Progress videos as Done when you\'ve made them' },
+                };
+                const m = msgs[currentTab];
+                grid.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">${m.icon}</div>
+                        <div class="empty-title">${m.title}</div>
+                        <div class="empty-sub">${m.sub}</div>
+                    </div>
+                `;
+                return;
+            }
+
+            grid.innerHTML = filtered.map(v => `
+                <div class="card" onclick="openModal(${v.id})" style="cursor:pointer;">
+                    <div class="thumb-wrap">
+                        <img src="${v.thumbnail_url}" alt="" loading="lazy">
+                        ${v.duration ? `<span class="duration-badge">${v.duration}</span>` : ''}
+                        <div class="card-actions">${getActionButtons(v)}</div>
+                        <button class="delete-btn" onclick="deleteVideo(${v.id}, event)" title="Remove">&times;</button>
+                    </div>
+                    <div class="card-info">
+                        <div class="channel-avatar">
+                            ${v.channel_thumb ? `<img src="${v.channel_thumb}" alt="">` : ''}
+                        </div>
+                        <div class="card-text">
+                            <div class="card-title">${esc(v.title)}</div>
+                            <div class="card-channel">${esc(v.channel_title)}</div>
+                            <div class="card-stats">${v.view_count_formatted}${v.time_ago ? ' &middot; ' + v.time_ago : ''}${outlierBadge(v.outlier_score)}</div>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function addLoadingCard() {
+            const grid = document.getElementById('videoGrid');
+            const empty = grid.querySelector('.empty-state');
+            if (empty) empty.remove();
+            const id = 'loading-' + (++loadingCount);
+            const ph = document.createElement('div');
+            ph.className = 'card loading-card';
+            ph.id = id;
+            ph.innerHTML = '<div class="thumb-wrap"></div><div class="card-info"><div class="channel-avatar"></div><div class="card-text"></div></div>';
+            grid.prepend(ph);
+            return id;
+        }
+
+        function removeLoadingCard(id) {
+            const el = document.getElementById(id);
+            if (el) el.remove();
+        }
+
+        function showToast(msg, isError = false) {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = 'toast show' + (isError ? ' error' : '');
+            setTimeout(() => { t.className = 'toast'; }, 2500);
+        }
+
+        function outlierBadge(score) {
+            if (!score || score <= 0) return '';
+            let cls = 'normal';
+            if (score >= 3) cls = 'hot';
+            else if (score >= 1.5) cls = 'warm';
+            return ` <span class="outlier ${cls}">${score}x</span>`;
+        }
+
+        function esc(str) {
+            const d = document.createElement('div');
+            d.textContent = str;
+            return d.innerHTML;
+        }
+
+        async function deepBackfillDates(total) {
+            showToast(`Fetching dates for ${total} older videos...`);
+            let remaining = total;
+            while (remaining > 0) {
+                try {
+                    const resp = await fetch('/api/videos/backfill-dates-deep?limit=10', { method: 'POST' });
+                    const data = await resp.json();
+                    remaining = data.remaining;
+                    if (data.backfilled > 0) await loadVideos();
+                    if (data.backfilled === 0) break; // no progress, stop
+                } catch (e) { break; }
+            }
+            if (remaining === 0) showToast('All dates filled!');
+        }
+
+        // ── Channels / Creators ──────────────────────────────
+
+        async function loadChannels() {
+            try {
+                const resp = await fetch('/api/channels');
+                channels = await resp.json();
+                renderChannels();
+                updateCounts();
+                if (currentTab === 'creators') renderCreatorList();
+            } catch (e) {}
+        }
+
+        function renderChannels() {
+            const container = document.getElementById('channelChips');
+            if (!container) return;
+            container.innerHTML = channels.map(c => `
+                <span class="channel-chip">
+                    <span class="channel-chip-name" title="${esc(c.url)}">${esc(c.name || c.url)}</span>
+                    <button class="chip-btn scrape" id="scrape-${c.id}" onclick="scrapeChannel(${c.id})" title="Scrape top 20 videos">↻</button>
+                    <button class="chip-btn remove" onclick="deleteChannel(${c.id})" title="Remove channel">×</button>
+                </span>
+            `).join('');
+        }
+
+        function showChannelForm() {
+            document.getElementById('channelAddForm').classList.add('visible');
+            document.getElementById('addChannelBtn').style.display = 'none';
+            document.getElementById('channelUrlInput').focus();
+        }
+
+        function hideChannelForm() {
+            document.getElementById('channelAddForm').classList.remove('visible');
+            document.getElementById('addChannelBtn').style.display = '';
+            document.getElementById('channelUrlInput').value = '';
+        }
+
+        async function saveChannel() {
+            const input = document.getElementById('channelUrlInput');
+            const url = input.value.trim();
+            if (!url) return;
+            try {
+                const resp = await fetch('/api/channels', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) { showToast(data.error || 'Failed to add channel', true); return; }
+                channels.unshift(data);
+                renderChannels();
+                updateCounts();
+                hideChannelForm();
+                showToast('Channel added — click ↻ to scrape videos');
+            } catch (e) { showToast('Network error', true); }
+        }
+
+        async function deleteChannel(id) {
+            try {
+                await fetch(`/api/channels/${id}`, { method: 'DELETE' });
+                channels = channels.filter(c => c.id !== id);
+                renderChannels();
+                updateCounts();
+                if (currentTab === 'creators') renderCreatorList();
+            } catch (e) { showToast('Failed to remove channel', true); }
+        }
+
+        async function scrapeChannel(id) {
+            const btn = document.getElementById(`scrape-${id}`);
+            const creatorBtn = document.getElementById(`creator-scrape-${id}`);
+            if (btn) { btn.classList.add('spinning'); btn.disabled = true; }
+            if (creatorBtn) { creatorBtn.classList.add('scraping'); creatorBtn.disabled = true; creatorBtn.textContent = 'Scraping...'; }
+            try {
+                const resp = await fetch(`/api/channels/${id}/scrape`, { method: 'POST' });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    showToast(data.error || 'Scrape failed', true);
+                } else {
+                    // Update the channel in our local array
+                    if (data.channel) {
+                        const idx = channels.findIndex(c => c.id === id);
+                        if (idx >= 0) channels[idx] = data.channel;
+                    }
+                    renderChannels();
+                    if (currentTab === 'creators') renderCreatorList();
+                    showToast(`+${data.inserted} videos added (${data.skipped} already existed)`);
+                    await loadVideos();
+                }
+            } catch (e) {
+                showToast('Scrape failed', true);
+            } finally {
+                const b = document.getElementById(`scrape-${id}`);
+                if (b) { b.classList.remove('spinning'); b.disabled = false; }
+                const cb = document.getElementById(`creator-scrape-${id}`);
+                if (cb) { cb.classList.remove('scraping'); cb.disabled = false; cb.textContent = 'Scrape'; }
+            }
+        }
+
+        // ── Creators tab ─────────────────────────────────────
+
+        function formatAvgViews(n) {
+            if (!n) return '-';
+            if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+            if (n >= 1000) return Math.round(n / 1000) + 'k';
+            return n.toString();
+        }
+
+        function formatLastScraped(dt) {
+            if (!dt) return 'Never';
+            try {
+                const d = new Date(dt);
+                const now = new Date();
+                const diffMs = now - d;
+                const diffMins = Math.floor(diffMs / 60000);
+                if (diffMins < 1) return 'Just now';
+                if (diffMins < 60) return diffMins + 'm ago';
+                const diffHours = Math.floor(diffMins / 60);
+                if (diffHours < 24) return diffHours + 'h ago';
+                const diffDays = Math.floor(diffHours / 24);
+                return diffDays + 'd ago';
+            } catch (e) { return 'Never'; }
+        }
+
+        function renderCreatorList() {
+            const list = document.getElementById('creatorList');
+            if (channels.length === 0) {
+                list.innerHTML = `
+                    <div class="creators-empty">
+                        <div class="creators-empty-title">No creators yet</div>
+                        <div class="creators-empty-sub">Add a @handle or YouTube channel URL above</div>
+                    </div>
+                `;
+                return;
+            }
+            list.innerHTML = channels.map(c => {
+                const handle = c.url.replace(/^https?:\/\/(www\.)?youtube\.com\//, '');
+                return `
+                <div class="creator-row">
+                    <a class="creator-avatar" href="${esc(c.url)}" target="_blank" title="Open YouTube channel" style="cursor:pointer;">
+                        ${c.thumbnail ? `<img src="${esc(c.thumbnail)}" alt="">` : ''}
+                    </a>
+                    <div class="creator-info">
+                        <div class="creator-name">${esc(c.name || handle)}</div>
+                        <div class="creator-url">${esc(handle)}</div>
+                    </div>
+                    <div class="creator-stats">
+                        <div class="creator-stat">
+                            <div class="creator-stat-value">${formatAvgViews(c.avg_views)}</div>
+                            <div class="creator-stat-label">Avg views</div>
+                        </div>
+                        <div class="creator-stat">
+                            <div class="creator-stat-value">${c.video_count || '-'}</div>
+                            <div class="creator-stat-label">Videos</div>
+                        </div>
+                    </div>
+                    <div class="creator-last-scraped">${formatLastScraped(c.last_scraped)}</div>
+                    <div class="creator-actions">
+                        <button class="creator-action-btn" id="creator-scrape-${c.id}" onclick="scrapeChannel(${c.id})">Scrape</button>
+                        <button class="creator-action-btn remove" onclick="deleteChannel(${c.id})">Remove</button>
+                    </div>
+                </div>
+            `}).join('');
+        }
+
+        async function addCreator() {
+            const input = document.getElementById('creatorInput');
+            const url = input.value.trim();
+            if (!url) return;
+            input.value = '';
+            try {
+                const resp = await fetch('/api/channels', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url }),
+                });
+                const data = await resp.json();
+                if (!resp.ok) { showToast(data.error || 'Failed to add creator', true); return; }
+                channels.unshift(data);
+                renderChannels();
+                renderCreatorList();
+                updateCounts();
+                showToast('Creator added');
+            } catch (e) { showToast('Network error', true); }
+        }
+
+        async function scrapeAllChannels() {
+            if (channels.length === 0) { showToast('No creators to scrape', true); return; }
+            const btn = document.getElementById('scrapeAllBtn');
+            btn.disabled = true;
+            btn.textContent = 'Scraping...';
+            // Disable all individual scrape buttons
+            channels.forEach(c => {
+                const cb = document.getElementById(`creator-scrape-${c.id}`);
+                if (cb) { cb.disabled = true; cb.classList.add('scraping'); cb.textContent = 'Scraping...'; }
+            });
+            try {
+                const resp = await fetch('/api/channels/scrape-all', { method: 'POST' });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    showToast(data.error || 'Scrape failed', true);
+                } else {
+                    if (data.channels) channels = data.channels;
+                    renderChannels();
+                    renderCreatorList();
+                    showToast(`+${data.inserted} videos added (${data.skipped} already existed)`);
+                    await loadVideos();
+                }
+            } catch (e) {
+                showToast('Scrape failed', true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Scrape All';
+                channels.forEach(c => {
+                    const cb = document.getElementById(`creator-scrape-${c.id}`);
+                    if (cb) { cb.disabled = false; cb.classList.remove('scraping'); cb.textContent = 'Scrape'; }
+                });
+            }
+        }
+
+        // ── Video Detail Modal ────────────────────────────────
+
+        let modalVideoId = null;
+        let modalDetails = null;
+
+        // Close on Escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeModal();
+        });
+
+        async function openModal(videoId) {
+            modalVideoId = videoId;
+            const v = videos.find(x => x.id === videoId);
+            if (!v) return;
+
+            // Populate header
+            document.getElementById('modalTitle').textContent = v.title;
+            document.getElementById('modalMeta').innerHTML = `
+                <span class="modal-meta-item">${esc(v.channel_title)}</span>
+                <span class="modal-meta-item">${v.view_count_formatted}</span>
+                ${v.time_ago ? `<span class="modal-meta-item">${v.time_ago}</span>` : ''}
+                ${v.outlier_score > 0 ? `<span class="modal-meta-item">${outlierBadge(v.outlier_score)}</span>` : ''}
+                <a class="modal-yt-btn" href="https://youtube.com/watch?v=${v.video_id}" target="_blank" onclick="event.stopPropagation()">
+                    <svg viewBox="0 0 24 24"><path d="M23.5 6.2c-.3-1-1-1.8-2-2.1C19.6 3.5 12 3.5 12 3.5s-7.6 0-9.5.6c-1 .3-1.7 1.1-2 2.1C0 8.1 0 12 0 12s0 3.9.5 5.8c.3 1 1 1.8 2 2.1 1.9.6 9.5.6 9.5.6s7.6 0 9.5-.6c1-.3 1.7-1.1 2-2.1.5-1.9.5-5.8.5-5.8s0-3.9-.5-5.8zM9.5 15.6V8.4l6.3 3.6-6.3 3.6z"/></svg>
+                    Open on YouTube
+                </a>
+            `;
+
+            // Fetch details
+            try {
+                const resp = await fetch(`/api/videos/${videoId}/details`);
+                modalDetails = await resp.json();
+            } catch (e) {
+                modalDetails = {
+                    inspo_thumbs: [v.thumbnail_url, '', ''],
+                    inspo_titles: ['', '', ''],
+                    original_thumbs: ['', '', ''],
+                    original_titles: ['', '', ''],
+                    custom_fields: [{ key: 'Content Doc', value: '' }],
+                };
+            }
+
+            renderThumbRow('inspoThumbRow', modalDetails.inspo_thumbs, 'inspo');
+            renderTitleRow('inspoTitleRow', modalDetails.inspo_titles, 'inspo');
+            renderThumbRow('originalThumbRow', modalDetails.original_thumbs, 'original');
+            renderTitleRow('originalTitleRow', modalDetails.original_titles, 'original');
+            renderCustomFields();
+
+            // Check if content doc already exists and show View button
+            const existingDoc = modalDetails.custom_fields.find(f => f.key === 'Content Doc' && f.value);
+            showViewContentDocBtn(existingDoc ? existingDoc.value : null);
+            document.getElementById('contentDocStatus').textContent = '';
+
+            document.getElementById('savedIndicator').classList.remove('show');
+            document.getElementById('modalOverlay').classList.add('open');
+        }
+
+        async function closeModal() {
+            await saveModalData();
+            document.getElementById('modalOverlay').classList.remove('open');
+            modalVideoId = null;
+            modalDetails = null;
+        }
+
+        function renderThumbRow(containerId, thumbs, prefix) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = thumbs.map((src, i) => `
+                <div class="thumb-slot ${src ? 'has-image' : ''}" onclick="triggerThumbUpload('${prefix}', ${i})" id="thumb-${prefix}-${i}">
+                    ${src ? `
+                        <img src="${esc(src)}" alt="">
+                        <button class="remove-thumb" onclick="removeThumb('${prefix}', ${i}, event)">&times;</button>
+                    ` : `
+                        <div class="upload-hint">
+                            <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                            Upload
+                        </div>
+                    `}
+                </div>
+            `).join('');
+        }
+
+        function renderTitleRow(containerId, titles, prefix) {
+            const container = document.getElementById(containerId);
+            container.innerHTML = titles.map((t, i) => `
+                <div class="title-input" contenteditable="true" data-placeholder="Title ${i + 1}"
+                     onblur="updateTitle('${prefix}', ${i}, this.textContent.trim())">${esc(t)}</div>
+            `).join('');
+        }
+
+        function triggerThumbUpload(prefix, index) {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = 'image/*';
+            input.onchange = async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const formData = new FormData();
+                formData.append('file', file);
+                try {
+                    const resp = await fetch('/api/upload', { method: 'POST', body: formData });
+                    const data = await resp.json();
+                    if (!resp.ok) { showToast(data.error || 'Upload failed', true); return; }
+                    const arr = prefix === 'inspo' ? modalDetails.inspo_thumbs : modalDetails.original_thumbs;
+                    arr[index] = data.url;
+                    renderThumbRow(prefix === 'inspo' ? 'inspoThumbRow' : 'originalThumbRow', arr, prefix);
+                } catch (err) {
+                    showToast('Upload failed', true);
+                }
+            };
+            input.click();
+        }
+
+        function removeThumb(prefix, index, event) {
+            event.stopPropagation();
+            const arr = prefix === 'inspo' ? modalDetails.inspo_thumbs : modalDetails.original_thumbs;
+            arr[index] = '';
+            renderThumbRow(prefix === 'inspo' ? 'inspoThumbRow' : 'originalThumbRow', arr, prefix);
+        }
+
+        function updateTitle(prefix, index, value) {
+            if (prefix === 'inspo') modalDetails.inspo_titles[index] = value;
+            else modalDetails.original_titles[index] = value;
+        }
+
+        function renderCustomFields() {
+            const container = document.getElementById('customFieldsList');
+            container.innerHTML = modalDetails.custom_fields.map((f, i) => `
+                <div class="custom-field-row">
+                    <input type="text" class="custom-field-key" value="${esc(f.key)}" placeholder="Field name"
+                           onchange="modalDetails.custom_fields[${i}].key = this.value">
+                    <input type="text" class="custom-field-value" value="${esc(f.value)}" placeholder="Value or link"
+                           onchange="modalDetails.custom_fields[${i}].value = this.value">
+                    <button class="custom-field-remove" onclick="removeCustomField(${i})">&times;</button>
+                </div>
+            `).join('');
+        }
+
+        function addCustomField() {
+            modalDetails.custom_fields.push({ key: '', value: '' });
+            renderCustomFields();
+            // Focus the new key input
+            const keys = document.querySelectorAll('.custom-field-key');
+            if (keys.length) keys[keys.length - 1].focus();
+        }
+
+        function removeCustomField(index) {
+            modalDetails.custom_fields.splice(index, 1);
+            renderCustomFields();
+        }
+
+        async function saveModalData() {
+            if (!modalVideoId || !modalDetails) return;
+            const btn = document.getElementById('modalSaveBtn');
+            btn.disabled = true;
+            btn.textContent = 'Saving...';
+            try {
+                // Read current input values (in case user typed but didn't blur)
+                document.querySelectorAll('#inspoTitleRow .title-input').forEach((inp, i) => {
+                    modalDetails.inspo_titles[i] = inp.textContent.trim();
+                });
+                document.querySelectorAll('#originalTitleRow .title-input').forEach((inp, i) => {
+                    modalDetails.original_titles[i] = inp.textContent.trim();
+                });
+                document.querySelectorAll('.custom-field-row').forEach((row, i) => {
+                    const keyInp = row.querySelector('.custom-field-key');
+                    const valInp = row.querySelector('.custom-field-value');
+                    if (modalDetails.custom_fields[i]) {
+                        modalDetails.custom_fields[i].key = keyInp.value;
+                        modalDetails.custom_fields[i].value = valInp.value;
+                    }
+                });
+
+                await fetch(`/api/videos/${modalVideoId}/details`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(modalDetails),
+                });
+                const indicator = document.getElementById('savedIndicator');
+                indicator.classList.add('show');
+                setTimeout(() => indicator.classList.remove('show'), 2000);
+            } catch (e) {
+                showToast('Save failed', true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Save';
+            }
+        }
+
+        function showViewContentDocBtn(path) {
+            const viewBtn = document.getElementById('viewContentDocBtn');
+            if (path) {
+                viewBtn.href = '#';
+                viewBtn.style.display = 'flex';
+                viewBtn.onclick = (e) => {
+                    e.preventDefault();
+                    closeModal();
+                    setTab('content');
+                    // Wait for content tab to load, then open the file
+                    setTimeout(() => openContentFile(path), 500);
+                };
+            } else {
+                viewBtn.style.display = 'none';
+            }
+        }
+
+        async function createContentDoc() {
+            if (!modalVideoId) return;
+            const btn = document.getElementById('createContentDocBtn');
+            const status = document.getElementById('contentDocStatus');
+            btn.disabled = true;
+            btn.textContent = 'Creating...';
+            status.textContent = 'Fetching transcript...';
+            status.className = 'content-doc-status';
+            try {
+                const resp = await fetch(`/api/videos/${modalVideoId}/create-content-doc`, { method: 'POST' });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    status.textContent = data.error || 'Failed';
+                    status.className = 'content-doc-status error';
+                    return;
+                }
+                // Show view button
+                showViewContentDocBtn(data.path);
+                // Update the Content Doc custom field
+                const docField = modalDetails.custom_fields.find(f => f.key === 'Content Doc');
+                if (docField) {
+                    docField.value = data.path || data.filename;
+                } else {
+                    modalDetails.custom_fields.push({ key: 'Content Doc', value: data.path || data.filename });
+                }
+                renderCustomFields();
+                await saveModalData();
+                if (data.exists) {
+                    status.textContent = 'Content doc already exists';
+                    status.className = 'content-doc-status success';
+                } else {
+                    status.textContent = data.has_transcript
+                        ? `Created with hook transcript`
+                        : `Created (no transcript found)`;
+                    status.className = 'content-doc-status success';
+                    showToast('Content doc created');
+                }
+            } catch (e) {
+                status.textContent = 'Failed to create content doc';
+                status.className = 'content-doc-status error';
+                showToast('Content doc creation failed', true);
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zM6 20V4h5v7h7v9H6z"/></svg> Create Content Doc';
+            }
+        }
+
+        // ── Auto-scrape on load ──────────────────────────────
+        async function autoScrapeIfNeeded() {
+            if (channels.length === 0) return;
+            // Only auto-scrape if the most recent scrape was more than 6 hours ago (or never)
+            const sixHours = 6 * 60 * 60 * 1000;
+            const now = Date.now();
+            const needsScrape = channels.some(c => {
+                if (!c.last_scraped) return true;
+                return (now - new Date(c.last_scraped).getTime()) > sixHours;
+            });
+            if (!needsScrape) return;
+            console.log('Auto-scraping channels (stale data detected)...');
+            showToast('Auto-scraping creators for fresh videos...');
+            try {
+                const resp = await fetch('/api/channels/scrape-all', { method: 'POST' });
+                const data = await resp.json();
+                if (resp.ok) {
+                    if (data.channels) channels = data.channels;
+                    renderChannels();
+                    updateCounts();
+                    if (currentTab === 'creators') renderCreatorList();
+                    if (data.inserted > 0) {
+                        showToast(`Auto-scrape: +${data.inserted} new videos`);
+                        await loadVideos();
+                    } else {
+                        showToast('Auto-scrape: all up to date');
+                    }
+                }
+            } catch (e) {
+                console.log('Auto-scrape failed:', e);
+            }
+        }
+        // ── Keywords ──────────────────────────────────────
+        let allKeywords = [];
+        let kwFilter = 'all';
+        let kwSort = 'search_volume';
+        let kwSortDir = -1; // -1 = desc
+
+        async function loadKeywords() {
+            try {
+                const res = await fetch(`/api/keywords?filter=${kwFilter}`);
+                if (!res.ok) return;
+                allKeywords = await res.json();
+                document.getElementById('countKeywords').textContent = allKeywords.length;
+                renderKeywords();
+            } catch (e) { console.error('loadKeywords:', e); }
+        }
+
+        function setKwFilter(f) {
+            kwFilter = f;
+            document.querySelectorAll('.kw-filter-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.kwfilter === f);
+            });
+            loadKeywords();
+        }
+
+        function setKwSort(col) {
+            if (kwSort === col) {
+                kwSortDir *= -1;
+            } else {
+                kwSort = col;
+                kwSortDir = col === 'keyword' ? 1 : -1;
+            }
+            renderKeywords();
+        }
+
+        function formatVolume(n) {
+            if (!n) return '0';
+            if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+            if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k';
+            return n.toLocaleString();
+        }
+
+        function scoreClass(val) {
+            if (val >= 70) return 'high';
+            if (val >= 40) return 'medium';
+            return 'low';
+        }
+
+        function compClass(val) {
+            if (val <= 35) return 'low';
+            if (val <= 65) return 'medium';
+            return 'high';
+        }
+
+        function renderKeywords() {
+            const sorted = [...allKeywords].sort((a, b) => {
+                const av = a[kwSort], bv = b[kwSort];
+                if (typeof av === 'string') return av.localeCompare(bv) * kwSortDir;
+                return ((av || 0) - (bv || 0)) * kwSortDir;
+            });
+            const tbody = document.getElementById('kwTableBody');
+            if (!sorted.length) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:#555;">No keywords yet. Click "Import from Airtable" to get started.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = sorted.map(k => `
+                <tr>
+                    <td class="kw-keyword-cell">${esc(k.keyword)}</td>
+                    <td class="kw-num">${formatVolume(k.search_volume)}</td>
+                    <td class="kw-num"><span class="kw-comp ${compClass(k.competition)}">${k.competition}</span></td>
+                    <td class="kw-num"><span class="kw-score ${scoreClass(k.overall)}">${k.overall}</span></td>
+                    <td class="kw-num">${formatVolume(k.searches_30d)}</td>
+                    <td class="kw-num">${k.word_count}</td>
+                    <td>
+                        <div class="kw-actions">
+                            <button class="kw-action-btn ${k.is_favorite ? 'active-fav' : ''}" onclick="toggleKwFav(${k.id})" title="Favorite">&#9733;</button>
+                            <button class="kw-action-btn ${k.is_youtube ? 'active-yt' : ''}" onclick="toggleKwYt(${k.id})" title="YouTube">&#9654;</button>
+                            <button class="kw-action-btn" onclick="deleteKw(${k.id})" title="Remove">&#10005;</button>
+                        </div>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        async function toggleKwFav(id) {
+            const res = await fetch(`/api/keywords/${id}/favorite`, { method: 'POST' });
+            if (res.ok) {
+                const data = await res.json();
+                const kw = allKeywords.find(k => k.id === id);
+                if (kw) kw.is_favorite = data.is_favorite;
+                if (kwFilter === 'favorites' && !data.is_favorite) {
+                    allKeywords = allKeywords.filter(k => k.id !== id);
+                }
+                renderKeywords();
+            }
+        }
+
+        async function toggleKwYt(id) {
+            const res = await fetch(`/api/keywords/${id}/youtube`, { method: 'POST' });
+            if (res.ok) {
+                const data = await res.json();
+                const kw = allKeywords.find(k => k.id === id);
+                if (kw) kw.is_youtube = data.is_youtube;
+                if (kwFilter === 'youtube' && !data.is_youtube) {
+                    allKeywords = allKeywords.filter(k => k.id !== id);
+                }
+                renderKeywords();
+            }
+        }
+
+        async function deleteKw(id) {
+            const res = await fetch(`/api/keywords/${id}`, { method: 'DELETE' });
+            if (res.ok) {
+                allKeywords = allKeywords.filter(k => k.id !== id);
+                document.getElementById('countKeywords').textContent = allKeywords.length;
+                renderKeywords();
+                showToast('Keyword removed');
+            }
+        }
+
+        async function importKeywords() {
+            const btn = document.getElementById('importKwBtn');
+            btn.disabled = true;
+            btn.textContent = 'Importing...';
+            try {
+                const res = await fetch('/api/keywords/import-airtable', { method: 'POST' });
+                const data = await res.json();
+                if (res.ok) {
+                    showToast(`Imported ${data.inserted} keywords (${data.skipped} already existed)`);
+                    loadKeywords();
+                } else {
+                    showToast(data.error || 'Import failed');
+                }
+            } catch (e) {
+                showToast('Import failed');
+            }
+            btn.disabled = false;
+            btn.textContent = 'Import from Airtable';
+        }
+
+        // ── Auth ──────────────────────────────────────────
+        async function handleLogin() {
+            const email = document.getElementById('authEmail').value.trim();
+            const password = document.getElementById('authPassword').value;
+            const errEl = document.getElementById('authError');
+            const btn = document.getElementById('authBtn');
+            errEl.textContent = '';
+            if (!email || !email.includes('@')) { errEl.textContent = 'Enter a valid email'; return; }
+            if (!password) { errEl.textContent = 'Enter the password'; return; }
+            btn.disabled = true;
+            btn.textContent = 'Logging in...';
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    errEl.textContent = data.error || 'Login failed';
+                    btn.disabled = false;
+                    btn.textContent = 'Log In';
+                    return;
+                }
+                document.getElementById('authOverlay').classList.add('hidden');
+                loadVideos();
+            } catch (e) {
+                errEl.textContent = 'Connection error';
+                btn.disabled = false;
+                btn.textContent = 'Log In';
+            }
+        }
+
+        // Enter key submits login
+        document.getElementById('authPassword').addEventListener('keydown', e => {
+            if (e.key === 'Enter') handleLogin();
+        });
+        document.getElementById('authEmail').addEventListener('keydown', e => {
+            if (e.key === 'Enter') document.getElementById('authPassword').focus();
+        });
+    
+        // --- Content Tab ---
+        let contentCurrentPath = '';
+        let contentSaveTimer = null;
+        let contentSort = 'modified';
+        let contentEditorMode = 'edit';
+        let contentFilesCache = [];
+
+        function setContentSort(sort) {
+            contentSort = sort;
+            document.querySelectorAll('.content-sort-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.csort === sort);
+            });
+            renderContentFiles();
+        }
+
+        function renderContentFiles() {
+            const list = document.getElementById('contentList');
+            list.innerHTML = '';
+            let sorted = [...contentFilesCache];
+            if (contentSort === 'name') sorted.sort((a,b) => a.name.localeCompare(b.name));
+            else if (contentSort === 'name-desc') sorted.sort((a,b) => b.name.localeCompare(a.name));
+            else sorted.sort((a,b) => (b.modified||0) - (a.modified||0));
+            sorted.forEach(f => {
+                const div = document.createElement('div');
+                div.className = 'content-file';
+                const modified = f.modified ? new Date(f.modified * 1000).toLocaleDateString() : '';
+                div.innerHTML = '<span style="font-size:18px;">&#128196;</span><span style="color:#fff;">' + f.name + '</span><span style="color:#666; font-size:12px; margin-left:auto;">' + modified + '</span>';
+                div.onclick = () => openContentFile(f.path, f.name);
+                list.appendChild(div);
+            });
+            if (sorted.length === 0) {
+                list.innerHTML = '<div style="color:#666; padding:20px; text-align:center;">No content docs found</div>';
+            }
+        }
+
+        function loadContentList(path) {
+            if (path !== undefined) contentCurrentPath = path;
+            const qs = contentCurrentPath ? '?path=' + encodeURIComponent(contentCurrentPath) : '';
+            fetch('/api/content' + qs)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) { console.error(data.error); return; }
+                    document.getElementById('contentEditor').style.display = 'none';
+                    document.getElementById('contentList').style.display = 'grid';
+                    document.getElementById('contentSortBar').style.display = 'flex';
+                    // Breadcrumbs
+                    const bc = document.getElementById('contentBreadcrumbs');
+                    bc.innerHTML = '';
+                    data.breadcrumbs.forEach((b, i) => {
+                        if (i > 0) { const sep = document.createElement('span'); sep.className='content-breadcrumb-sep'; sep.textContent='/'; bc.appendChild(sep); }
+                        const a = document.createElement('span');
+                        a.className = 'content-breadcrumb';
+                        a.textContent = b.name;
+                        a.onclick = () => loadContentList(b.path);
+                        bc.appendChild(a);
+                    });
+                    // Folders first (not sorted)
+                    const list = document.getElementById('contentList');
+                    list.innerHTML = '';
+                    data.folders.forEach(f => {
+                        const div = document.createElement('div');
+                        div.className = 'content-folder';
+                        div.innerHTML = '<span style="font-size:18px;">&#128193;</span><span style="color:#fff;">' + f.name + '</span><span style="color:#666; font-size:12px; margin-left:auto;">' + f.file_count + ' files</span>';
+                        div.onclick = () => loadContentList(f.path);
+                        list.appendChild(div);
+                    });
+                    // Cache files and render with current sort
+                    contentFilesCache = data.files;
+                    renderContentFiles();
+                });
+        }
+
+        function openContentFile(path, name) {
+            fetch('/api/content/file?path=' + encodeURIComponent(path))
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) { console.error(data.error); return; }
+                    document.getElementById('contentList').style.display = 'none';
+                    document.getElementById('contentSortBar').style.display = 'none';
+                    document.getElementById('contentEditor').style.display = 'block';
+                    document.getElementById('contentFileName').textContent = name;
+                    const ta = document.getElementById('contentTextarea');
+                    ta.value = data.content;
+                    ta.dataset.path = path;
+                    document.getElementById('contentSaveStatus').textContent = '';
+                    setEditorMode(contentEditorMode);
+                    updatePreview();
+                });
+        }
+
+        function closeContentEditor() {
+            document.getElementById('contentEditor').style.display = 'none';
+            document.getElementById('contentList').style.display = 'grid';
+            document.getElementById('contentSortBar').style.display = 'flex';
+        }
+
+        function contentChanged() {
+            clearTimeout(contentSaveTimer);
+            document.getElementById('contentSaveStatus').textContent = 'Saving...';
+            document.getElementById('contentSaveStatus').style.color = '#aaa';
+            updatePreview();
+            contentSaveTimer = setTimeout(() => {
+                const ta = document.getElementById('contentTextarea');
+                fetch('/api/content/file', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ path: ta.dataset.path, content: ta.value })
+                }).then(r => r.json()).then(d => {
+                    document.getElementById('contentSaveStatus').textContent = d.ok ? 'Saved' : 'Error';
+                    document.getElementById('contentSaveStatus').style.color = d.ok ? '#4caf50' : '#e74c3c';
+                });
+            }, 1000);
+        }
+
+        function updatePreview() {
+            const ta = document.getElementById('contentTextarea');
+            const preview = document.getElementById('contentPreview');
+            if (preview.style.display !== 'none' && typeof marked !== 'undefined') {
+                preview.innerHTML = marked.parse(ta.value || '');
+            }
+        }
+
+        function setEditorMode(mode) {
+            contentEditorMode = mode;
+            const ta = document.getElementById('contentTextarea');
+            const preview = document.getElementById('contentPreview');
+            document.getElementById('modeEdit').classList.toggle('active', mode === 'edit');
+            document.getElementById('modePreview').classList.toggle('active', mode === 'preview');
+            document.getElementById('modeSplit').classList.toggle('active', mode === 'split');
+            if (mode === 'edit') {
+                ta.style.display = 'block'; ta.style.flex = '1'; ta.style.borderRadius = '0 0 8px 8px';
+                preview.style.display = 'none';
+            } else if (mode === 'preview') {
+                ta.style.display = 'none';
+                preview.style.display = 'block'; preview.style.flex = '1'; preview.style.borderRadius = '0 0 8px 8px';
+            } else {
+                ta.style.display = 'block'; ta.style.flex = '1'; ta.style.borderRadius = '0 0 0 8px';
+                preview.style.display = 'block'; preview.style.flex = '1'; preview.style.borderRadius = '0 0 8px 0';
+            }
+            updatePreview();
+        }
+
+        function insertMd(text) {
+            const ta = document.getElementById('contentTextarea');
+            const start = ta.selectionStart;
+            const end = ta.selectionEnd;
+            ta.value = ta.value.substring(0, start) + text + ta.value.substring(end);
+            ta.selectionStart = ta.selectionEnd = start + text.length;
+            ta.focus();
+            contentChanged();
+        }
+
+        function wrapMd(wrapper) {
+            const ta = document.getElementById('contentTextarea');
+            const start = ta.selectionStart;
+            const end = ta.selectionEnd;
+            const selected = ta.value.substring(start, end);
+            const wrapped = wrapper + (selected || 'text') + wrapper;
+            ta.value = ta.value.substring(0, start) + wrapped + ta.value.substring(end);
+            if (selected) {
+                ta.selectionStart = start;
+                ta.selectionEnd = start + wrapped.length;
+            } else {
+                ta.selectionStart = start + wrapper.length;
+                ta.selectionEnd = start + wrapper.length + 4;
+            }
+            ta.focus();
+            contentChanged();
+        }
+
+        function insertLink() {
+            const url = prompt('Enter URL:');
+            if (!url) return;
+            const ta = document.getElementById('contentTextarea');
+            const start = ta.selectionStart;
+            const end = ta.selectionEnd;
+            const selected = ta.value.substring(start, end) || 'link text';
+            const link = '[' + selected + '](' + url + ')';
+            ta.value = ta.value.substring(0, start) + link + ta.value.substring(end);
+            ta.selectionStart = ta.selectionEnd = start + link.length;
+            ta.focus();
+            contentChanged();
+        }
+
+    </script>
+</body>
+</html>
