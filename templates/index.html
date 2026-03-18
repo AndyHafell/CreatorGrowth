@@ -1602,12 +1602,11 @@
         }
 
         function updateCounts() {
-            const counts = { options: 0, best: 0, in_progress: 0, archived: 0, done: 0 };
+            const counts = { options: 0, best: 0, in_progress: 0, done: 0 };
             videos.forEach(v => { counts[v.status] = (counts[v.status] || 0) + 1; });
             document.getElementById('countOptions').textContent = counts.options;
             document.getElementById('countBest').textContent = counts.best;
             document.getElementById('countProgress').textContent = counts.in_progress;
-            document.getElementById('countArchived').textContent = counts.archived;
             document.getElementById('countDone').textContent = counts.done;
             document.getElementById('countCreators').textContent = channels.length;
             document.getElementById('videoCount').textContent =
@@ -1695,14 +1694,12 @@
                 return `
                     <button class="action-btn move-best" onclick="moveVideo(${v.id}, 'best', event)">Best</button>
                     <button class="action-btn move-progress" onclick="moveVideo(${v.id}, 'in_progress', event)">In Progress</button>
-                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'archived', event)">Archive</button>
                 `;
             }
             if (v.status === 'best') {
                 return `
                     <button class="action-btn move-progress" onclick="moveVideo(${v.id}, 'in_progress', event)">In Progress</button>
                     <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'options', event)">Back</button>
-                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'archived', event)">Archive</button>
                 `;
             }
             if (v.status === 'in_progress') {
@@ -1710,7 +1707,6 @@
                     <button class="action-btn move-best" onclick="moveVideo(${v.id}, 'done', event)">Done</button>
                     <button class="action-btn move-best" onclick="moveVideo(${v.id}, 'best', event)">Best</button>
                     <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'options', event)">Back</button>
-                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'archived', event)">Archive</button>
                 `;
             }
             if (v.status === 'archived') {
@@ -1733,7 +1729,6 @@
                     options: { icon: '&#127909;', title: 'No ideas yet', sub: 'Paste a YouTube URL above to start' },
                     best: { icon: '&#11088;', title: 'No best picks yet', sub: 'Move your top ideas here from Options' },
                     in_progress: { icon: '&#128640;', title: 'Nothing in progress', sub: 'Move ideas here when you start working on them' },
-                    archived: { icon: '&#128193;', title: 'Nothing archived', sub: 'Archive videos you want to keep but not act on' },
                     done: { icon: '&#9989;', title: 'Nothing done yet', sub: 'Mark In Progress videos as Done when you\'ve made them' },
                 };
                 const m = msgs[currentTab];
