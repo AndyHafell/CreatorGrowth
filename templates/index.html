@@ -2929,7 +2929,8 @@
             if (!document.fullscreenElement) closeTeleprompter();
         }
 
-        function tpExec(cmd) { document.execCommand(cmd, false, null); document.getElementById('teleprompterContent').focus(); }
+        function tpExec(cmd) { document.execCommand(cmd, false, null); document.getElementById('teleprompterContent').focus();
+            document.getElementById('teleprompterContent').addEventListener('click', function(e) { if (e.target.tagName === 'IMG') { window.open(e.target.src, '_blank'); } }); }
         function tpBlock(tag) { document.execCommand('formatBlock', false, '<' + tag + '>'); document.getElementById('teleprompterContent').focus(); }
 
         function tpKeyHandler(e) {
