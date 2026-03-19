@@ -3420,5 +3420,54 @@
         }
 
 </script>
+
+    <script>
+    // Drag-drop image upload for content editor
+    document.addEventListener('DOMContentLoaded', function() {
+        const editor = document.getElementById('notionEditor');
+        if (!editor) return;
+        editor.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            editor.style.outline = '2px dashed #5b9bd5';
+            editor.style.outlineOffset = '-4px';
+        });
+        editor.addEventListener('dragleave', function(e) {
+            if (!editor.contains(e.relatedTarget)) editor.style.outline = '';
+        });
+        editor.addEventListener('drop', async function(e) {
+            e.preventDefault();
+            editor.style.outline = '';
+            const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+            if (!files.length) return;
+            let range = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
+            for (const file of files) {
+                const fd = new FormData();
+                fd.append('file', file);
+                try {
+                    const resp = await fetch('/api/upload', { method: 'POST', body: fd });
+                    const data = await resp.json();
+                    if (data.url) {
+                        const img = document.createElement('img');
+                        img.src = data.url;
+                        img.style.cssText = 'width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;cursor:pointer;';
+                        img.alt = file.name.replace(/\.[^.]+$/, '');
+                        img.onclick = function() { this.style.width = this.style.width === '100%' ? '30%' : '100%'; };
+                        if (range) {
+                            const sel = window.getSelection();
+                            sel.removeAllRanges();
+                            sel.addRange(range);
+                            range.insertNode(document.createElement('br'));
+                            range.insertNode(img);
+                        } else {
+                            editor.appendChild(img);
+                        }
+                        if (typeof notionEditorChanged === 'function') notionEditorChanged();
+                    }
+                } catch(err) { console.error('Upload failed:', err); }
+            }
+        });
+    });
+    </script>
 </body>
 </html>
