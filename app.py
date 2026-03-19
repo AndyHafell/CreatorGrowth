@@ -1072,6 +1072,43 @@ def save_content_file():
     return jsonify({"ok": True})
 
 
+@app.route("/api/content/file", methods=["DELETE"])
+def delete_content_file():
+    """Delete a markdown file."""
+    data = request.get_json(force=True)
+    rel_path = data.get("path", "")
+    if not rel_path:
+        return jsonify({"error": "No path provided"}), 400
+    file_path = CONTENT_DIR / rel_path
+    try:
+        file_path.resolve().relative_to(CONTENT_DIR.resolve())
+    except ValueError:
+        return jsonify({"error": "Invalid path"}), 403
+    if not file_path.exists() or not file_path.is_file():
+        return jsonify({"error": "File not found"}), 404
+    file_path.unlink()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/content/folder", methods=["DELETE"])
+def delete_content_folder():
+    """Delete a folder and all its contents."""
+    data = request.get_json(force=True)
+    rel_path = data.get("path", "")
+    if not rel_path:
+        return jsonify({"error": "No path provided"}), 400
+    folder_path = CONTENT_DIR / rel_path
+    try:
+        folder_path.resolve().relative_to(CONTENT_DIR.resolve())
+    except ValueError:
+        return jsonify({"error": "Invalid path"}), 403
+    if not folder_path.exists() or not folder_path.is_dir():
+        return jsonify({"error": "Folder not found"}), 404
+    import shutil
+    shutil.rmtree(folder_path)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/videos/<int:vid>/create-content-doc", methods=["POST"])
 def create_content_doc(vid):
     """Create a starter content doc with the inspiration video's hook transcript."""
