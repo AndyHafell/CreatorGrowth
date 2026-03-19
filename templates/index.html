@@ -1540,10 +1540,23 @@
             <button onclick="closeTeleprompter()" style="background:none; border:1px solid #333; color:#e74c3c; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;" title="Exit">ESC</button>
         </div>
         <div id="tpContainer" style="max-width:680px; margin:0 auto; padding:60px 40px;">
-            <div id="teleprompterContent" contenteditable="true" spellcheck="true" oninput="tpChanged()" style="color:#e0e0e0; font-size:20px; line-height:1.8; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; outline:none; min-height:80vh;"></div>
+            <div id="teleprompterContent" contenteditable="true" spellcheck="true" oninput="tpChanged()" style="color:#e0e0e0; font-size:20px; line-height:1.8; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; outline:none; min-height:80vh;" class="tp-content"></div>
         </div>
     </div>
 
+    <style>
+        .tp-content h1 { font-size:1.8em; font-weight:700; margin:1.2em 0 0.6em; color:#fff; }
+        .tp-content h2 { font-size:1.4em; font-weight:600; margin:1.1em 0 0.5em; color:#f0f0f0; }
+        .tp-content h3 { font-size:1.15em; font-weight:600; margin:1em 0 0.4em; color:#e8e8e8; }
+        .tp-content p { margin:0.8em 0; }
+        .tp-content ul, .tp-content ol { margin:0.6em 0; padding-left:1.8em; }
+        .tp-content li { margin:0.35em 0; }
+        .tp-content blockquote { border-left:3px solid #444; padding-left:16px; margin:0.8em 0; color:#aaa; }
+        .tp-content hr { border:none; border-top:1px solid #333; margin:1.5em 0; }
+        .tp-content strong { color:#fff; }
+        .tp-content a { color:#5b9bd5; }
+        .tp-content code { background:#1a1a2e; padding:2px 6px; border-radius:3px; font-size:0.9em; }
+    </style>
     <div class="toast" id="toast"></div>
 
     <script>
@@ -2892,6 +2905,13 @@
         function tpBlock(tag) { document.execCommand('formatBlock', false, '<' + tag + '>'); document.getElementById('teleprompterContent').focus(); }
 
         function tpKeyHandler(e) {
+            // Alt+Cmd+0 = normal text
+            if (e.altKey && e.metaKey && e.key === '0') {
+                e.preventDefault();
+                document.execCommand('formatBlock', false, '<p>');
+                document.getElementById('teleprompterContent').focus();
+                return;
+            }
             // Alt+Cmd+1/2/3 = H1/H2/H3
             if (e.altKey && e.metaKey && e.key >= '1' && e.key <= '3') {
                 e.preventDefault();
