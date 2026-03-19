@@ -134,9 +134,19 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             text TEXT NOT NULL,
             posted_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            blotato_id TEXT DEFAULT ''
+            blotato_id TEXT DEFAULT '',
+            media_url TEXT DEFAULT '',
+            thread_json TEXT DEFAULT '[]'
         )
     """)
+    for col, coltype, default in [
+        ('media_url', 'TEXT', "''"),
+        ('thread_json', 'TEXT', "'[]'"),
+    ]:
+        try:
+            conn.execute(f'ALTER TABLE tweets ADD COLUMN {col} {coltype} DEFAULT {default}')
+        except:
+            pass
     conn.commit()
     conn.close()
 
@@ -1335,6 +1345,9 @@ def import_keywords_airtable():
 def twitter_post():
     data = request.get_json()
     text = (data or {}).get("text", "").strip()
+    media_url = (data or {}).get("media_url", "").strip()
+    thread_parts = (data or {}).get("thread", [])  # list of {text, media_url}
+
     if not text:
         return jsonify({"error": "No text provided"}), 400
     if len(text) > 280:
@@ -1342,12 +1355,31 @@ def twitter_post():
     if not BLOTATO_API_KEY:
         return jsonify({"error": "BLOTATO_API_KEY not configured"}), 500
 
-    payload = json.dumps({
-        "post": {
-            "accountId": BLOTATO_X_ACCOUNT_ID,
-            "text": text
-        }
-    }).encode()
+    # Build post payload
+    post_obj = {
+        "accountId": BLOTATO_X_ACCOUNT_ID,
+        "text": text
+    }
+    if media_url:
+        # Convert relative URL to full public URL
+        full_url = "https://creatorgrowth.com" + media_url if media_url.startswith("/") else media_url
+        post_obj["mediaUrls"] = [full_url]
+
+    # Thread support: additional parts beyond the first tweet
+    if thread_parts:
+        thread_items = []
+        for part in thread_parts:
+            item = {"text": part.get("text", "").strip()}
+            if part.get("media_url"):
+                mu = part["media_url"]
+                full_mu = "https://creatorgrowth.com" + mu if mu.startswith("/") else mu
+                item["mediaUrls"] = [full_mu]
+            if item["text"]:
+                thread_items.append(item)
+        if thread_items:
+            post_obj["thread"] = thread_items
+
+    payload = json.dumps({"post": post_obj}).encode()
 
     req = Request(
         "https://backend.blotato.com/v2/posts",
@@ -1367,8 +1399,8 @@ def twitter_post():
 
     conn = get_db()
     conn.execute(
-        "INSERT INTO tweets (text, blotato_id) VALUES (?, ?)",
-        (text, blotato_id)
+        "INSERT INTO tweets (text, blotato_id, media_url, thread_json) VALUES (?, ?, ?, ?)",
+        (text, blotato_id, media_url, json.dumps(thread_parts))
     )
     conn.commit()
     conn.close()
@@ -1380,7 +1412,7 @@ def twitter_post():
 def twitter_feed():
     conn = get_db()
     rows = conn.execute(
-        "SELECT id, text, posted_at, blotato_id FROM tweets ORDER BY id DESC LIMIT 50"
+        "SELECT id, text, posted_at, blotato_id, media_url, thread_json FROM tweets ORDER BY id DESC LIMIT 50"
     ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
