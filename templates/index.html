@@ -2349,11 +2349,19 @@
                             btn.className = 'doc-open-btn';
                             btn.textContent = 'Open';
                             btn.style.cssText = 'background:rgba(91,155,213,0.15); color:#5b9bd5; border:1px solid rgba(91,155,213,0.3); border-radius:4px; padding:2px 8px; font-size:11px; cursor:pointer; margin-left:4px;';
-                            btn.onclick = () => {
-                                const path = valInput.value;
-                                if (path) {
-                                    window.open('/content#' + encodeURIComponent(path), '_blank');
+                            btn.onclick = async () => {
+                                let path = valInput.value.trim();
+                                if (!path) return;
+                                // If it looks like just a filename (no /), resolve to full path
+                                if (!path.includes('/')) {
+                                    if (!path.endsWith('.md')) path += '.md';
+                                    try {
+                                        const resp = await fetch('/api/content/resolve?name=' + encodeURIComponent(path));
+                                        const data = await resp.json();
+                                        if (data.path) path = data.path;
+                                    } catch (e) {}
                                 }
+                                window.open('/content#' + encodeURIComponent(path), '_blank');
                             };
                             btn.style.display = valInput.value ? '' : 'none';
                             valInput.parentNode.insertBefore(btn, valInput.nextSibling);
