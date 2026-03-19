@@ -1503,6 +1503,12 @@
                         if (stillMissing > 0) deepBackfillDates(stillMissing);
                     });
             }
+            // Backfill missing view counts
+            const missingViews = videos.filter(v => !v.view_count || v.view_count === 0).length;
+            if (missingViews > 0) {
+                showToast(`Fetching view counts for ${missingViews} videos...`);
+                backfillViews(missingViews);
+            }
         })();
 
         async function loadVideos() {
@@ -1586,7 +1592,7 @@
                 const cutoff = new Date();
                 cutoff.setDate(cutoff.getDate() - days);
                 result = result.filter(v => {
-                    if (!v.published_at) return true;
+                    if (!v.published_at) return false;
                     return new Date(v.published_at) >= cutoff;
                 });
             }
@@ -1816,6 +1822,20 @@
                 } catch (e) { break; }
             }
             if (remaining === 0) showToast('All dates filled!');
+        }
+
+        async function backfillViews(total) {
+            let remaining = total;
+            while (remaining > 0) {
+                try {
+                    const resp = await fetch('/api/videos/backfill-views?limit=10', { method: 'POST' });
+                    const data = await resp.json();
+                    remaining = data.remaining;
+                    if (data.backfilled > 0) await loadVideos();
+                    if (data.backfilled === 0) break;
+                } catch (e) { break; }
+            }
+            if (remaining === 0) showToast('All view counts filled!');
         }
 
         // ── Channels / Creators ──────────────────────────────
