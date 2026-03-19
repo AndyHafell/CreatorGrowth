@@ -3445,10 +3445,15 @@
     <script>
     function openAllImages() {
         var editors = [document.getElementById('modalDocEditor'), document.getElementById('notionEditor')];
-        var imgs = [];
-        editors.forEach(function(ed) { if (ed) imgs = imgs.concat(Array.from(ed.querySelectorAll('img'))); });
-        if (!imgs.length) { alert('No images found in this document.'); return; }
-        imgs.forEach(function(img) { window.open(img.src, '_blank'); });
+        var srcs = [];
+        editors.forEach(function(ed) {
+            if (ed) ed.querySelectorAll('img').forEach(function(img) {
+                if (img.src && !img.src.includes('youtube.com')) srcs.push(img.src);
+            });
+        });
+        if (!srcs.length) { alert('No images found in this document.'); return; }
+        var params = srcs.map(function(s) { return 'src=' + encodeURIComponent(s); }).join('&');
+        window.open('/image-gallery?' + params, '_blank');
     }
     </script>
     <script>
