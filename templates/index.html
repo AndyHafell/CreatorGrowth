@@ -3421,51 +3421,70 @@
 
 </script>
 
+
     <script>
-    // Drag-drop image upload for content editor
+    // Image upload: drag-drop + paste for content editor
     document.addEventListener('DOMContentLoaded', function() {
         const editor = document.getElementById('notionEditor');
         if (!editor) return;
+
+        async function uploadAndInsert(file, clientX, clientY) {
+            if (!file || !file.type.startsWith('image/')) return;
+            const fd = new FormData();
+            fd.append('file', file);
+            try {
+                const resp = await fetch('/api/upload', { method: 'POST', body: fd });
+                const data = await resp.json();
+                if (!data.url) return;
+                const img = document.createElement('img');
+                img.src = data.url;
+                img.style.cssText = 'width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;cursor:pointer;';
+                img.onclick = function() { this.style.width = this.style.width === '100%' ? '30%' : '100%'; };
+                let range = (clientX != null && document.caretRangeFromPoint) ? document.caretRangeFromPoint(clientX, clientY) : null;
+                if (range) {
+                    const sel = window.getSelection();
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    range.collapse(false);
+                    range.insertNode(img);
+                } else {
+                    editor.appendChild(img);
+                }
+                if (typeof notionEditorChanged === 'function') notionEditorChanged();
+            } catch(err) { console.error('Upload failed:', err); }
+        }
+
+        // Drag-drop — use capture phase to beat contenteditable
+        editor.addEventListener('dragenter', function(e) {
+            if (e.dataTransfer.types.includes('Files')) {
+                e.preventDefault(); e.stopPropagation();
+                editor.style.outline = '2px dashed #5b9bd5';
+                editor.style.outlineOffset = '-4px';
+            }
+        }, true);
         editor.addEventListener('dragover', function(e) {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'copy';
-            editor.style.outline = '2px dashed #5b9bd5';
-            editor.style.outlineOffset = '-4px';
-        });
+            if (e.dataTransfer.types.includes('Files')) {
+                e.preventDefault(); e.stopPropagation();
+                e.dataTransfer.dropEffect = 'copy';
+            }
+        }, true);
         editor.addEventListener('dragleave', function(e) {
             if (!editor.contains(e.relatedTarget)) editor.style.outline = '';
-        });
-        editor.addEventListener('drop', async function(e) {
-            e.preventDefault();
-            editor.style.outline = '';
+        }, true);
+        editor.addEventListener('drop', function(e) {
             const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
             if (!files.length) return;
-            let range = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
-            for (const file of files) {
-                const fd = new FormData();
-                fd.append('file', file);
-                try {
-                    const resp = await fetch('/api/upload', { method: 'POST', body: fd });
-                    const data = await resp.json();
-                    if (data.url) {
-                        const img = document.createElement('img');
-                        img.src = data.url;
-                        img.style.cssText = 'width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;cursor:pointer;';
-                        img.alt = file.name.replace(/\.[^.]+$/, '');
-                        img.onclick = function() { this.style.width = this.style.width === '100%' ? '30%' : '100%'; };
-                        if (range) {
-                            const sel = window.getSelection();
-                            sel.removeAllRanges();
-                            sel.addRange(range);
-                            range.insertNode(document.createElement('br'));
-                            range.insertNode(img);
-                        } else {
-                            editor.appendChild(img);
-                        }
-                        if (typeof notionEditorChanged === 'function') notionEditorChanged();
-                    }
-                } catch(err) { console.error('Upload failed:', err); }
-            }
+            e.preventDefault(); e.stopPropagation();
+            editor.style.outline = '';
+            files.forEach(f => uploadAndInsert(f, e.clientX, e.clientY));
+        }, true);
+
+        // Paste — intercept image data and upload instead of embedding base64
+        editor.addEventListener('paste', function(e) {
+            const items = Array.from(e.clipboardData.items || []).filter(i => i.type.startsWith('image/'));
+            if (!items.length) return;
+            e.preventDefault();
+            items.forEach(item => uploadAndInsert(item.getAsFile(), null, null));
         });
     });
     </script>
