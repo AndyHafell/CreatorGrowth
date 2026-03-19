@@ -1383,28 +1383,46 @@ def image_gallery():
   #lightbox img {{ max-width:95%; max-height:95vh; object-fit:contain; border-radius:8px; }}
   #lightbox-close {{ position:fixed; top:20px; right:28px; color:#aaa; font-size:32px; cursor:pointer; line-height:1; }}
   #lightbox-close:hover {{ color:#fff; }}
+  #lb-prev, #lb-next {{ position:fixed; top:50%; transform:translateY(-50%); color:#fff; font-size:48px; cursor:pointer; padding:0 24px; user-select:none; opacity:0.6; display:flex; align-items:center; }}
+  #lb-prev {{ left:0; }} #lb-next {{ right:0; }}
+  #lb-prev:hover, #lb-next:hover {{ opacity:1; }}
+  #lb-counter {{ position:fixed; bottom:20px; left:50%; transform:translateX(-50%); color:#aaa; font-size:14px; }}
 </style>
 </head>
 <body>
 {imgs_html}
 <div id="lightbox" onclick="closeLightbox()">
   <span id="lightbox-close" onclick="closeLightbox()">&#x2715;</span>
-  <img id="lightbox-img" src="">
+  <span id="lb-prev" onclick="event.stopPropagation();navigate(-1)">&#8592;</span>
+  <img id="lightbox-img" src="" onclick="event.stopPropagation()">
+  <span id="lb-next" onclick="event.stopPropagation();navigate(1)">&#8594;</span>
+  <span id="lb-counter"></span>
 </div>
 <script>
-  function openLightbox(src) {{
-    document.getElementById('lightbox-img').src = src;
+  var imgs = Array.from(document.querySelectorAll('.img-wrap img'));
+  var current = 0;
+  function openLightbox(idx) {{
+    current = idx;
+    document.getElementById('lightbox-img').src = imgs[current].src;
+    document.getElementById('lb-counter').textContent = (current+1) + ' / ' + imgs.length;
+    document.getElementById('lb-prev').style.display = imgs.length > 1 ? 'flex' : 'none';
+    document.getElementById('lb-next').style.display = imgs.length > 1 ? 'flex' : 'none';
     document.getElementById('lightbox').classList.add('active');
   }}
   function closeLightbox() {{
     document.getElementById('lightbox').classList.remove('active');
     document.getElementById('lightbox-img').src = '';
   }}
-  document.querySelectorAll('.img-wrap img').forEach(function(img) {{
-    img.onclick = function() {{ openLightbox(this.src); }};
-  }});
+  function navigate(dir) {{
+    current = (current + dir + imgs.length) % imgs.length;
+    document.getElementById('lightbox-img').src = imgs[current].src;
+    document.getElementById('lb-counter').textContent = (current+1) + ' / ' + imgs.length;
+  }}
+  imgs.forEach(function(img, i) {{ img.onclick = function() {{ openLightbox(i); }}; }});
   document.addEventListener('keydown', function(e) {{
     if (e.key === 'Escape') closeLightbox();
+    if (e.key === 'ArrowRight') navigate(1);
+    if (e.key === 'ArrowLeft') navigate(-1);
   }});
 </script>
 </body>
