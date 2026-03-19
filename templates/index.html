@@ -1446,6 +1446,7 @@
                 <button onclick="closeContentEditor()" style="background:rgba(255,255,255,0.06); color:#aaa; border:1px solid rgba(255,255,255,0.1); border-radius:6px; padding:6px 14px; cursor:pointer; font-size:13px; transition:all 0.15s;" onmouseover="this.style.background='rgba(255,255,255,0.1)';this.style.color='#fff'" onmouseout="this.style.background='rgba(255,255,255,0.06)';this.style.color='#aaa'">Back</button>
                 <span id="contentFileName" style="color:#fff; font-size:18px; font-weight:600;"></span>
                 <span id="contentSaveStatus" style="color:#4caf50; font-size:12px; margin-left:auto;"></span>
+                <button onclick="openAllImages()" style="background:rgba(91,155,213,0.12); color:#5b9bd5; border:1px solid rgba(91,155,213,0.3); border-radius:6px; padding:6px 14px; cursor:pointer; font-size:13px; transition:all 0.15s;" onmouseover="this.style.background='rgba(91,155,213,0.22)'" onmouseout="this.style.background='rgba(91,155,213,0.12)'">&#128444; Open All Images</button>
                 <button id="contentDeleteBtn" onclick="deleteCurrentContentFile()" style="background:rgba(231,76,60,0.1); color:#e74c3c; border:1px solid rgba(231,76,60,0.25); border-radius:6px; padding:6px 14px; cursor:pointer; font-size:13px; transition:all 0.15s;" onmouseover="this.style.background='rgba(231,76,60,0.2)';this.style.borderColor='rgba(231,76,60,0.5)'" onmouseout="this.style.background='rgba(231,76,60,0.1)';this.style.borderColor='rgba(231,76,60,0.25)'">&times; Delete</button>
             </div>
             <div class="notion-toolbar" id="notionToolbar">
@@ -3440,6 +3441,15 @@
 
 
 
+    <script>
+    function openAllImages() {
+        var editor = document.getElementById('notionEditor');
+        if (!editor) return;
+        var imgs = editor.querySelectorAll('img');
+        if (!imgs.length) { alert('No images found in this document.'); return; }
+        imgs.forEach(function(img) { window.open(img.src, '_blank'); });
+    }
+    </script>
     <script>
     document.addEventListener('dragover', function(e) { e.preventDefault(); }, false);
     document.addEventListener('drop', function(e) { e.preventDefault(); }, false);
