@@ -1568,7 +1568,7 @@
         .tp-content strong { color:#fff; }
         .tp-content a { color:#5b9bd5; }
         .tp-content code { background:#1a1a2e; padding:2px 6px; border-radius:3px; font-size:0.9em; }
-        .tp-content img { width:100%; max-width:680px; height:auto; display:block; margin:16px auto; border-radius:8px; }
+        .tp-content img { width:100% !important; max-width:680px !important; height:auto !important; display:block; margin:16px auto; border-radius:8px; }
     </style>
     <div class="toast" id="toast"></div>
 
@@ -2396,7 +2396,7 @@
                     .then(data => {
                         if (data.error) { console.error(data.error); return; }
                         const editor = document.getElementById('modalDocContent');
-                        editor.innerHTML = typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content;
+                        editor.innerHTML = (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content).replace(/<img /g, '<img style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;" ');
                     });
             } else {
                 modalDocPath = null;
@@ -2890,7 +2890,7 @@
                     ta.value = data.content;
                     ta.dataset.path = path;
                     const editor = document.getElementById('notionEditor');
-                    editor.innerHTML = typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content;
+                    editor.innerHTML = (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content).replace(/<img /g, '<img style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;" ');
                     document.getElementById('contentSaveStatus').textContent = '';
                 });
         }
@@ -3028,7 +3028,7 @@
                         editor.innerHTML = '<span style="color:#e74c3c;">File not found: ' + path + '</span>';
                         return;
                     }
-                    editor.innerHTML = typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content;
+                    editor.innerHTML = (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content).replace(/<img /g, '<img style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;" ');
                 });
             container.scrollIntoView({ behavior: 'smooth' });
         }
