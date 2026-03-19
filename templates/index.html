@@ -1458,36 +1458,7 @@
                 <button class="add-field-btn" onclick="addCustomField()">+ Add Field</button>
             </div>
 
-            <hr class="modal-divider">
-            <div class="modal-content-doc-section">
-                <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
-                    <h3 style="margin:0; color:#fff; font-size:14px; text-transform:uppercase; letter-spacing:1px; color:#888;">Content Doc</h3>
-                    <span class="content-doc-status" id="contentDocStatus"></span>
-                    <span id="modalDocSaveStatus" style="font-size:11px; color:#4caf50; margin-left:auto;"></span>
-                </div>
-                <div id="modalDocEmpty" style="display:none;">
-                    <button class="create-content-doc-btn" id="createContentDocBtn" onclick="createContentDoc()">
-                        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zM6 20V4h5v7h7v9H6z"/></svg>
-                        Create Content Doc
-                    </button>
-                </div>
-                <div id="modalDocEditor" style="display:none;">
-                    <div class="modal-doc-toolbar">
-                        <button onclick="modalExecCmd('bold')" title="Bold"><b>B</b></button>
-                        <button onclick="modalExecCmd('italic')" title="Italic"><i>I</i></button>
-                        <button onclick="modalExecCmd('underline')" title="Underline"><u>U</u></button>
-                        <span class="toolbar-sep"></span>
-                        <button onclick="modalExecBlock('h1')" title="H1">H1</button>
-                        <button onclick="modalExecBlock('h2')" title="H2">H2</button>
-                        <button onclick="modalExecBlock('h3')" title="H3">H3</button>
-                        <span class="toolbar-sep"></span>
-                        <button onclick="modalExecCmd('insertUnorderedList')" title="Bullets">&#8226;</button>
-                        <button onclick="modalExecCmd('insertOrderedList')" title="Numbers">1.</button>
-                        <button onclick="modalExecBlock('blockquote')" title="Quote">&#8220;</button>
-                    </div>
-                    <div id="modalDocContent" class="modal-doc-editor" contenteditable="true" spellcheck="true"></div>
-                </div>
-            </div>
+
 
             <div class="modal-save-bar">
                 <span class="modal-saved-indicator" id="savedIndicator">Saved</span>
@@ -2131,11 +2102,7 @@
             renderTitleRow('originalTitleRow', modalDetails.original_titles, 'original');
             renderCustomFields();
 
-            // Check if content doc already exists and show View button
-            const existingDoc = modalDetails.custom_fields.find(f => f.key === 'Content Doc' && f.value);
-            showViewContentDocBtn(existingDoc ? existingDoc.value : null);
-                makeContentDocFieldClickable();
-            document.getElementById('contentDocStatus').textContent = '';
+            makeContentDocFieldClickable();
 
             document.getElementById('savedIndicator').classList.remove('show');
             document.getElementById('modalOverlay').classList.add('open');
@@ -2338,18 +2305,12 @@
                             btn.onclick = () => {
                                 const path = valInput.value;
                                 if (path) {
-                                    // Load in the inline editor
-                                    showViewContentDocBtn(path);
-                                    // Scroll to the editor
-                                    document.getElementById('modalDocEditor').scrollIntoView({ behavior: 'smooth' });
+                                    window.open('/content#' + encodeURIComponent(path), '_blank');
                                 }
                             };
                             valInput.parentNode.insertBefore(btn, valInput.nextSibling);
                         }
-                        // Also: when the value changes, reload the doc
-                        valInput.addEventListener('change', () => {
-                            if (valInput.value) showViewContentDocBtn(valInput.value);
-                        });
+
                     }
                 });
             }, 100);
