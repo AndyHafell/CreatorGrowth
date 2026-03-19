@@ -211,7 +211,7 @@ def auth_status():
 
 @app.before_request
 def require_auth():
-    open_paths = {"/", "/api/login", "/api/auth-status", "/static/", "/image-viewer"}
+    open_paths = {"/", "/api/login", "/api/auth-status", "/static/", "/image-viewer", "/api/current-image", "/api/set-image"}
     path = request.path
     if path == "/" or path.startswith("/static/") or path in open_paths:
         return None
@@ -1301,6 +1301,18 @@ Where: Free inside the Skool community (link in description)
 
 
 
+
+current_image_url = {"url": None}
+
+@app.route("/api/set-image", methods=["POST"])
+def set_image():
+    current_image_url["url"] = request.json.get("url")
+    return jsonify({"ok": True})
+
+@app.route("/api/current-image", methods=["GET"])
+def get_current_image():
+    return jsonify({"url": current_image_url["url"]})
+
 @app.route("/image-viewer")
 def image_viewer():
     return """<!DOCTYPE html>
@@ -1309,8 +1321,9 @@ def image_viewer():
 <meta charset="utf-8">
 <title>Image Viewer</title>
 <style>
-  body { margin:0; background:#111; display:flex; align-items:center; justify-content:center; min-height:100vh; }
-  img { max-width:100%; max-height:100vh; object-fit:contain; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#111; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+  img { max-width:100%; max-height:100vh; object-fit:contain; transition: opacity 0.2s; }
   #placeholder { color:#444; font-family:sans-serif; font-size:18px; }
 </style>
 </head>
@@ -1318,19 +1331,23 @@ def image_viewer():
   <span id="placeholder">Waiting for image...</span>
   <img id="img" src="" style="display:none;">
   <script>
-    window.name = 'imageViewer';
-    function showImg(src) {
-      if (!src) return;
-      document.getElementById('img').src = src;
-      document.getElementById('img').style.display = 'block';
-      document.getElementById('placeholder').style.display = 'none';
-      document.title = src.split('/').pop();
+    var lastUrl = null;
+    function poll() {
+      fetch('/api/current-image')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.url && data.url !== lastUrl) {
+            lastUrl = data.url;
+            var img = document.getElementById('img');
+            img.src = data.url;
+            img.style.display = 'block';
+            document.getElementById('placeholder').style.display = 'none';
+          }
+        })
+        .catch(function(){});
     }
-    // Check URL param on load
-    var params = new URLSearchParams(window.location.search);
-    if (params.get('src')) showImg(params.get('src'));
-    // Listen for postMessage from teleprompter
-    window.addEventListener('message', function(e) { if (e.data && e.data.src) showImg(e.data.src); });
+    setInterval(poll, 800);
+    poll();
   </script>
 </body>
 </html>"""
