@@ -211,7 +211,7 @@ def auth_status():
 
 @app.before_request
 def require_auth():
-    open_paths = {"/", "/api/login", "/api/auth-status", "/static/", "/image-viewer", "/api/current-image", "/api/set-image"}
+    open_paths = {"/", "/api/login", "/api/auth-status", "/static/", "/image-viewer", "/image-gallery", "/api/current-image", "/api/set-image"}
     path = request.path
     if path == "/" or path.startswith("/static/") or path in open_paths:
         return None
@@ -1350,6 +1350,26 @@ def image_viewer():
     poll();
   </script>
 </body>
+</html>"""
+
+
+@app.route("/image-gallery")
+def image_gallery():
+    import json as _json
+    srcs = request.args.getlist('src')
+    imgs_html = ''.join(f'<div class="img-wrap"><img src="{s}"></div>' for s in srcs)
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"><title>Images</title>
+<style>
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ background:#111; padding:20px; display:flex; flex-wrap:wrap; gap:16px; justify-content:center; }}
+  .img-wrap {{ flex:1 1 45%; max-width:48%; }}
+  .img-wrap img {{ width:100%; height:auto; border-radius:8px; display:block; }}
+</style>
+</head>
+<body>{imgs_html}</body>
 </html>"""
 
 @app.route("/api/upload", methods=["POST"])
