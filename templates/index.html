@@ -1552,6 +1552,9 @@
             <button onclick="closeTeleprompter()" style="background:none; border:1px solid #333; color:#e74c3c; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;" title="Exit">ESC</button>
         </div>
         <div id="tpContainer" style="max-width:680px; margin:0 auto; padding:60px 40px;">
+            <div id="tpLightbox" onclick="this.style.display='none'" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.92);z-index:999999;align-items:center;justify-content:center;cursor:zoom-out;">
+                <img id="tpLightboxImg" src="" style="max-width:90%;max-height:90%;object-fit:contain;border-radius:8px;">
+            </div>
             <div id="teleprompterContent" contenteditable="true" spellcheck="true" oninput="tpChanged()" style="color:#e0e0e0; font-size:20px; line-height:1.8; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; outline:none; min-height:80vh;" class="tp-content"></div>
         </div>
     </div>
@@ -2906,21 +2909,19 @@
             const tp = document.getElementById('teleprompterContent');
             tp.innerHTML = editor.innerHTML;
             tp.querySelectorAll('img').forEach(function(img) {
-                var a = document.createElement('a');
-                a.href = img.src;
-                a.style.display = 'block';
-                a.style.cursor = 'pointer';
-                a.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    window.open(img.src, 'imageViewer', 'width=1400,height=900,menubar=no,toolbar=no,location=no,status=no');
+                img.style.cursor = 'zoom-in';
+                img.addEventListener('click', function(e) {
+                    e.preventDefault(); e.stopPropagation();
+                    var lb = document.getElementById('tpLightbox');
+                    document.getElementById('tpLightboxImg').src = img.src;
+                    lb.style.display = 'flex';
                 });
-                img.parentNode.insertBefore(a, img);
-                a.appendChild(img);
             });
             overlay.style.display = 'block';
             overlay.requestFullscreen().catch(() => {});
             document.addEventListener('fullscreenchange', tpFsChange);
             document.addEventListener('keydown', tpKeyHandler);
+            document.addEventListener('keydown', function(e) { if (e.key === 'Escape') { var lb = document.getElementById('tpLightbox'); if (lb && lb.style.display !== 'none') { lb.style.display = 'none'; e.stopPropagation(); } } });
             tp.addEventListener('input', tpAutoFormat);
         }
 
