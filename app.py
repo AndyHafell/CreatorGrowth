@@ -1059,6 +1059,23 @@ def list_content():
     return jsonify({"folders": folders, "files": files, "breadcrumbs": crumbs})
 
 
+@app.route("/api/content/resolve", methods=["GET"])
+def resolve_content_path():
+    """Resolve a filename to its full relative path within content directory."""
+    filename = request.args.get("name", "").strip()
+    if not filename:
+        return jsonify({"error": "No filename provided"}), 400
+    # Search all subdirectories for this filename
+    for f in CONTENT_DIR.rglob("*.md"):
+        if f.name == filename:
+            try:
+                f.resolve().relative_to(CONTENT_DIR.resolve())
+            except ValueError:
+                continue
+            return jsonify({"path": str(f.relative_to(CONTENT_DIR))})
+    return jsonify({"error": "File not found"}), 404
+
+
 @app.route("/api/content/file", methods=["GET"])
 def get_content_file():
     """Read a markdown file and return its content."""
