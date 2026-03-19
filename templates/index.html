@@ -3039,17 +3039,17 @@
                 }
                 feed.innerHTML = tweets.map(function(t) {
                     const d = new Date(t.posted_at + ' UTC');
-                    const diff = Math.floor((Date.now() - d) / 1000);
-                    let ago;
-                    if (diff < 60) ago = diff + 's ago';
-                    else if (diff < 3600) ago = Math.floor(diff/60) + 'm ago';
-                    else if (diff < 86400) ago = Math.floor(diff/3600) + 'h ago';
-                    else ago = Math.floor(diff/86400) + 'd ago';
+                    const dateStr = d.toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'});
+                    const timeStr = d.toLocaleTimeString('en-US', {hour: 'numeric', minute: '2-digit'});
 
-                    const escaped = t.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
-                    let imgHtml = '';
-                    if (t.media_url) {
-                        imgHtml = '<img src="' + t.media_url + '" style="max-width:100%; max-height:280px; border-radius:8px; object-fit:cover; margin-top:8px; display:block;">';
+                    function escT(s) {
+                        return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+                    }
+                    function mediaBlock(url) {
+                        if (!url) return '';
+                        return '<div style="margin-top:10px; border-radius:14px; overflow:hidden; border:1px solid #2a2a2a;">' +
+                            '<img src="' + url + '" style="width:100%; max-height:320px; object-fit:cover; display:block;">' +
+                            '</div>';
                     }
 
                     let threadHtml = '';
@@ -3057,19 +3057,35 @@
                         const parts = JSON.parse(t.thread_json || '[]');
                         if (parts.length) {
                             threadHtml = parts.map(function(p) {
-                                const pt = (p.text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
-                                let pImg = p.media_url ? '<img src="' + p.media_url + '" style="max-width:100%; max-height:280px; border-radius:8px; object-fit:cover; margin-top:6px; display:block;">' : '';
-                                return '<div style="border-left:2px solid #333; margin-top:10px; padding:10px 0 0 12px;">' +
-                                    '<p style="color:#f1f1f1; font-size:14px; line-height:1.5; margin:0;">' + pt + '</p>' + pImg +
+                                return '<div style="display:flex; gap:10px; margin-top:14px;">' +
+                                    '<div style="display:flex; flex-direction:column; align-items:center; gap:0;">' +
+                                    '<div style="width:2px; flex:1; background:#333; min-height:12px;"></div>' +
+                                    '<img src="/static/andy_avatar.png" style="width:32px; height:32px; border-radius:50%; object-fit:cover; flex-shrink:0;">' +
+                                    '</div>' +
+                                    '<div style="flex:1; padding-top:0;">' +
+                                    '<p style="color:#f1f1f1; font-size:14px; line-height:1.5; margin:0;">' + escT(p.text) + '</p>' +
+                                    mediaBlock(p.media_url) +
+                                    '</div>' +
                                     '</div>';
                             }).join('');
                         }
                     } catch(e) {}
 
-                    return '<div style="background:#1a1a1a; border:1px solid #2a2a2a; border-radius:12px; padding:16px;">' +
-                        '<p style="color:#f1f1f1; font-size:15px; line-height:1.5; margin:0;">' + escaped + '</p>' +
-                        imgHtml + threadHtml +
-                        '<div style="margin-top:10px;"><span style="color:#555; font-size:12px;">' + ago + '</span></div>' +
+                    return '<div style="background:#111; border:1px solid #2a2a2a; border-radius:16px; padding:16px 18px;">' +
+                        '<div style="display:flex; gap:12px;">' +
+                        '<img src="/static/andy_avatar.png" style="width:44px; height:44px; border-radius:50%; object-fit:cover; flex-shrink:0;">' +
+                        '<div style="flex:1; min-width:0;">' +
+                        '<div style="display:flex; align-items:baseline; gap:6px; flex-wrap:wrap;">' +
+                        '<span style="color:#fff; font-weight:700; font-size:15px;">Al Andy</span>' +
+                        '<span style="color:#666; font-size:14px;">@ItsAIAndy</span>' +
+                        '<span style="color:#444; font-size:13px;">&middot;</span>' +
+                        '<span style="color:#666; font-size:13px;">' + dateStr + ' &middot; ' + timeStr + '</span>' +
+                        '</div>' +
+                        '<p style="color:#e7e9ea; font-size:15px; line-height:1.55; margin:6px 0 0;">' + escT(t.text) + '</p>' +
+                        mediaBlock(t.media_url) +
+                        threadHtml +
+                        '</div>' +
+                        '</div>' +
                         '</div>';
                 }).join('');
             } catch(e) {
