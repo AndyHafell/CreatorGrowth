@@ -2844,6 +2844,36 @@
 
         let tweetImages = {};  // index -> {file, url}
 
+        document.addEventListener('paste', function(e) {
+            // Only handle paste when Twitter tab is active
+            if (!document.getElementById('twitterContainer') ||
+                document.getElementById('twitterContainer').style.display === 'none') return;
+            const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+            let imageItem = null;
+            for (let i = 0; i < items.length; i++) {
+                if (items[i].type.indexOf('image') !== -1) { imageItem = items[i]; break; }
+            }
+            if (!imageItem) return;
+            e.preventDefault();
+            // Find which tweet-part is focused (or default to first)
+            const focused = document.activeElement;
+            const part = focused && focused.closest ? focused.closest('.tweet-part') : null;
+            const index = part ? parseInt(part.dataset.index) : 0;
+            const file = imageItem.getAsFile();
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(ev) {
+                tweetImages[index] = {file, dataUrl: ev.target.result};
+                let preview = document.getElementById('tweetImagePreview_' + index);
+                let img = document.getElementById('tweetPreviewImg_' + index);
+                if (preview && img) {
+                    img.src = ev.target.result;
+                    preview.style.display = 'block';
+                }
+            };
+            reader.readAsDataURL(file);
+        });
+
         function addThreadPart() {
             const parts = document.getElementById('tweetThreadParts');
             const index = parts.children.length;
