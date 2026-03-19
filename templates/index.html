@@ -1242,6 +1242,17 @@
         .notion-editor ::selection { background:rgba(91,155,213,0.3); }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        if (typeof marked !== 'undefined') {
+          const renderer = new marked.Renderer();
+          renderer.image = function(href, title, text) {
+            return '<img src="' + href + '" alt="' + (text||'') + '" style="width:30%;height:auto;display:block;margin:14px 0;border-radius:6px;cursor:pointer;" onclick="this.style.width=this.style.width==='100%' ? '30%' : '100%'">';
+          };
+          marked.use({ renderer: renderer });
+        }
+      });
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/turndown/dist/turndown.js"></script>
 </head>
 <body>
