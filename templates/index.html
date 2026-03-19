@@ -1517,9 +1517,30 @@
         </div>
     </div>
 
-    <div id="teleprompterOverlay" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:#000; z-index:99999; overflow-y:auto; cursor:none;">
-        <div style="max-width:680px; margin:0 auto; padding:60px 40px; color:#e0e0e0; font-size:22px; line-height:1.9; font-family:Georgia, 'Times New Roman', serif;">
-            <div id="teleprompterContent"></div>
+    <div id="teleprompterOverlay" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:#000; z-index:99999; overflow-y:auto;">
+        <div id="tpToolbar" style="position:fixed; top:0; left:0; right:0; display:flex; align-items:center; gap:6px; padding:8px 16px; background:rgba(0,0,0,0.85); border-bottom:1px solid #222; z-index:100000; opacity:0; transition:opacity 0.2s;" onmouseenter="this.style.opacity=1" onmouseleave="this.style.opacity=0">
+            <button onclick="tpExec('bold')" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;" title="Bold"><b>B</b></button>
+            <button onclick="tpExec('italic')" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;" title="Italic"><i>I</i></button>
+            <button onclick="tpExec('underline')" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;" title="Underline"><u>U</u></button>
+            <span style="width:1px; height:20px; background:#333; margin:0 4px;"></span>
+            <button onclick="tpBlock('h1')" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;">H1</button>
+            <button onclick="tpBlock('h2')" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;">H2</button>
+            <button onclick="tpBlock('h3')" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;">H3</button>
+            <span style="width:1px; height:20px; background:#333; margin:0 4px;"></span>
+            <button onclick="tpExec('insertUnorderedList')" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;" title="Bullets">&#8226;</button>
+            <button onclick="tpExec('insertOrderedList')" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;" title="Numbers">1.</button>
+            <span style="flex:1;"></span>
+            <span id="tpSaveStatus" style="font-size:11px; color:#4caf50;"></span>
+            <button onclick="tpResizeWidth(-80)" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 8px; cursor:pointer; font-size:12px;" title="Narrower">&#8592;&#8594;</button>
+            <button onclick="tpResizeWidth(80)" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 8px; cursor:pointer; font-size:12px;" title="Wider">&#8594;&#8592;</button>
+            <span style="width:1px; height:20px; background:#333; margin:0 4px;"></span>
+            <button onclick="tpResizeFont(-2)" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;" title="Smaller text">A-</button>
+            <button onclick="tpResizeFont(2)" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;" title="Larger text">A+</button>
+            <span style="width:1px; height:20px; background:#333; margin:0 4px;"></span>
+            <button onclick="closeTeleprompter()" style="background:none; border:1px solid #333; color:#e74c3c; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;" title="Exit">ESC</button>
+        </div>
+        <div id="tpContainer" style="max-width:680px; margin:0 auto; padding:60px 40px;">
+            <div id="teleprompterContent" contenteditable="true" spellcheck="true" oninput="tpChanged()" style="color:#e0e0e0; font-size:20px; line-height:1.8; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; outline:none; min-height:80vh;"></div>
         </div>
     </div>
 
@@ -2834,6 +2855,10 @@
         }
 
 
+        let tpFontSize = 20;
+        let tpWidth = 680;
+        let tpSaveTimer = null;
+
         function openTeleprompter() {
             const editor = document.getElementById('modalDocEditor');
             const overlay = document.getElementById('teleprompterOverlay');
@@ -2841,20 +2866,57 @@
             tp.innerHTML = editor.innerHTML;
             overlay.style.display = 'block';
             overlay.requestFullscreen().catch(() => {});
-            // Exit on Escape or click
-            const exitTp = () => {
-                overlay.style.display = 'none';
-                if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-                document.removeEventListener('fullscreenchange', onFsChange);
-            };
-            overlay.onclick = exitTp;
-            const onFsChange = () => {
-                if (!document.fullscreenElement) {
-                    overlay.style.display = 'none';
-                    document.removeEventListener('fullscreenchange', onFsChange);
-                }
-            };
-            document.addEventListener('fullscreenchange', onFsChange);
+            document.addEventListener('fullscreenchange', tpFsChange);
+        }
+
+        function closeTeleprompter() {
+            const overlay = document.getElementById('teleprompterOverlay');
+            // Sync content back to modal editor
+            const tp = document.getElementById('teleprompterContent');
+            const modalEditor = document.getElementById('modalDocEditor');
+            modalEditor.innerHTML = tp.innerHTML;
+            modalDocChanged();
+            overlay.style.display = 'none';
+            if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+            document.removeEventListener('fullscreenchange', tpFsChange);
+        }
+
+        function tpFsChange() {
+            if (!document.fullscreenElement) closeTeleprompter();
+        }
+
+        function tpExec(cmd) { document.execCommand(cmd, false, null); document.getElementById('teleprompterContent').focus(); }
+        function tpBlock(tag) { document.execCommand('formatBlock', false, '<' + tag + '>'); document.getElementById('teleprompterContent').focus(); }
+
+        function tpResizeFont(delta) {
+            tpFontSize = Math.max(14, Math.min(40, tpFontSize + delta));
+            document.getElementById('teleprompterContent').style.fontSize = tpFontSize + 'px';
+        }
+
+        function tpResizeWidth(delta) {
+            tpWidth = Math.max(400, Math.min(1200, tpWidth + delta));
+            document.getElementById('tpContainer').style.maxWidth = tpWidth + 'px';
+        }
+
+        function tpChanged() {
+            clearTimeout(tpSaveTimer);
+            const status = document.getElementById('tpSaveStatus');
+            status.textContent = 'Saving...';
+            status.style.color = '#777';
+            tpSaveTimer = setTimeout(() => {
+                const tp = document.getElementById('teleprompterContent');
+                const td = getTurndown();
+                const md = td ? td.turndown(tp.innerHTML) : tp.innerText;
+                fetch('/api/content/file', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ path: modalDocPath, content: md })
+                }).then(r => r.json()).then(d => {
+                    status.textContent = d.ok ? 'Saved' : 'Error';
+                    status.style.color = d.ok ? '#4caf50' : '#e74c3c';
+                    if (d.ok) setTimeout(() => { status.textContent = ''; }, 2000);
+                });
+            }, 1200);
         }
 
         function loadModalInlineDoc(path) {
