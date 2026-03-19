@@ -1373,19 +1373,43 @@
         <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
             <h2 style="margin:0; color:#fff;">Twitter</h2>
         </div>
+
+        <!-- Composer -->
         <div style="background:#1a1a1a; border:1px solid #333; border-radius:12px; padding:16px; margin-bottom:24px;">
-            <textarea id="tweetCompose"
-                placeholder="What's happening?"
-                maxlength="280"
-                style="width:100%; background:transparent; border:none; outline:none; color:#f1f1f1;
-                       font-size:16px; font-family:inherit; resize:none; min-height:80px; line-height:1.5;"></textarea>
-            <div style="display:flex; align-items:center; justify-content:flex-end; gap:12px; margin-top:8px; border-top:1px solid #2a2a2a; padding-top:10px;">
-                <span id="tweetCharCount" style="color:#666; font-size:13px;">280</span>
+            <div id="tweetThreadParts">
+                <!-- First tweet (always present) -->
+                <div class="tweet-part" data-index="0" style="margin-bottom:12px;">
+                    <textarea class="tweet-text" placeholder="What's happening?" maxlength="280"
+                        style="width:100%; background:transparent; border:none; outline:none; color:#f1f1f1;
+                               font-size:16px; font-family:inherit; resize:none; min-height:80px; line-height:1.5;"></textarea>
+                    <div id="tweetImagePreview_0" style="display:none; margin-top:8px; position:relative; display:none;">
+                        <img id="tweetPreviewImg_0" style="max-width:100%; max-height:220px; border-radius:8px; object-fit:cover;">
+                        <button onclick="removeTweetImage(0)"
+                            style="position:absolute; top:6px; right:6px; background:rgba(0,0,0,0.7); color:#fff;
+                                   border:none; border-radius:50%; width:24px; height:24px; cursor:pointer; font-size:14px; line-height:1;">&#x2715;</button>
+                    </div>
+                    <div style="display:flex; align-items:center; gap:8px; margin-top:6px; border-top:1px solid #2a2a2a; padding-top:8px;">
+                        <label style="cursor:pointer; color:#1a8cd8; font-size:13px; display:flex; align-items:center; gap:4px;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                            Image
+                            <input type="file" accept="image/*" class="tweet-img-input" data-index="0" style="display:none;" onchange="handleTweetImage(this, 0)">
+                        </label>
+                        <span class="tweet-char-count" style="color:#666; font-size:13px; margin-left:auto;">280</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Thread + Post controls -->
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-top:4px;">
+                <button onclick="addThreadPart()"
+                    style="background:transparent; color:#1a8cd8; border:1px solid #1a8cd8; border-radius:20px;
+                           padding:6px 14px; font-size:13px; font-weight:600; cursor:pointer;">+ Add to thread</button>
                 <button id="tweetPostBtn" onclick="postTweet()"
                     style="background:#1a8cd8; color:#fff; border:none; border-radius:20px;
                            padding:8px 20px; font-size:14px; font-weight:600; cursor:pointer;">Post</button>
             </div>
         </div>
+
         <div id="tweetStatus" style="display:none; margin-bottom:16px; font-size:13px; padding:10px 14px; border-radius:8px;"></div>
         <div id="tweetFeed" style="display:flex; flex-direction:column; gap:12px;"></div>
     </div>
@@ -2817,7 +2841,212 @@
 
     
         // Twitter
-        const tweetCompose = document.getElementById('tweetCompose');
+
+        let tweetImages = {};  // index -> {file, url}
+
+        function addThreadPart() {
+            const parts = document.getElementById('tweetThreadParts');
+            const index = parts.children.length;
+            const div = document.createElement('div');
+            div.className = 'tweet-part';
+            div.dataset.index = index;
+            div.style.marginBottom = '12px';
+            div.style.borderTop = '1px solid #2a2a2a';
+            div.style.paddingTop = '12px';
+            div.innerHTML = '<div style="display:flex; justify-content:flex-end;">' +
+                '<button onclick="removeThreadPart(this)" style="background:transparent; color:#666; border:none; cursor:pointer; font-size:18px; line-height:1;">&#x2715;</button>' +
+                '</div>' +
+                '<textarea class="tweet-text" placeholder="Continue your thread..." maxlength="280" ' +
+                'style="width:100%; background:transparent; border:none; outline:none; color:#f1f1f1; ' +
+                'font-size:16px; font-family:inherit; resize:none; min-height:70px; line-height:1.5;"></textarea>' +
+                '<div id="tweetImagePreview_' + index + '" style="display:none; margin-top:8px; position:relative;">' +
+                '<img id="tweetPreviewImg_' + index + '" style="max-width:100%; max-height:220px; border-radius:8px; object-fit:cover;">' +
+                '<button onclick="removeTweetImage(' + index + ')" style="position:absolute; top:6px; right:6px; background:rgba(0,0,0,0.7); color:#fff; border:none; border-radius:50%; width:24px; height:24px; cursor:pointer; font-size:14px; line-height:1;">&#x2715;</button>' +
+                '</div>' +
+                '<div style="display:flex; align-items:center; gap:8px; margin-top:6px; border-top:1px solid #2a2a2a; padding-top:8px;">' +
+                '<label style="cursor:pointer; color:#1a8cd8; font-size:13px; display:flex; align-items:center; gap:4px;">' +
+                '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>' +
+                'Image<input type="file" accept="image/*" class="tweet-img-input" data-index="' + index + '" style="display:none;" onchange="handleTweetImage(this, ' + index + ')">' +
+                '</label>' +
+                '<span class="tweet-char-count" style="color:#666; font-size:13px; margin-left:auto;">280</span>' +
+                '</div>';
+            parts.appendChild(div);
+            div.querySelector('.tweet-text').addEventListener('input', function() {
+                updateCharCount(this);
+            });
+        }
+
+        function removeThreadPart(btn) {
+            const part = btn.closest('.tweet-part');
+            const index = parseInt(part.dataset.index);
+            delete tweetImages[index];
+            part.remove();
+        }
+
+        function handleTweetImage(input, index) {
+            const file = input.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                tweetImages[index] = {file, dataUrl: e.target.result};
+                const preview = document.getElementById('tweetImagePreview_' + index);
+                const img = document.getElementById('tweetPreviewImg_' + index);
+                img.src = e.target.result;
+                preview.style.display = 'block';
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function removeTweetImage(index) {
+            delete tweetImages[index];
+            const preview = document.getElementById('tweetImagePreview_' + index);
+            if (preview) preview.style.display = 'none';
+            const input = document.querySelector('.tweet-img-input[data-index="' + index + '"]');
+            if (input) input.value = '';
+        }
+
+        function updateCharCount(ta) {
+            const part = ta.closest('.tweet-part');
+            const counter = part.querySelector('.tweet-char-count');
+            if (!counter) return;
+            const remaining = 280 - ta.value.length;
+            counter.textContent = remaining;
+            counter.style.color = remaining < 20 ? '#e74c3c' : '#666';
+        }
+
+        document.querySelectorAll('.tweet-text').forEach(function(ta) {
+            ta.addEventListener('input', function() { updateCharCount(this); });
+        });
+
+        async function uploadTweetImage(index) {
+            const img = tweetImages[index];
+            if (!img) return null;
+            const fd = new FormData();
+            fd.append('file', img.file);
+            const res = await fetch('/api/upload', {method: 'POST', body: fd});
+            const data = await res.json();
+            return data.url || null;
+        }
+
+        async function postTweet() {
+            const parts = Array.from(document.getElementById('tweetThreadParts').children);
+            if (!parts.length) return;
+
+            const firstText = parts[0].querySelector('.tweet-text').value.trim();
+            if (!firstText) return;
+
+            const btn = document.getElementById('tweetPostBtn');
+            btn.disabled = true;
+            btn.textContent = 'Posting...';
+
+            try {
+                // Upload all images first
+                const uploadedUrls = {};
+                for (const part of parts) {
+                    const idx = parseInt(part.dataset.index);
+                    if (tweetImages[idx]) {
+                        uploadedUrls[idx] = await uploadTweetImage(idx);
+                    }
+                }
+
+                // Build payload
+                const firstMediaUrl = uploadedUrls[0] || '';
+                const threadParts = [];
+                for (let i = 1; i < parts.length; i++) {
+                    const idx = parseInt(parts[i].dataset.index);
+                    const t = parts[i].querySelector('.tweet-text').value.trim();
+                    if (t) {
+                        threadParts.push({text: t, media_url: uploadedUrls[idx] || ''});
+                    }
+                }
+
+                const res = await fetch('/api/twitter/post', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({text: firstText, media_url: firstMediaUrl, thread: threadParts})
+                });
+                const data = await res.json();
+
+                if (data.ok) {
+                    // Reset composer
+                    parts[0].querySelector('.tweet-text').value = '';
+                    parts[0].querySelector('.tweet-char-count').textContent = '280';
+                    removeTweetImage(0);
+                    // Remove extra thread parts
+                    const threadParts2 = document.getElementById('tweetThreadParts');
+                    while (threadParts2.children.length > 1) threadParts2.removeChild(threadParts2.lastChild);
+                    tweetImages = {};
+                    showTweetStatus('Posted successfully', '#4caf50');
+                    loadTweetFeed();
+                } else {
+                    showTweetStatus(data.error || 'Failed to post', '#e74c3c');
+                }
+            } catch(e) {
+                showTweetStatus('Error: ' + e.message, '#e74c3c');
+            }
+            btn.disabled = false;
+            btn.textContent = 'Post';
+        }
+
+        function showTweetStatus(msg, color) {
+            const el = document.getElementById('tweetStatus');
+            el.textContent = msg;
+            el.style.background = color + '22';
+            el.style.color = color;
+            el.style.border = '1px solid ' + color + '44';
+            el.style.display = 'block';
+            setTimeout(function() { el.style.display = 'none'; }, 3000);
+        }
+
+        async function loadTweetFeed() {
+            try {
+                const res = await fetch('/api/twitter/feed');
+                const tweets = await res.json();
+                const feed = document.getElementById('tweetFeed');
+                if (!tweets.length) {
+                    feed.innerHTML = '<p style="color:#555; text-align:center; padding:40px 0;">No tweets posted yet.</p>';
+                    return;
+                }
+                feed.innerHTML = tweets.map(function(t) {
+                    const d = new Date(t.posted_at + ' UTC');
+                    const diff = Math.floor((Date.now() - d) / 1000);
+                    let ago;
+                    if (diff < 60) ago = diff + 's ago';
+                    else if (diff < 3600) ago = Math.floor(diff/60) + 'm ago';
+                    else if (diff < 86400) ago = Math.floor(diff/3600) + 'h ago';
+                    else ago = Math.floor(diff/86400) + 'd ago';
+
+                    const escaped = t.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+                    let imgHtml = '';
+                    if (t.media_url) {
+                        imgHtml = '<img src="' + t.media_url + '" style="max-width:100%; max-height:280px; border-radius:8px; object-fit:cover; margin-top:8px; display:block;">';
+                    }
+
+                    let threadHtml = '';
+                    try {
+                        const parts = JSON.parse(t.thread_json || '[]');
+                        if (parts.length) {
+                            threadHtml = parts.map(function(p) {
+                                const pt = (p.text||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+                                let pImg = p.media_url ? '<img src="' + p.media_url + '" style="max-width:100%; max-height:280px; border-radius:8px; object-fit:cover; margin-top:6px; display:block;">' : '';
+                                return '<div style="border-left:2px solid #333; margin-top:10px; padding:10px 0 0 12px;">' +
+                                    '<p style="color:#f1f1f1; font-size:14px; line-height:1.5; margin:0;">' + pt + '</p>' + pImg +
+                                    '</div>';
+                            }).join('');
+                        }
+                    } catch(e) {}
+
+                    return '<div style="background:#1a1a1a; border:1px solid #2a2a2a; border-radius:12px; padding:16px;">' +
+                        '<p style="color:#f1f1f1; font-size:15px; line-height:1.5; margin:0;">' + escaped + '</p>' +
+                        imgHtml + threadHtml +
+                        '<div style="margin-top:10px;"><span style="color:#555; font-size:12px;">' + ago + '</span></div>' +
+                        '</div>';
+                }).join('');
+            } catch(e) {
+                console.error('Failed to load tweet feed', e);
+            }
+        }
+
         if (tweetCompose) {
             tweetCompose.addEventListener('input', function() {
                 const remaining = 280 - tweetCompose.value.length;
