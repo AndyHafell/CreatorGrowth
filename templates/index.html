@@ -1519,6 +1519,7 @@
                     <button onclick="modalDocExec('insertOrderedList')" title="Numbers">1.</button>
                     <span class="toolbar-sep"></span>
                     <button onclick="openTeleprompter()" title="Teleprompter mode" style="font-size:11px; letter-spacing:0.5px;">TELEPROMPTER</button>
+                    <button onclick="openAllImages()" title="Open all images in new tabs" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">OPEN IMAGES</button>
                 </div>
                 <div id="modalDocEditor" class="modal-doc-editor" contenteditable="true" spellcheck="true" oninput="modalDocChanged()" style="min-height:400px; max-height:80vh; overflow-y:auto; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px; padding:16px; color:#ddd; font-size:14px; line-height:1.7; outline:none;"></div>
             </div>
@@ -3443,9 +3444,9 @@
 
     <script>
     function openAllImages() {
-        var editor = document.getElementById('notionEditor');
-        if (!editor) return;
-        var imgs = editor.querySelectorAll('img');
+        var editors = [document.getElementById('modalDocEditor'), document.getElementById('notionEditor')];
+        var imgs = [];
+        editors.forEach(function(ed) { if (ed) imgs = imgs.concat(Array.from(ed.querySelectorAll('img'))); });
         if (!imgs.length) { alert('No images found in this document.'); return; }
         imgs.forEach(function(img) { window.open(img.src, '_blank'); });
     }
