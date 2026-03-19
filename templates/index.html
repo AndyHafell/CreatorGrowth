@@ -1288,6 +1288,7 @@
         <button class="tab" data-tab="in_progress" onclick="setTab('in_progress')">
             In Progress <span class="tab-count" id="countProgress">0</span>
         </button>
+        <button class="tab" id="newVideoBtn" style="display:none; padding:4px 10px; font-size:16px; min-width:0;" onclick="createBlankVideo()" title="Create new video card">+</button>
         <button class="tab" data-tab="done" onclick="setTab('done')">
             Done <span class="tab-count" id="countDone">0</span>
         </button>
@@ -1567,6 +1568,7 @@
             const isCreators = tab === 'creators';
             const isKeywords = tab === 'keywords';
             const isContent = tab === 'content';
+            document.getElementById('newVideoBtn').style.display = tab === 'in_progress' ? '' : 'none';
             const isTwitter = tab === 'twitter';
             const isSpecial = isCreators || isKeywords || isContent || isTwitter;
             document.getElementById('videoGrid').style.display = isSpecial ? 'none' : '';
@@ -1642,6 +1644,25 @@
             document.getElementById('countCreators').textContent = channels.length;
             document.getElementById('videoCount').textContent =
                 videos.length ? `${videos.length} total` : '';
+        }
+
+        async function createBlankVideo() {
+            const title = prompt('Video title:');
+            if (!title) return;
+            try {
+                const resp = await fetch('/api/videos/create-blank', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ title })
+                });
+                const data = await resp.json();
+                if (resp.ok) {
+                    showToast('Created: ' + title);
+                    await loadVideos();
+                } else {
+                    showToast(data.error || 'Failed to create', true);
+                }
+            } catch (e) { showToast('Failed to create video card', true); }
         }
 
         async function addVideo() {

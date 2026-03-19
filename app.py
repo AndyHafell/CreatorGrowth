@@ -1005,6 +1005,28 @@ def _readable_name(stem):
     return name.strip().title() or stem
 
 
+@app.route("/api/videos/create-blank", methods=["POST"])
+def create_blank_video():
+    """Create a blank video card for original content (not scraped from YouTube)."""
+    import uuid
+    data = request.get_json(force=True)
+    title = data.get("title", "Untitled Video")
+    video_id = "custom_" + uuid.uuid4().hex[:8]
+    channel_title = "AI Andy"
+    channel_thumb = "https://yt3.googleusercontent.com/IbufHQrLvYW5xUpl4Pv6kcYApZGrydwFA5udKmDAmOPsSKqWfS-SVdUMHsaKaxKAzAj0u34zjw=s900-c-k-c0x00ffffff-no-rj"
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO videos (video_id, title, channel_title, channel_thumb, thumbnail_url,
+               view_count, duration, published_at, status, outlier_score, channel_avg_views)
+           VALUES (?, ?, ?, ?, '', 0, '', '', 'in_progress', 0, 0)""",
+        (video_id, title, channel_title, channel_thumb),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM videos WHERE video_id = ?", (video_id,)).fetchone()
+    conn.close()
+    return jsonify(row_to_dict(row)), 201
+
+
 @app.route("/api/content", methods=["GET"])
 def list_content():
     """List folders and files in a content directory."""
