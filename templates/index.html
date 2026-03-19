@@ -1487,7 +1487,26 @@
                 <button class="add-field-btn" onclick="addCustomField()">+ Add Field</button>
             </div>
 
-
+            <div id="modalInlineDoc" style="display:none; margin-top:12px;">
+                <hr class="modal-divider">
+                <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+                    <h3 style="margin:0; font-size:14px; text-transform:uppercase; letter-spacing:1px; color:#888;">Content Doc</h3>
+                    <span id="modalInlineDocStatus" style="font-size:11px; color:#4caf50; margin-left:auto;"></span>
+                </div>
+                <div class="notion-toolbar" id="modalDocToolbar">
+                    <button onclick="modalDocExec('bold')" title="Bold"><b>B</b></button>
+                    <button onclick="modalDocExec('italic')" title="Italic"><i>I</i></button>
+                    <button onclick="modalDocExec('underline')" title="Underline"><u>U</u></button>
+                    <span class="toolbar-sep"></span>
+                    <button onclick="modalDocBlock('h1')" title="H1">H1</button>
+                    <button onclick="modalDocBlock('h2')" title="H2">H2</button>
+                    <button onclick="modalDocBlock('h3')" title="H3">H3</button>
+                    <span class="toolbar-sep"></span>
+                    <button onclick="modalDocExec('insertUnorderedList')" title="Bullets">&#8226;</button>
+                    <button onclick="modalDocExec('insertOrderedList')" title="Numbers">1.</button>
+                </div>
+                <div id="modalDocEditor" class="modal-doc-editor" contenteditable="true" spellcheck="true" oninput="modalDocChanged()" style="min-height:200px; max-height:400px; overflow-y:auto; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px; padding:16px; color:#ddd; font-size:14px; line-height:1.7; outline:none;"></div>
+            </div>
 
             <div class="modal-save-bar">
                 <span class="modal-saved-indicator" id="savedIndicator">Saved</span>
@@ -2152,6 +2171,7 @@
             renderCustomFields();
 
             makeContentDocFieldClickable();
+            document.getElementById('modalInlineDoc').style.display = 'none';
 
             document.getElementById('savedIndicator').classList.remove('show');
             document.getElementById('modalOverlay').classList.add('open');
@@ -2352,7 +2372,6 @@
                             btn.onclick = async () => {
                                 let path = valInput.value.trim();
                                 if (!path) return;
-                                // If it looks like just a filename (no /), resolve to full path
                                 if (!path.includes('/')) {
                                     if (!path.endsWith('.md')) path += '.md';
                                     try {
@@ -2361,10 +2380,7 @@
                                         if (data.path) path = data.path;
                                     } catch (e) {}
                                 }
-                                // Close modal, switch to content tab, open the file
-                                document.getElementById('modalOverlay').classList.remove('open');
-                                setTab('content');
-                                openContentFile(path, path.split('/').pop().replace('.md', ''));
+                                loadModalInlineDoc(path);
                             };
                             btn.style.display = valInput.value ? '' : 'none';
                             valInput.parentNode.insertBefore(btn, valInput.nextSibling);
@@ -2807,6 +2823,58 @@
                     editor.innerHTML = typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content;
                     document.getElementById('contentSaveStatus').textContent = '';
                 });
+        }
+
+        let modalDocPath = null;
+        let modalDocSaveTimer = null;
+
+        function loadModalInlineDoc(path) {
+            modalDocPath = path;
+            const container = document.getElementById('modalInlineDoc');
+            const editor = document.getElementById('modalDocEditor');
+            container.style.display = 'block';
+            editor.innerHTML = '<span style="color:#666;">Loading...</span>';
+            fetch('/api/content/file?path=' + encodeURIComponent(path))
+                .then(r => r.json())
+                .then(data => {
+                    if (data.error) {
+                        editor.innerHTML = '<span style="color:#e74c3c;">File not found: ' + path + '</span>';
+                        return;
+                    }
+                    editor.innerHTML = typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content;
+                });
+            container.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        function modalDocExec(cmd) {
+            document.execCommand(cmd, false, null);
+            document.getElementById('modalDocEditor').focus();
+        }
+
+        function modalDocBlock(tag) {
+            document.execCommand('formatBlock', false, '<' + tag + '>');
+            document.getElementById('modalDocEditor').focus();
+        }
+
+        function modalDocChanged() {
+            clearTimeout(modalDocSaveTimer);
+            const status = document.getElementById('modalInlineDocStatus');
+            status.textContent = 'Saving...';
+            status.style.color = '#777';
+            modalDocSaveTimer = setTimeout(() => {
+                const editor = document.getElementById('modalDocEditor');
+                const td = getTurndown();
+                const md = td ? td.turndown(editor.innerHTML) : editor.innerText;
+                fetch('/api/content/file', {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ path: modalDocPath, content: md })
+                }).then(r => r.json()).then(d => {
+                    status.textContent = d.ok ? 'Saved' : 'Error';
+                    status.style.color = d.ok ? '#4caf50' : '#e74c3c';
+                    if (d.ok) setTimeout(() => { status.textContent = ''; }, 2000);
+                });
+            }, 1200);
         }
 
         async function deleteCurrentContentFile() {
