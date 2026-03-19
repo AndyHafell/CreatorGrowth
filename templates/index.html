@@ -2338,14 +2338,12 @@
         }
 
         function makeContentDocFieldClickable() {
-            // Find the Content Doc custom field input and make its value a clickable link
             setTimeout(() => {
                 const fields = document.querySelectorAll('#customFieldsList .custom-field-row');
                 fields.forEach(row => {
                     const keyInput = row.querySelector('input:first-child');
                     const valInput = row.querySelector('input:nth-child(2)');
-                    if (keyInput && valInput && keyInput.value === 'Content Doc' && valInput.value) {
-                        // Add a small "open" button next to the field
+                    if (keyInput && valInput && keyInput.value === 'Content Doc') {
                         if (!row.querySelector('.doc-open-btn')) {
                             const btn = document.createElement('button');
                             btn.className = 'doc-open-btn';
@@ -2357,9 +2355,11 @@
                                     window.open('/content#' + encodeURIComponent(path), '_blank');
                                 }
                             };
+                            btn.style.display = valInput.value ? '' : 'none';
                             valInput.parentNode.insertBefore(btn, valInput.nextSibling);
+                            valInput.addEventListener('input', () => { btn.style.display = valInput.value ? '' : 'none'; });
+                            valInput.addEventListener('change', () => { btn.style.display = valInput.value ? '' : 'none'; });
                         }
-
                     }
                 });
             }, 100);
