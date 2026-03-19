@@ -2930,7 +2930,7 @@
         }
 
         function tpExec(cmd) { document.execCommand(cmd, false, null); document.getElementById('teleprompterContent').focus();
-            document.getElementById('teleprompterContent').addEventListener('click', function(e) { if (e.target.tagName === 'IMG') { window.open(e.target.src, '_blank'); } }); }
+            }
         function tpBlock(tag) { document.execCommand('formatBlock', false, '<' + tag + '>'); document.getElementById('teleprompterContent').focus(); }
 
         function tpKeyHandler(e) {
@@ -3430,6 +3430,10 @@
     document.addEventListener('drop', function(e) { e.preventDefault(); }, false);
 
     document.addEventListener('DOMContentLoaded', function() {
+        // Teleprompter image click -> open in new tab
+        document.getElementById('teleprompterOverlay').addEventListener('mousedown', function(e) {
+            if (e.target.tagName === 'IMG') { e.preventDefault(); window.open(e.target.src, '_blank'); }
+        });
         var editor = document.getElementById('notionEditor');
         if (!editor) return;
 
