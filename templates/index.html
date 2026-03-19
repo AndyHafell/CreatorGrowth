@@ -2905,18 +2905,16 @@
         function tpBlock(tag) { document.execCommand('formatBlock', false, '<' + tag + '>'); document.getElementById('teleprompterContent').focus(); }
 
         function tpKeyHandler(e) {
-            // Alt+Cmd+0 = normal text
-            if (e.altKey && e.metaKey && e.key === '0') {
-                e.preventDefault();
-                document.execCommand('formatBlock', false, '<p>');
-                document.getElementById('teleprompterContent').focus();
-                return;
-            }
-            // Alt+Cmd+1/2/3 = H1/H2/H3
-            if (e.altKey && e.metaKey && e.key >= '1' && e.key <= '3') {
-                e.preventDefault();
-                tpBlock('h' + e.key);
-                return;
+            // Alt+Cmd+0/1/2/3 = normal/H1/H2/H3 (use e.code — e.key gives wrong values with Alt on Mac)
+            if (e.altKey && e.metaKey) {
+                const digitMatch = e.code.match(/^Digit([0-3])$/);
+                if (digitMatch) {
+                    e.preventDefault();
+                    const n = digitMatch[1];
+                    if (n === '0') { document.execCommand('formatBlock', false, '<p>'); document.getElementById('teleprompterContent').focus(); }
+                    else { tpBlock('h' + n); }
+                    return;
+                }
             }
             // Cmd+B/I/U
             if (e.metaKey && !e.altKey && !e.shiftKey) {
