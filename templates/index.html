@@ -2912,11 +2912,11 @@
                 img.style.cursor = 'pointer';
                 img.addEventListener('click', function(e) {
                     e.preventDefault(); e.stopPropagation();
-                    var src = img.src;
-                    var viewer = window.open('/image-viewer', 'imageViewer');
-                    if (viewer) {
-                        setTimeout(function() { viewer.postMessage({ src: src }, '*'); }, 500);
-                    }
+                    fetch('/api/set-image', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ url: img.src })
+                    });
                 });
             });
             overlay.style.display = 'block';
