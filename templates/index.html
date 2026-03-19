@@ -3422,7 +3422,12 @@
 </script>
 
 
+
     <script>
+    // Block browser from navigating to dropped files anywhere on the page
+    document.addEventListener('dragover', function(e) { e.preventDefault(); }, false);
+    document.addEventListener('drop', function(e) { e.preventDefault(); }, false);
+
     // Image upload: drag-drop + paste for content editor
     document.addEventListener('DOMContentLoaded', function() {
         const editor = document.getElementById('notionEditor');
@@ -3454,32 +3459,25 @@
             } catch(err) { console.error('Upload failed:', err); }
         }
 
-        // Drag-drop — use capture phase to beat contenteditable
         editor.addEventListener('dragenter', function(e) {
-            if (e.dataTransfer.types.includes('Files')) {
-                e.preventDefault(); e.stopPropagation();
-                editor.style.outline = '2px dashed #5b9bd5';
-                editor.style.outlineOffset = '-4px';
-            }
-        }, true);
+            e.preventDefault(); e.stopPropagation();
+            editor.style.outline = '2px dashed #5b9bd5';
+            editor.style.outlineOffset = '-4px';
+        });
         editor.addEventListener('dragover', function(e) {
-            if (e.dataTransfer.types.includes('Files')) {
-                e.preventDefault(); e.stopPropagation();
-                e.dataTransfer.dropEffect = 'copy';
-            }
-        }, true);
+            e.preventDefault(); e.stopPropagation();
+            e.dataTransfer.dropEffect = 'copy';
+        });
         editor.addEventListener('dragleave', function(e) {
             if (!editor.contains(e.relatedTarget)) editor.style.outline = '';
-        }, true);
+        });
         editor.addEventListener('drop', function(e) {
-            const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
-            if (!files.length) return;
             e.preventDefault(); e.stopPropagation();
             editor.style.outline = '';
+            const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
             files.forEach(f => uploadAndInsert(f, e.clientX, e.clientY));
-        }, true);
+        });
 
-        // Paste — intercept image data and upload instead of embedding base64
         editor.addEventListener('paste', function(e) {
             const items = Array.from(e.clipboardData.items || []).filter(i => i.type.startsWith('image/'));
             if (!items.length) return;
