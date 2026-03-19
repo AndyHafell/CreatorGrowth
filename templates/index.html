@@ -2213,7 +2213,22 @@
             renderCustomFields();
 
             makeContentDocFieldClickable();
-            document.getElementById('modalInlineDoc').style.display = 'none';
+            // Auto-load content doc if field has a value
+            const docField = modalDetails.custom_fields.find(f => f.key === 'Content Doc' && f.value);
+            if (docField) {
+                let path = docField.value.trim();
+                if (!path.includes('/')) {
+                    if (!path.endsWith('.md')) path += '.md';
+                    try {
+                        const resp = await fetch('/api/content/resolve?name=' + encodeURIComponent(path));
+                        const data = await resp.json();
+                        if (data.path) path = data.path;
+                    } catch (e) {}
+                }
+                loadModalInlineDoc(path);
+            } else {
+                document.getElementById('modalInlineDoc').style.display = 'none';
+            }
 
             document.getElementById('savedIndicator').classList.remove('show');
             document.getElementById('modalOverlay').classList.add('open');
