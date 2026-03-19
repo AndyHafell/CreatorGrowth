@@ -1376,16 +1376,35 @@ def image_gallery():
   * {{ margin:0; padding:0; box-sizing:border-box; }}
   body {{ background:#111; padding:20px; display:flex; flex-wrap:wrap; gap:16px; justify-content:center; align-items:flex-start; }}
   .img-wrap {{ flex:1 1 45%; max-width:48%; }}
-  .img-wrap img {{ width:100%; height:auto; border-radius:8px; display:block; cursor:zoom-in; }}
-  .img-wrap img:hover {{ outline:2px solid #5b9bd5; }}
+  .img-wrap img {{ width:100%; height:auto; border-radius:8px; display:block; cursor:zoom-in; transition:opacity 0.15s; }}
+  .img-wrap img:hover {{ opacity:0.85; outline:2px solid #5b9bd5; border-radius:8px; }}
+  #lightbox {{ display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.95); z-index:9999; align-items:center; justify-content:center; cursor:zoom-out; }}
+  #lightbox.active {{ display:flex; }}
+  #lightbox img {{ max-width:95%; max-height:95vh; object-fit:contain; border-radius:8px; }}
+  #lightbox-close {{ position:fixed; top:20px; right:28px; color:#aaa; font-size:32px; cursor:pointer; line-height:1; }}
+  #lightbox-close:hover {{ color:#fff; }}
 </style>
 </head>
-<body>{imgs_html}
+<body>
+{imgs_html}
+<div id="lightbox" onclick="closeLightbox()">
+  <span id="lightbox-close" onclick="closeLightbox()">&#x2715;</span>
+  <img id="lightbox-img" src="">
+</div>
 <script>
-  document.querySelectorAll('img').forEach(function(img) {{
-    img.onclick = function() {{
-      window.open(this.src, '_blank');
-    }};
+  function openLightbox(src) {{
+    document.getElementById('lightbox-img').src = src;
+    document.getElementById('lightbox').classList.add('active');
+  }}
+  function closeLightbox() {{
+    document.getElementById('lightbox').classList.remove('active');
+    document.getElementById('lightbox-img').src = '';
+  }}
+  document.querySelectorAll('.img-wrap img').forEach(function(img) {{
+    img.onclick = function() {{ openLightbox(this.src); }};
+  }});
+  document.addEventListener('keydown', function(e) {{
+    if (e.key === 'Escape') closeLightbox();
   }});
 </script>
 </body>
