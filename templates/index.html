@@ -2905,6 +2905,14 @@
             const overlay = document.getElementById('teleprompterOverlay');
             const tp = document.getElementById('teleprompterContent');
             tp.innerHTML = editor.innerHTML;
+            tp.querySelectorAll('img').forEach(function(img) {
+                var a = document.createElement('a');
+                a.href = img.src;
+                a.target = '_blank';
+                a.style.display = 'block';
+                img.parentNode.insertBefore(a, img);
+                a.appendChild(img);
+            });
             overlay.style.display = 'block';
             overlay.requestFullscreen().catch(() => {});
             document.addEventListener('fullscreenchange', tpFsChange);
@@ -3430,10 +3438,6 @@
     document.addEventListener('drop', function(e) { e.preventDefault(); }, false);
 
     document.addEventListener('DOMContentLoaded', function() {
-        // Teleprompter image click -> open in new tab
-        document.getElementById('teleprompterOverlay').addEventListener('mousedown', function(e) {
-            if (e.target.tagName === 'IMG') { e.preventDefault(); window.open(e.target.src, '_blank'); }
-        });
         var editor = document.getElementById('notionEditor');
         if (!editor) return;
 
