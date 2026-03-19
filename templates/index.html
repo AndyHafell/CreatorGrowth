@@ -3423,66 +3423,52 @@
 
 
 
+
     <script>
-    // Block browser from navigating to dropped files anywhere on the page
     document.addEventListener('dragover', function(e) { e.preventDefault(); }, false);
     document.addEventListener('drop', function(e) { e.preventDefault(); }, false);
 
-    // Image upload: drag-drop + paste for content editor
     document.addEventListener('DOMContentLoaded', function() {
-        const editor = document.getElementById('notionEditor');
+        var editor = document.getElementById('notionEditor');
         if (!editor) return;
 
         async function uploadAndInsert(file, clientX, clientY) {
             if (!file || !file.type.startsWith('image/')) return;
-            const fd = new FormData();
+            var fd = new FormData();
             fd.append('file', file);
             try {
-                const resp = await fetch('/api/upload', { method: 'POST', body: fd });
-                const data = await resp.json();
+                var resp = await fetch('/api/upload', { method: 'POST', body: fd });
+                var data = await resp.json();
                 if (!data.url) return;
-                const img = document.createElement('img');
-                img.src = data.url;
-                img.style.cssText = 'width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;cursor:pointer;';
-                img.onclick = function() { this.style.width = this.style.width === '100%' ? '30%' : '100%'; };
-                let range = (clientX != null && document.caretRangeFromPoint) ? document.caretRangeFromPoint(clientX, clientY) : null;
-                if (range) {
-                    const sel = window.getSelection();
-                    sel.removeAllRanges();
-                    sel.addRange(range);
-                    range.collapse(false);
-                    range.insertNode(img);
-                } else {
-                    editor.appendChild(img);
+                var imgHtml = '<img src="' + data.url + '" style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;">';
+                editor.focus();
+                if (clientX != null && document.caretRangeFromPoint) {
+                    var range = document.caretRangeFromPoint(clientX, clientY);
+                    if (range) {
+                        var sel = window.getSelection();
+                        sel.removeAllRanges();
+                        sel.addRange(range);
+                    }
                 }
+                document.execCommand('insertHTML', false, imgHtml);
                 if (typeof notionEditorChanged === 'function') notionEditorChanged();
             } catch(err) { console.error('Upload failed:', err); }
         }
 
-        editor.addEventListener('dragenter', function(e) {
-            e.preventDefault(); e.stopPropagation();
-            editor.style.outline = '2px dashed #5b9bd5';
-            editor.style.outlineOffset = '-4px';
-        });
-        editor.addEventListener('dragover', function(e) {
-            e.preventDefault(); e.stopPropagation();
-            e.dataTransfer.dropEffect = 'copy';
-        });
-        editor.addEventListener('dragleave', function(e) {
-            if (!editor.contains(e.relatedTarget)) editor.style.outline = '';
-        });
+        editor.addEventListener('dragenter', function(e) { e.preventDefault(); e.stopPropagation(); editor.style.outline = '2px dashed #5b9bd5'; });
+        editor.addEventListener('dragover', function(e) { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy'; });
+        editor.addEventListener('dragleave', function(e) { if (!editor.contains(e.relatedTarget)) editor.style.outline = ''; });
         editor.addEventListener('drop', function(e) {
             e.preventDefault(); e.stopPropagation();
             editor.style.outline = '';
-            const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
-            files.forEach(f => uploadAndInsert(f, e.clientX, e.clientY));
+            var files = Array.from(e.dataTransfer.files).filter(function(f) { return f.type.startsWith('image/'); });
+            files.forEach(function(f) { uploadAndInsert(f, e.clientX, e.clientY); });
         });
-
         editor.addEventListener('paste', function(e) {
-            const items = Array.from(e.clipboardData.items || []).filter(i => i.type.startsWith('image/'));
+            var items = Array.from(e.clipboardData.items || []).filter(function(i) { return i.type.startsWith('image/'); });
             if (!items.length) return;
             e.preventDefault();
-            items.forEach(item => uploadAndInsert(item.getAsFile(), null, null));
+            items.forEach(function(item) { uploadAndInsert(item.getAsFile(), null, null); });
         });
     });
     </script>
