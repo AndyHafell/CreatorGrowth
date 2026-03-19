@@ -211,7 +211,7 @@ def auth_status():
 
 @app.before_request
 def require_auth():
-    open_paths = {"/", "/api/login", "/api/auth-status", "/static/", "/image-viewer", "/image-gallery", "/api/current-image", "/api/set-image"}
+    open_paths = {"/", "/api/login", "/api/auth-status", "/static/", "/image-viewer", "/image-gallery", "/api/current-image", "/api/set-image", "/api/set-gallery"}
     path = request.path
     if path == "/" or path.startswith("/static/") or path in open_paths:
         return None
@@ -1353,23 +1353,42 @@ def image_viewer():
 </html>"""
 
 
+import uuid as _uuid
+_gallery_store = {}
+
+@app.route("/api/set-gallery", methods=["POST"])
+def set_gallery():
+    srcs = request.json.get("srcs", [])
+    gid = _uuid.uuid4().hex[:8]
+    _gallery_store[gid] = srcs
+    return jsonify({"id": gid})
+
 @app.route("/image-gallery")
 def image_gallery():
-    import json as _json
-    srcs = request.args.getlist('src')
-    imgs_html = ''.join(f'<div class="img-wrap"><img src="{s}"></div>' for s in srcs)
+    gid = request.args.get("id", "")
+    srcs = _gallery_store.get(gid, [])
+    imgs_html = "".join(f'<div class="img-wrap"><img src="{s}"></div>' for s in srcs)
     return f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8"><title>Images</title>
 <style>
   * {{ margin:0; padding:0; box-sizing:border-box; }}
-  body {{ background:#111; padding:20px; display:flex; flex-wrap:wrap; gap:16px; justify-content:center; }}
+  body {{ background:#111; padding:20px; display:flex; flex-wrap:wrap; gap:16px; justify-content:center; align-items:flex-start; }}
   .img-wrap {{ flex:1 1 45%; max-width:48%; }}
-  .img-wrap img {{ width:100%; height:auto; border-radius:8px; display:block; }}
+  .img-wrap img {{ width:100%; height:auto; border-radius:8px; display:block; cursor:zoom-in; }}
+  .img-wrap img:hover {{ outline:2px solid #5b9bd5; }}
 </style>
 </head>
-<body>{imgs_html}</body>
+<body>{imgs_html}
+<script>
+  document.querySelectorAll('img').forEach(function(img) {{
+    img.onclick = function() {{
+      window.open(this.src, '_blank');
+    }};
+  }});
+</script>
+</body>
 </html>"""
 
 @app.route("/api/upload", methods=["POST"])
