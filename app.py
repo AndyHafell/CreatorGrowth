@@ -29,6 +29,8 @@ DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "contentmate2026")
 DB_PATH = Path(__file__).resolve().parent / "videos.db"
 UPLOAD_DIR = Path(__file__).resolve().parent / "static" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+BLOTATO_API_KEY = os.environ.get("BLOTATO_API_KEY", "")
+BLOTATO_X_ACCOUNT_ID = int(os.environ.get("BLOTATO_X_ACCOUNT_ID", "13469"))
 CONTENT_DIR = Path(os.environ.get("CONTENT_DIR", str(Path(__file__).resolve().parent.parent.parent / "content" / "content_docs")))
 CONTENT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -125,6 +127,14 @@ def init_db():
             is_favorite INTEGER DEFAULT 0,
             is_youtube INTEGER DEFAULT 0,
             added_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tweets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT NOT NULL,
+            posted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            blotato_id TEXT DEFAULT ''
         )
     """)
     conn.commit()
@@ -1315,6 +1325,65 @@ def import_keywords_airtable():
     conn.commit()
     conn.close()
     return jsonify({"inserted": inserted, "skipped": skipped, "total": len(all_records)})
+
+
+
+# ── Twitter routes ─────────────────────────────────────────────────────────────
+
+@app.route("/api/twitter/post", methods=["POST"])
+@login_required
+def twitter_post():
+    data = request.get_json()
+    text = (data or {}).get("text", "").strip()
+    if not text:
+        return jsonify({"error": "No text provided"}), 400
+    if len(text) > 280:
+        return jsonify({"error": "Tweet exceeds 280 characters"}), 400
+    if not BLOTATO_API_KEY:
+        return jsonify({"error": "BLOTATO_API_KEY not configured"}), 500
+
+    payload = json.dumps({
+        "post": {
+            "accountId": BLOTATO_X_ACCOUNT_ID,
+            "text": text
+        }
+    }).encode()
+
+    req = Request(
+        "https://backend.blotato.com/v2/posts",
+        data=payload,
+        headers={
+            "blotato-api-key": BLOTATO_API_KEY,
+            "Content-Type": "application/json"
+        },
+        method="POST"
+    )
+    try:
+        with urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+        blotato_id = str(result.get("id", ""))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO tweets (text, blotato_id) VALUES (?, ?)",
+        (text, blotato_id)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "blotato_id": blotato_id})
+
+
+@app.route("/api/twitter/feed", methods=["GET"])
+@login_required
+def twitter_feed():
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, text, posted_at, blotato_id FROM tweets ORDER BY id DESC LIMIT 50"
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
 
 
 if __name__ == "__main__":
