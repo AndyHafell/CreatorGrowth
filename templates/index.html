@@ -2908,8 +2908,12 @@
             tp.querySelectorAll('img').forEach(function(img) {
                 var a = document.createElement('a');
                 a.href = img.src;
-                a.target = '_blank';
                 a.style.display = 'block';
+                a.style.cursor = 'pointer';
+                a.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    window.open(img.src, 'imageViewer', 'width=1400,height=900,menubar=no,toolbar=no,location=no,status=no');
+                });
                 img.parentNode.insertBefore(a, img);
                 a.appendChild(img);
             });
