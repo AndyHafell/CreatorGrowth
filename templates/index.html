@@ -1459,7 +1459,7 @@
         </div>
     </div>
 
-    <div class="modal-overlay" id="modalOverlay">
+    <div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
         <div class="modal-card" id="modalCard">
             <button class="modal-close" onclick="closeModal()">&times;</button>
             <div class="modal-header">
