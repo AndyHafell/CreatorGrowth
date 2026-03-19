@@ -2909,12 +2909,14 @@
             const tp = document.getElementById('teleprompterContent');
             tp.innerHTML = editor.innerHTML;
             tp.querySelectorAll('img').forEach(function(img) {
-                img.style.cursor = 'zoom-in';
+                img.style.cursor = 'pointer';
                 img.addEventListener('click', function(e) {
                     e.preventDefault(); e.stopPropagation();
-                    var lb = document.getElementById('tpLightbox');
-                    document.getElementById('tpLightboxImg').src = img.src;
-                    lb.style.display = 'flex';
+                    var src = img.src;
+                    var viewer = window.open('/image-viewer', 'imageViewer');
+                    if (viewer) {
+                        setTimeout(function() { viewer.postMessage({ src: src }, '*'); }, 500);
+                    }
                 });
             });
             overlay.style.display = 'block';
