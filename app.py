@@ -1356,28 +1356,36 @@ def twitter_post():
         return jsonify({"error": "BLOTATO_API_KEY not configured"}), 500
 
     # Build post payload
+    def to_full_url(u):
+        return "https://creatorgrowth.com" + u if u and u.startswith("/") else (u or "")
+
+    media_urls = [to_full_url(media_url)] if media_url else []
+
     post_obj = {
         "accountId": BLOTATO_X_ACCOUNT_ID,
-        "text": text
+        "content": {
+            "platform": "twitter",
+            "text": text,
+            "mediaUrls": media_urls
+        },
+        "target": {
+            "targetType": "twitter"
+        }
     }
-    if media_url:
-        # Convert relative URL to full public URL
-        full_url = "https://creatorgrowth.com" + media_url if media_url.startswith("/") else media_url
-        post_obj["mediaUrls"] = [full_url]
 
-    # Thread support: additional parts beyond the first tweet
+    # Thread support
     if thread_parts:
         thread_items = []
         for part in thread_parts:
-            item = {"text": part.get("text", "").strip()}
-            if part.get("media_url"):
-                mu = part["media_url"]
-                full_mu = "https://creatorgrowth.com" + mu if mu.startswith("/") else mu
-                item["mediaUrls"] = [full_mu]
-            if item["text"]:
-                thread_items.append(item)
+            t = part.get("text", "").strip()
+            if t:
+                mu = part.get("media_url", "")
+                thread_items.append({
+                    "text": t,
+                    "mediaUrls": [to_full_url(mu)] if mu else []
+                })
         if thread_items:
-            post_obj["thread"] = thread_items
+            post_obj["content"]["thread"] = thread_items
 
     payload = json.dumps({"post": post_obj}).encode()
 
