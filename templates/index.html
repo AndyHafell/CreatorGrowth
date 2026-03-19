@@ -2361,7 +2361,10 @@
                                         if (data.path) path = data.path;
                                     } catch (e) {}
                                 }
-                                window.open('/content#' + encodeURIComponent(path), '_blank');
+                                // Close modal, switch to content tab, open the file
+                                document.getElementById('modalOverlay').classList.remove('open');
+                                setTab('content');
+                                openContentFile(path, path.split('/').pop().replace('.md', ''));
                             };
                             btn.style.display = valInput.value ? '' : 'none';
                             valInput.parentNode.insertBefore(btn, valInput.nextSibling);
