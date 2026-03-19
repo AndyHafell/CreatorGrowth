@@ -211,7 +211,7 @@ def auth_status():
 
 @app.before_request
 def require_auth():
-    open_paths = {"/", "/api/login", "/api/auth-status", "/static/"}
+    open_paths = {"/", "/api/login", "/api/auth-status", "/static/", "/image-viewer"}
     path = request.path
     if path == "/" or path.startswith("/static/") or path in open_paths:
         return None
@@ -1299,6 +1299,41 @@ Where: Free inside the Skool community (link in description)
         "has_transcript": bool(hook_text),
     })
 
+
+
+@app.route("/image-viewer")
+def image_viewer():
+    return """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Image Viewer</title>
+<style>
+  body { margin:0; background:#111; display:flex; align-items:center; justify-content:center; min-height:100vh; }
+  img { max-width:100%; max-height:100vh; object-fit:contain; }
+  #placeholder { color:#444; font-family:sans-serif; font-size:18px; }
+</style>
+</head>
+<body>
+  <span id="placeholder">Waiting for image...</span>
+  <img id="img" src="" style="display:none;">
+  <script>
+    window.name = 'imageViewer';
+    function showImg(src) {
+      if (!src) return;
+      document.getElementById('img').src = src;
+      document.getElementById('img').style.display = 'block';
+      document.getElementById('placeholder').style.display = 'none';
+      document.title = src.split('/').pop();
+    }
+    // Check URL param on load
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('src')) showImg(params.get('src'));
+    // Listen for postMessage from teleprompter
+    window.addEventListener('message', function(e) { if (e.data && e.data.src) showImg(e.data.src); });
+  </script>
+</body>
+</html>"""
 
 @app.route("/api/upload", methods=["POST"])
 def upload_file():
