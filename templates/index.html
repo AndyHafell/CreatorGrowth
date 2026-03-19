@@ -1504,6 +1504,8 @@
                     <span class="toolbar-sep"></span>
                     <button onclick="modalDocExec('insertUnorderedList')" title="Bullets">&#8226;</button>
                     <button onclick="modalDocExec('insertOrderedList')" title="Numbers">1.</button>
+                    <span class="toolbar-sep"></span>
+                    <button onclick="openTeleprompter()" title="Teleprompter mode" style="font-size:11px; letter-spacing:0.5px;">TELEPROMPTER</button>
                 </div>
                 <div id="modalDocEditor" class="modal-doc-editor" contenteditable="true" spellcheck="true" oninput="modalDocChanged()" style="min-height:200px; max-height:400px; overflow-y:auto; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px; padding:16px; color:#ddd; font-size:14px; line-height:1.7; outline:none;"></div>
             </div>
@@ -1512,6 +1514,12 @@
                 <span class="modal-saved-indicator" id="savedIndicator">Saved</span>
                 <button class="modal-save-btn" id="modalSaveBtn" onclick="saveModalData()">Save</button>
             </div>
+        </div>
+    </div>
+
+    <div id="teleprompterOverlay" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:#000; z-index:99999; overflow-y:auto; cursor:none;">
+        <div style="max-width:680px; margin:0 auto; padding:60px 40px; color:#e0e0e0; font-size:22px; line-height:1.9; font-family:Georgia, 'Times New Roman', serif;">
+            <div id="teleprompterContent"></div>
         </div>
     </div>
 
@@ -2825,6 +2833,29 @@
                 });
         }
 
+
+        function openTeleprompter() {
+            const editor = document.getElementById('modalDocEditor');
+            const overlay = document.getElementById('teleprompterOverlay');
+            const tp = document.getElementById('teleprompterContent');
+            tp.innerHTML = editor.innerHTML;
+            overlay.style.display = 'block';
+            overlay.requestFullscreen().catch(() => {});
+            // Exit on Escape or click
+            const exitTp = () => {
+                overlay.style.display = 'none';
+                if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+                document.removeEventListener('fullscreenchange', onFsChange);
+            };
+            overlay.onclick = exitTp;
+            const onFsChange = () => {
+                if (!document.fullscreenElement) {
+                    overlay.style.display = 'none';
+                    document.removeEventListener('fullscreenchange', onFsChange);
+                }
+            };
+            document.addEventListener('fullscreenchange', onFsChange);
+        }
 
         function loadModalInlineDoc(path) {
             modalDocPath = path;
