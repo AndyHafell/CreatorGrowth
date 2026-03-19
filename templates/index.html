@@ -1531,8 +1531,8 @@
             <button onclick="tpExec('insertOrderedList')" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;" title="Numbers">1.</button>
             <span style="flex:1;"></span>
             <span id="tpSaveStatus" style="font-size:11px; color:#4caf50;"></span>
-            <button onclick="tpResizeWidth(-80)" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 8px; cursor:pointer; font-size:12px;" title="Narrower">&#8592;&#8594;</button>
-            <button onclick="tpResizeWidth(80)" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 8px; cursor:pointer; font-size:12px;" title="Wider">&#8594;&#8592;</button>
+            <button onclick="tpResizeWidth(-80)" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 8px; cursor:pointer; font-size:12px;" title="Narrower">&#8594;&#8592;</button>
+            <button onclick="tpResizeWidth(80)" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 8px; cursor:pointer; font-size:12px;" title="Wider">&#8592;&#8594;</button>
             <span style="width:1px; height:20px; background:#333; margin:0 4px;"></span>
             <button onclick="tpResizeFont(-2)" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;" title="Smaller text">A-</button>
             <button onclick="tpResizeFont(2)" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;" title="Larger text">A+</button>
@@ -2867,6 +2867,8 @@
             overlay.style.display = 'block';
             overlay.requestFullscreen().catch(() => {});
             document.addEventListener('fullscreenchange', tpFsChange);
+            document.addEventListener('keydown', tpKeyHandler);
+            tp.addEventListener('input', tpAutoFormat);
         }
 
         function closeTeleprompter() {
@@ -2879,6 +2881,7 @@
             overlay.style.display = 'none';
             if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
             document.removeEventListener('fullscreenchange', tpFsChange);
+            document.removeEventListener('keydown', tpKeyHandler);
         }
 
         function tpFsChange() {
@@ -2887,6 +2890,53 @@
 
         function tpExec(cmd) { document.execCommand(cmd, false, null); document.getElementById('teleprompterContent').focus(); }
         function tpBlock(tag) { document.execCommand('formatBlock', false, '<' + tag + '>'); document.getElementById('teleprompterContent').focus(); }
+
+        function tpKeyHandler(e) {
+            // Alt+Cmd+1/2/3 = H1/H2/H3
+            if (e.altKey && e.metaKey && e.key >= '1' && e.key <= '3') {
+                e.preventDefault();
+                tpBlock('h' + e.key);
+                return;
+            }
+            // Cmd+B/I/U
+            if (e.metaKey && !e.altKey && !e.shiftKey) {
+                if (e.key === 'b') { e.preventDefault(); tpExec('bold'); return; }
+                if (e.key === 'i') { e.preventDefault(); tpExec('italic'); return; }
+                if (e.key === 'u') { e.preventDefault(); tpExec('underline'); return; }
+            }
+            // Cmd+Shift+8 = bullet list, Cmd+Shift+9 = numbered list
+            if (e.metaKey && e.shiftKey) {
+                if (e.key === '8' || e.code === 'Digit8') { e.preventDefault(); tpExec('insertUnorderedList'); return; }
+                if (e.key === '9' || e.code === 'Digit9') { e.preventDefault(); tpExec('insertOrderedList'); return; }
+            }
+        }
+
+        function tpAutoFormat(e) {
+            const sel = window.getSelection();
+            if (!sel.rangeCount) return;
+            const node = sel.anchorNode;
+            if (!node || node.nodeType !== 3) return;
+            const text = node.textContent;
+            // "* " or "- " at start of line = bullet list
+            if (/^[\*\-]\s$/.test(text)) {
+                node.textContent = '';
+                tpExec('insertUnorderedList');
+                return;
+            }
+            // "1. " at start of line = numbered list
+            if (/^1\.\s$/.test(text)) {
+                node.textContent = '';
+                tpExec('insertOrderedList');
+                return;
+            }
+            // "# " = H1, "## " = H2, "### " = H3
+            const headingMatch = text.match(/^(#{1,3})\s$/);
+            if (headingMatch) {
+                node.textContent = '';
+                tpBlock('h' + headingMatch[1].length);
+                return;
+            }
+        }
 
         function tpResizeFont(delta) {
             tpFontSize = Math.max(14, Math.min(40, tpFontSize + delta));
