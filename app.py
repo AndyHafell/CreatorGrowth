@@ -66,6 +66,7 @@ def init_db():
         ("status", "TEXT", "'options'"),
         ("outlier_score", "REAL", "0"),
         ("channel_avg_views", "INTEGER", "0"),
+        ("transformed", "INTEGER", "0"),
     ]:
         try:
             conn.execute(f"ALTER TABLE videos ADD COLUMN {col} {coltype} DEFAULT {default}")
@@ -289,6 +290,7 @@ def row_to_dict(r):
         "time_ago": time_ago(r["published_at"]),
         "status": r["status"] or "options",
         "outlier_score": outlier,
+        "transformed": bool(r["transformed"]) if "transformed" in r.keys() else False,
     }
 
 
@@ -444,6 +446,22 @@ def update_status(vid):
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "status": new_status})
+
+
+@app.route("/api/videos/<int:vid>/transform", methods=["POST"])
+@login_required
+def transform_video(vid):
+    """Toggle transform: swap creator photo/name with AI Andy."""
+    conn = get_db()
+    row = conn.execute("SELECT transformed FROM videos WHERE id = ?", (vid,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Not found"}), 404
+    new_val = 0 if row["transformed"] else 1
+    conn.execute("UPDATE videos SET transformed = ? WHERE id = ?", (new_val, vid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "transformed": bool(new_val)})
 
 
 @app.route("/api/videos/<int:vid>", methods=["DELETE"])
