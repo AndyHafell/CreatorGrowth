@@ -481,6 +481,9 @@
         .action-btn.move-progress:hover { background: #ff9800; color: #fff; }
         .action-btn.move-back { color: #aaa; }
         .action-btn.move-back:hover { background: #666; color: #fff; }
+        .action-btn.transform-btn { color: #ab47bc; }
+        .action-btn.transform-btn:hover { background: #ab47bc; color: #fff; }
+        .card.transformed .channel-avatar img { border: 2px solid #ab47bc; }
 
         .delete-btn {
             position: absolute;
@@ -1837,7 +1840,7 @@
             if (v.status === 'in_progress') {
                 return `
                     <button class="action-btn move-best" onclick="moveVideo(${v.id}, 'done', event)">Done</button>
-                    <button class="action-btn move-best" onclick="moveVideo(${v.id}, 'best', event)">Best</button>
+                    ${!v.transformed ? `<button class="action-btn transform-btn" onclick="transformVideo(${v.id}, event)">Transform</button>` : ''}
                     <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'options', event)">Back</button>
                 `;
             }
@@ -1848,8 +1851,26 @@
             }
             // done
             return `
+                ${!v.transformed ? `<button class="action-btn transform-btn" onclick="transformVideo(${v.id}, event)">Transform</button>` : ''}
                 <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'in_progress', event)">Reopen</button>
             `;
+        }
+
+        async function transformVideo(id, event) {
+            event.stopPropagation();
+            try {
+                const res = await fetch(`/api/videos/${id}/transform`, { method: 'POST' });
+                const data = await res.json();
+                if (data.ok) {
+                    const v = videos.find(v => v.id === id);
+                    if (v) {
+                        v.transformed = data.transformed;
+                        renderGrid();
+                    }
+                }
+            } catch (e) {
+                console.error('Transform failed:', e);
+            }
         }
 
         function renderGrid() {
@@ -1874,8 +1895,12 @@
                 return;
             }
 
-            grid.innerHTML = filtered.map(v => `
-                <div class="card" onclick="openModal(${v.id})" style="cursor:pointer;">
+            grid.innerHTML = filtered.map(v => {
+                const isTransformed = v.transformed;
+                const avatarUrl = isTransformed ? '/static/andy_avatar.png' : v.channel_thumb;
+                const channelName = isTransformed ? 'AI Andy' : v.channel_title;
+                return `
+                <div class="card${isTransformed ? ' transformed' : ''}" onclick="openModal(${v.id})" style="cursor:pointer;">
                     <div class="thumb-wrap">
                         <img src="${v.thumbnail_url}" alt="" loading="lazy">
                         ${v.duration ? `<span class="duration-badge">${v.duration}</span>` : ''}
@@ -1884,16 +1909,17 @@
                     </div>
                     <div class="card-info">
                         <div class="channel-avatar">
-                            ${v.channel_thumb ? `<img src="${v.channel_thumb}" alt="">` : ''}
+                            ${avatarUrl ? `<img src="${avatarUrl}" alt="">` : ''}
                         </div>
                         <div class="card-text">
                             <div class="card-title">${esc(v.title)}</div>
-                            <div class="card-channel">${esc(v.channel_title)}</div>
+                            <div class="card-channel">${esc(channelName)}</div>
                             <div class="card-stats">${v.view_count_formatted}${v.time_ago ? ' &middot; ' + v.time_ago : ''}${outlierBadge(v.outlier_score)}</div>
                         </div>
                     </div>
                 </div>
-            `).join('');
+                `;
+            }).join('');
         }
 
         function addLoadingCard() {
