@@ -895,15 +895,17 @@ def get_video_details(vid):
     row = conn.execute("SELECT * FROM video_details WHERE video_id = ?", (vid,)).fetchone()
     if not row:
         # Auto-create with defaults, pre-fill first inspo thumb from video's scraped thumbnail
-        video = conn.execute("SELECT thumbnail_url FROM videos WHERE id = ?", (vid,)).fetchone()
+        video = conn.execute("SELECT thumbnail_url, title FROM videos WHERE id = ?", (vid,)).fetchone()
         scraped_thumb = video["thumbnail_url"] if video else ""
+        scraped_title = video["title"] if video else ""
         default_inspo = json.dumps([scraped_thumb, "", ""])
+        default_inspo_titles = json.dumps([scraped_title, "", ""])
         default_empty3 = json.dumps(["", "", ""])
         default_fields = json.dumps([{"key": "Content Doc", "value": ""}])
         conn.execute(
             """INSERT INTO video_details (video_id, inspo_thumbs, inspo_titles, original_thumbs, original_titles, custom_fields)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (vid, default_inspo, default_empty3, default_empty3, default_empty3, default_fields),
+            (vid, default_inspo, default_inspo_titles, default_empty3, default_empty3, default_fields),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM video_details WHERE video_id = ?", (vid,)).fetchone()

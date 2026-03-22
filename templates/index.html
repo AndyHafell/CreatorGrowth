@@ -2345,6 +2345,7 @@
         function updateTitle(prefix, index, value) {
             if (prefix === 'inspo') modalDetails.inspo_titles[index] = value;
             else modalDetails.original_titles[index] = value;
+            saveModalData();
         }
 
         function renderCustomFields() {
