@@ -1521,6 +1521,10 @@
                     <button onclick="modalDocExec('insertUnorderedList')" title="Bullets">&#8226;</button>
                     <button onclick="modalDocExec('insertOrderedList')" title="Numbers">1.</button>
                     <span class="toolbar-sep"></span>
+                    <button onclick="docFontSize(-2)" title="Decrease font size" style="font-size:14px; font-weight:700; width:28px;">−</button>
+                    <span id="docFontSizeLabel" style="font-size:11px; color:#666; min-width:30px; text-align:center;">14px</span>
+                    <button onclick="docFontSize(2)" title="Increase font size" style="font-size:14px; font-weight:700; width:28px;">+</button>
+                    <span class="toolbar-sep"></span>
                     <button onclick="openTeleprompter()" title="Teleprompter mode" style="font-size:11px; letter-spacing:0.5px;">TELEPROMPTER</button>
                     <button onclick="openAllImages()" title="Open all images in new tabs" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">OPEN IMAGES</button>
                 </div>
@@ -2429,6 +2433,8 @@
                         if (data.error) { console.error(data.error); return; }
                         const editor = document.getElementById('modalDocContent');
                         editor.innerHTML = (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content).replace(/<img /g, '<img style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;" ');
+                        // Apply current font size scaling
+                        if (docBaseFontSize !== 14) docFontSize(0);
                     });
             } else {
                 modalDocPath = null;
@@ -2436,6 +2442,19 @@
                 editorDiv.style.display = 'none';
                 document.getElementById('modalDocContent').innerHTML = '';
             }
+        }
+
+        let docBaseFontSize = 14;
+        function docFontSize(delta) {
+            docBaseFontSize = Math.max(10, Math.min(32, docBaseFontSize + delta));
+            const ed = document.getElementById('modalDocEditor');
+            ed.style.fontSize = docBaseFontSize + 'px';
+            // Scale headings proportionally
+            const ratio = docBaseFontSize / 14;
+            ed.querySelectorAll('h1').forEach(el => el.style.fontSize = Math.round(22 * ratio) + 'px');
+            ed.querySelectorAll('h2').forEach(el => el.style.fontSize = Math.round(18 * ratio) + 'px');
+            ed.querySelectorAll('h3').forEach(el => el.style.fontSize = Math.round(15 * ratio) + 'px');
+            document.getElementById('docFontSizeLabel').textContent = docBaseFontSize + 'px';
         }
 
         function modalDocChanged() {
@@ -3086,6 +3105,19 @@
         function modalDocBlock(tag) {
             document.execCommand('formatBlock', false, '<' + tag + '>');
             document.getElementById('modalDocEditor').focus();
+        }
+
+        let docBaseFontSize = 14;
+        function docFontSize(delta) {
+            docBaseFontSize = Math.max(10, Math.min(32, docBaseFontSize + delta));
+            const ed = document.getElementById('modalDocEditor');
+            ed.style.fontSize = docBaseFontSize + 'px';
+            // Scale headings proportionally
+            const ratio = docBaseFontSize / 14;
+            ed.querySelectorAll('h1').forEach(el => el.style.fontSize = Math.round(22 * ratio) + 'px');
+            ed.querySelectorAll('h2').forEach(el => el.style.fontSize = Math.round(18 * ratio) + 'px');
+            ed.querySelectorAll('h3').forEach(el => el.style.fontSize = Math.round(15 * ratio) + 'px');
+            document.getElementById('docFontSizeLabel').textContent = docBaseFontSize + 'px';
         }
 
         function modalDocChanged() {
