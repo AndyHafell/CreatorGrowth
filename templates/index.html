@@ -2438,11 +2438,20 @@
                     if (data.modified !== modalDocMtime) {
                         modalDocMtime = data.modified;
                         docPollUpdating = true;
+                        const parsed = (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content).replace(/<img /g, '<img style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;" ');
                         const editor = document.getElementById('modalDocEditor');
                         const scrollTop = editor.scrollTop;
-                        editor.innerHTML = (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content).replace(/<img /g, '<img style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;" ');
+                        editor.innerHTML = parsed;
                         if (docBaseFontSize !== 14) docFontSize(0);
                         editor.scrollTop = scrollTop;
+                        // Also update teleprompter if open
+                        const tpOverlay = document.getElementById('teleprompterOverlay');
+                        if (tpOverlay && tpOverlay.style.display !== 'none') {
+                            const tp = document.getElementById('teleprompterContent');
+                            const tpScroll = tp.scrollTop;
+                            tp.innerHTML = parsed;
+                            tp.scrollTop = tpScroll;
+                        }
                         if (status) { status.textContent = 'Updated'; setTimeout(() => { if (status) status.textContent = 'Live'; }, 1500); }
                         setTimeout(() => { docPollUpdating = false; }, 100);
                     }
