@@ -2432,12 +2432,10 @@
                     if (data.error || !data.modified) return;
                     if (data.modified !== modalDocMtime) {
                         modalDocMtime = data.modified;
-                        const editor = document.getElementById('modalDocContent');
-                        // Save scroll position
+                        const editor = document.getElementById('modalDocEditor');
                         const scrollTop = editor.scrollTop;
                         editor.innerHTML = (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content).replace(/<img /g, '<img style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;" ');
                         if (docBaseFontSize !== 14) docFontSize(0);
-                        // Restore scroll position
                         editor.scrollTop = scrollTop;
                     }
                 } catch (e) {}
