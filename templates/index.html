@@ -2427,7 +2427,7 @@
             modalDocPollTimer = setInterval(async () => {
                 if (!modalDocPath) { stopDocPolling(); return; }
                 try {
-                    const res = await fetch('/api/content/file?path=' + encodeURIComponent(path));
+                    const res = await fetch('/api/content/file?path=' + encodeURIComponent(path) + '&_t=' + Date.now());
                     const data = await res.json();
                     if (data.error || !data.modified) return;
                     if (data.modified !== modalDocMtime) {
@@ -3114,7 +3114,7 @@
             const editor = document.getElementById('modalDocEditor');
             container.style.display = 'block';
             editor.innerHTML = '<span style="color:#666;">Loading...</span>';
-            fetch('/api/content/file?path=' + encodeURIComponent(path))
+            fetch('/api/content/file?path=' + encodeURIComponent(path) + '&_t=' + Date.now())
                 .then(r => r.json())
                 .then(data => {
                     if (data.error) {
@@ -3122,6 +3122,9 @@
                         return;
                     }
                     editor.innerHTML = (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content).replace(/<img /g, '<img style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;" ');
+                    if (docBaseFontSize !== 14) docFontSize(0);
+                    modalDocMtime = data.modified;
+                    startDocPolling(path);
                 });
             container.scrollIntoView({ behavior: 'smooth' });
         }
