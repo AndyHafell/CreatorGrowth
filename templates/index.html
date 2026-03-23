@@ -3108,6 +3108,7 @@
         }
 
         function tpChanged() {
+            if (docPollUpdating) return;
             clearTimeout(tpSaveTimer);
             const status = document.getElementById('tpSaveStatus');
             status.textContent = 'Saving...';
