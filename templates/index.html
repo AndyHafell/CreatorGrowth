@@ -2424,12 +2424,16 @@
 
         function startDocPolling(path) {
             stopDocPolling();
+            console.log('[LiveReload] Started polling:', path, 'mtime:', modalDocMtime);
+            const status = document.getElementById('modalInlineDocStatus');
+            if (status) status.textContent = 'Live';
             modalDocPollTimer = setInterval(async () => {
                 if (!modalDocPath) { stopDocPolling(); return; }
                 try {
                     const res = await fetch('/api/content/file?path=' + encodeURIComponent(path) + '&_t=' + Date.now());
                     const data = await res.json();
                     if (data.error || !data.modified) return;
+                    console.log('[LiveReload] Poll: server mtime=', data.modified, 'local mtime=', modalDocMtime, 'changed=', data.modified !== modalDocMtime);
                     if (data.modified !== modalDocMtime) {
                         modalDocMtime = data.modified;
                         const editor = document.getElementById('modalDocEditor');
@@ -2437,13 +2441,16 @@
                         editor.innerHTML = (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content).replace(/<img /g, '<img style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;" ');
                         if (docBaseFontSize !== 14) docFontSize(0);
                         editor.scrollTop = scrollTop;
+                        if (status) { status.textContent = 'Updated'; setTimeout(() => { if (status) status.textContent = 'Live'; }, 1500); }
                     }
-                } catch (e) {}
+                } catch (e) { console.error('[LiveReload] Error:', e); }
             }, 2000);
         }
 
         function stopDocPolling() {
             if (modalDocPollTimer) { clearInterval(modalDocPollTimer); modalDocPollTimer = null; }
+            const status = document.getElementById('modalInlineDocStatus');
+            if (status && status.textContent === 'Live') status.textContent = '';
         }
 
         function showViewContentDocBtn(path) {
