@@ -3107,19 +3107,6 @@
             document.getElementById('modalDocEditor').focus();
         }
 
-        let docBaseFontSize = 14;
-        function docFontSize(delta) {
-            docBaseFontSize = Math.max(10, Math.min(32, docBaseFontSize + delta));
-            const ed = document.getElementById('modalDocEditor');
-            ed.style.fontSize = docBaseFontSize + 'px';
-            // Scale headings proportionally
-            const ratio = docBaseFontSize / 14;
-            ed.querySelectorAll('h1').forEach(el => el.style.fontSize = Math.round(22 * ratio) + 'px');
-            ed.querySelectorAll('h2').forEach(el => el.style.fontSize = Math.round(18 * ratio) + 'px');
-            ed.querySelectorAll('h3').forEach(el => el.style.fontSize = Math.round(15 * ratio) + 'px');
-            document.getElementById('docFontSizeLabel').textContent = docBaseFontSize + 'px';
-        }
-
         function modalDocChanged() {
             clearTimeout(modalDocSaveTimer);
             const status = document.getElementById('modalInlineDocStatus');
