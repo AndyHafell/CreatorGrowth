@@ -2283,6 +2283,7 @@
         }
 
         async function closeModal() {
+            stopDocPolling();
             await saveModalData();
             document.getElementById('modalOverlay').classList.remove('open');
             modalVideoId = null;
@@ -2418,6 +2419,34 @@
 
         let modalDocPath = null;
         let modalDocSaveTimer = null;
+        let modalDocMtime = null;
+        let modalDocPollTimer = null;
+
+        function startDocPolling(path) {
+            stopDocPolling();
+            modalDocPollTimer = setInterval(async () => {
+                if (!modalDocPath) { stopDocPolling(); return; }
+                try {
+                    const res = await fetch('/api/content/file?path=' + encodeURIComponent(path));
+                    const data = await res.json();
+                    if (data.error || !data.modified) return;
+                    if (data.modified !== modalDocMtime) {
+                        modalDocMtime = data.modified;
+                        const editor = document.getElementById('modalDocContent');
+                        // Save scroll position
+                        const scrollTop = editor.scrollTop;
+                        editor.innerHTML = (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content).replace(/<img /g, '<img style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;" ');
+                        if (docBaseFontSize !== 14) docFontSize(0);
+                        // Restore scroll position
+                        editor.scrollTop = scrollTop;
+                    }
+                } catch (e) {}
+            }, 2000);
+        }
+
+        function stopDocPolling() {
+            if (modalDocPollTimer) { clearInterval(modalDocPollTimer); modalDocPollTimer = null; }
+        }
 
         function showViewContentDocBtn(path) {
             const emptyDiv = document.getElementById('modalDocEmpty');
@@ -2433,14 +2462,16 @@
                         if (data.error) { console.error(data.error); return; }
                         const editor = document.getElementById('modalDocContent');
                         editor.innerHTML = (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content).replace(/<img /g, '<img style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;" ');
-                        // Apply current font size scaling
                         if (docBaseFontSize !== 14) docFontSize(0);
+                        modalDocMtime = data.modified;
+                        startDocPolling(path);
                     });
             } else {
                 modalDocPath = null;
                 emptyDiv.style.display = 'block';
                 editorDiv.style.display = 'none';
                 document.getElementById('modalDocContent').innerHTML = '';
+                stopDocPolling();
             }
         }
 
