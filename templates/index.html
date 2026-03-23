@@ -2421,6 +2421,7 @@
         let modalDocSaveTimer = null;
         let modalDocMtime = null;
         let modalDocPollTimer = null;
+        let docPollUpdating = false;
 
         function startDocPolling(path) {
             stopDocPolling();
@@ -2436,12 +2437,14 @@
                     console.log('[LiveReload] Poll: server mtime=', data.modified, 'local mtime=', modalDocMtime, 'changed=', data.modified !== modalDocMtime);
                     if (data.modified !== modalDocMtime) {
                         modalDocMtime = data.modified;
+                        docPollUpdating = true;
                         const editor = document.getElementById('modalDocEditor');
                         const scrollTop = editor.scrollTop;
                         editor.innerHTML = (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content).replace(/<img /g, '<img style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;" ');
                         if (docBaseFontSize !== 14) docFontSize(0);
                         editor.scrollTop = scrollTop;
                         if (status) { status.textContent = 'Updated'; setTimeout(() => { if (status) status.textContent = 'Live'; }, 1500); }
+                        setTimeout(() => { docPollUpdating = false; }, 100);
                     }
                 } catch (e) { console.error('[LiveReload] Error:', e); }
             }, 2000);
@@ -2494,6 +2497,7 @@
         }
 
         function modalDocChanged() {
+            if (docPollUpdating) return;
             clearTimeout(modalDocSaveTimer);
             const status = document.getElementById('modalDocSaveStatus');
             status.textContent = 'Saving...';
@@ -3147,6 +3151,7 @@
         }
 
         function modalDocChanged() {
+            if (docPollUpdating) return;
             clearTimeout(modalDocSaveTimer);
             const status = document.getElementById('modalInlineDocStatus');
             status.textContent = 'Saving...';
