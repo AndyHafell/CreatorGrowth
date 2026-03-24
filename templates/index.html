@@ -1649,6 +1649,7 @@
 
         function setTab(tab) {
             currentTab = tab;
+            localStorage.setItem('cg_tab', tab);
             document.querySelectorAll('.tab').forEach(t => {
                 t.classList.toggle('active', t.dataset.tab === tab);
             });
@@ -2224,6 +2225,7 @@
 
         async function openModal(videoId) {
             modalVideoId = videoId;
+            localStorage.setItem('cg_modal', videoId);
             const v = videos.find(x => x.id === videoId);
             if (!v) return;
 
@@ -2283,6 +2285,7 @@
         }
 
         async function closeModal() {
+            localStorage.removeItem('cg_modal');
             stopDocPolling();
             await saveModalData();
             document.getElementById('modalOverlay').classList.remove('open');
@@ -2576,35 +2579,39 @@
 
         // Attach input listener
         document.addEventListener('DOMContentLoaded', () => {
+            if (window.location.hash) history.replaceState(null, '', window.location.pathname);
             const ed = document.getElementById('modalDocContent');
             if (ed) ed.addEventListener('input', modalDocChanged);
-            // Handle hash routing on load
-            handleHashRoute();
-        });
-
-        let settingHash = false;
-
-        function setHash(h) {
-            settingHash = true;
-            window.location.hash = h;
-            setTimeout(() => { settingHash = false; }, 50);
-        }
-
-        window.addEventListener('hashchange', () => {
-            if (!settingHash) handleHashRoute();
-        });
-
-        function handleHashRoute() {
-            const hash = window.location.hash.slice(1);
-            if (!hash.startsWith('content')) return;
-            const path = hash.replace(/^content\/?/, '');
-            setTab('content');
-            if (path && path.endsWith('.md')) {
-                openContentFile(path);
-            } else if (path) {
-                loadContentList(path);
+            // Restore last tab from localStorage
+            const savedTab = localStorage.getItem('cg_tab');
+            if (savedTab && savedTab !== 'options') {
+                setTab(savedTab);
             }
-        }
+            // Restore content sub-path if on content tab
+            if (savedTab === 'content') {
+                const savedPath = localStorage.getItem('cg_content_path');
+                if (savedPath && savedPath.endsWith('.md')) {
+                    openContentFile(savedPath);
+                } else if (savedPath) {
+                    loadContentList(savedPath);
+                }
+            }
+            // Restore open modal
+            const savedModal = localStorage.getItem('cg_modal');
+            if (savedModal) {
+                const checkVideos = setInterval(() => {
+                    if (videos.length > 0) {
+                        clearInterval(checkVideos);
+                        const vid = parseInt(savedModal);
+                        if (videos.find(v => v.id === vid)) openModal(vid);
+                        else localStorage.removeItem('cg_modal');
+                    }
+                }, 200);
+                setTimeout(() => clearInterval(checkVideos), 5000);
+            }
+        });
+
+
 
         async function createContentDoc() {
             if (!modalVideoId) return;
@@ -2938,7 +2945,7 @@
             if (path !== undefined) contentCurrentPath = path;
             // Update URL hash for copyable links
             if (currentTab === 'content') {
-                setHash(contentCurrentPath ? 'content/' + contentCurrentPath : 'content');
+                localStorage.setItem('cg_content_path', contentCurrentPath || '');
             }
             const qs = contentCurrentPath ? '?path=' + encodeURIComponent(contentCurrentPath) : '';
             fetch('/api/content' + qs)
@@ -2984,8 +2991,7 @@
                     document.getElementById('contentSortBar').style.display = 'none';
                     document.getElementById('contentEditor').style.display = 'block';
                     document.getElementById('contentFileName').textContent = name || data.name;
-                    // Update URL hash
-                    setHash('content/' + path);
+                    localStorage.setItem('cg_content_path', path);
                     const ta = document.getElementById('contentTextarea');
                     ta.value = data.content;
                     ta.dataset.path = path;
@@ -3199,7 +3205,7 @@
             document.getElementById('contentEditor').style.display = 'none';
             document.getElementById('contentList').style.display = 'grid';
             document.getElementById('contentSortBar').style.display = 'flex';
-            setHash(contentCurrentPath ? 'content/' + contentCurrentPath : 'content');
+            localStorage.setItem('cg_content_path', contentCurrentPath || '');
         }
 
         function notionEditorChanged() {
