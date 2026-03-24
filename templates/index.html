@@ -2426,6 +2426,35 @@
         let modalDocPollTimer = null;
         let docPollUpdating = false;
 
+        function getCaretOffset(el) {
+            const sel = window.getSelection();
+            if (!sel.rangeCount || !el.contains(sel.anchorNode)) return -1;
+            const range = sel.getRangeAt(0).cloneRange();
+            range.selectNodeContents(el);
+            range.setEnd(sel.anchorNode, sel.anchorOffset);
+            return range.toString().length;
+        }
+
+        function setCaretOffset(el, offset) {
+            if (offset < 0) return;
+            const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+            let pos = 0;
+            while (walker.nextNode()) {
+                const node = walker.currentNode;
+                const len = node.textContent.length;
+                if (pos + len >= offset) {
+                    const sel = window.getSelection();
+                    const range = document.createRange();
+                    range.setStart(node, offset - pos);
+                    range.collapse(true);
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    return;
+                }
+                pos += len;
+            }
+        }
+
         function startDocPolling(path) {
             stopDocPolling();
             console.log('[LiveReload] Started polling:', path, 'mtime:', modalDocMtime);
@@ -2443,17 +2472,21 @@
                         docPollUpdating = true;
                         const parsed = (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content).replace(/<img /g, '<img style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;" ');
                         const editor = document.getElementById('modalDocEditor');
+                        const editorCaret = getCaretOffset(editor);
                         const scrollTop = editor.scrollTop;
                         editor.innerHTML = parsed;
                         if (docBaseFontSize !== 14) docFontSize(0);
                         editor.scrollTop = scrollTop;
+                        setCaretOffset(editor, editorCaret);
                         // Also update teleprompter if open
                         const tpOverlay = document.getElementById('teleprompterOverlay');
                         if (tpOverlay && tpOverlay.style.display !== 'none') {
                             const tp = document.getElementById('teleprompterContent');
+                            const tpCaret = getCaretOffset(tp);
                             const tpScroll = tp.scrollTop;
                             tp.innerHTML = parsed;
                             tp.scrollTop = tpScroll;
+                            setCaretOffset(tp, tpCaret);
                         }
                         if (status) { status.textContent = 'Updated'; setTimeout(() => { if (status) status.textContent = 'Live'; }, 1500); }
                         setTimeout(() => { docPollUpdating = false; }, 100);
