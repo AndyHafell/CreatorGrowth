@@ -1527,6 +1527,7 @@
                     <span class="toolbar-sep"></span>
                     <button onclick="openTeleprompter()" title="Teleprompter mode" style="font-size:11px; letter-spacing:0.5px;">TELEPROMPTER</button>
                     <button onclick="openAllImages()" title="Open all images in new tabs" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">OPEN IMAGES</button>
+                    <button onclick="openAllLinks()" title="Open all links in new tabs" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">OPEN LINKS</button>
                 </div>
                 <div id="modalDocEditor" class="modal-doc-editor" contenteditable="true" spellcheck="true" oninput="modalDocChanged()" style="min-height:400px; max-height:80vh; overflow-y:auto; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px; padding:16px; color:#ddd; font-size:14px; line-height:1.7; outline:none;"></div>
             </div>
@@ -3609,12 +3610,56 @@
             window.open('/image-gallery?id=' + d.id, '_blank');
         });
     }
+
+    function openAllLinks() {
+        var editors = [document.getElementById('modalDocEditor'), document.getElementById('notionEditor')];
+        var hrefs = [];
+        var seen = {};
+        editors.forEach(function(ed) {
+            if (!ed) return;
+            ed.querySelectorAll('a[href]').forEach(function(a) {
+                var h = a.href;
+                if (!h) return;
+                if (h.indexOf('http://') !== 0 && h.indexOf('https://') !== 0) return;
+                if (seen[h]) return;
+                seen[h] = true;
+                hrefs.push(h);
+            });
+        });
+        if (!hrefs.length) { alert('No links found in this document.'); return; }
+        var opened = 0;
+        hrefs.forEach(function(h) {
+            var w = window.open(h, '_blank', 'noopener');
+            if (w) opened++;
+        });
+        if (opened < hrefs.length) {
+            alert('Browser blocked ' + (hrefs.length - opened) + ' of ' + hrefs.length + ' popups.\nAllow popups for this site, then click OPEN LINKS again.');
+        }
+    }
     </script>
     <script>
     document.addEventListener('dragover', function(e) { e.preventDefault(); }, false);
     document.addEventListener('drop', function(e) { e.preventDefault(); }, false);
 
     document.addEventListener('DOMContentLoaded', function() {
+        // Link click handler — in contenteditable mode, <a> clicks do nothing by default.
+        // Wire up both editors so clicking an http(s) link opens it in a new tab.
+        function wireLinkClicks(id) {
+            var ed = document.getElementById(id);
+            if (!ed) return;
+            ed.addEventListener('click', function(e) {
+                var a = e.target.closest ? e.target.closest('a[href]') : null;
+                if (!a) return;
+                var href = a.getAttribute('href') || '';
+                if (href.indexOf('http://') !== 0 && href.indexOf('https://') !== 0) return;
+                e.preventDefault();
+                e.stopPropagation();
+                window.open(href, '_blank', 'noopener');
+            });
+        }
+        wireLinkClicks('modalDocEditor');
+        wireLinkClicks('notionEditor');
+
         var editor = document.getElementById('notionEditor');
         if (!editor) return;
 
