@@ -3602,12 +3602,21 @@
             });
         });
         if (!srcs.length) { alert('No images found in this document.'); return; }
+        // Open window SYNCHRONOUSLY inside the click gesture to bypass popup blocker
+        var w = window.open('about:blank', '_blank');
+        if (!w) {
+            alert('Browser blocked the popup. Allow pop-ups for this site and try again.');
+            return;
+        }
+        w.document.write('<html><body style="background:#000;color:#fff;font-family:sans-serif;padding:40px;text-align:center;">Loading image gallery&hellip;</body></html>');
         fetch('/api/set-gallery', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ srcs: srcs })
         }).then(function(r) { return r.json(); }).then(function(d) {
-            window.open('/image-gallery?id=' + d.id, '_blank');
+            if (w && !w.closed) w.location.href = '/image-gallery?id=' + d.id;
+        }).catch(function(err) {
+            if (w && !w.closed) w.document.body.innerHTML = '<p style="color:#f88;">Error loading gallery: ' + err + '</p>';
         });
     }
 
