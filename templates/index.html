@@ -491,10 +491,6 @@
         .action-btn.move-done:hover { background: #4caf50; color: #fff; }
         .action-btn.transform-blue { color: #2196f3; }
         .action-btn.transform-blue:hover { background: #2196f3; color: #fff; }
-        .action-btn.thumb-btn { color: #ab47bc; }
-        .action-btn.thumb-btn:hover { background: #ab47bc; color: #fff; }
-        .action-btn.thumb-btn.queued { color: #777; cursor: default; }
-        .action-btn.thumb-btn.queued:hover { background: rgba(40,40,40,0.95); color: #777; }
         .card.transformed .channel-avatar img { transform: scale(1.15); }
 
         .delete-btn {
@@ -947,6 +943,21 @@
         }
         .modal-yt-btn:hover { background: #3a3a3a; color: #fff; border-color: #666; }
         .modal-yt-btn svg { width: 16px; height: 16px; fill: #ff0000; }
+        .modal-thumb-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: #272727;
+            border: 1px solid #5a3a6a;
+            color: #d4a4e0;
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .modal-thumb-btn:hover { background: #ab47bc; color: #fff; border-color: #ab47bc; }
+        .modal-thumb-btn:disabled { opacity: 0.6; cursor: default; }
 
         .modal-divider {
             border: none;
@@ -1861,7 +1872,6 @@
                     <button class="action-btn move-best-yellow" onclick="moveVideo(${v.id}, 'best', event)">Best</button>
                     <button class="action-btn move-done" onclick="moveVideo(${v.id}, 'done', event)">Done</button>
                     ${!v.transformed ? `<button class="action-btn transform-blue" onclick="transformVideo(${v.id}, event)">Transform</button>` : ''}
-                    <button class="action-btn thumb-btn" onclick="queueThumb(${v.id}, event)">Thumb</button>
                 `;
             }
             if (v.status === 'archived') {
@@ -2283,6 +2293,7 @@
                     <svg viewBox="0 0 24 24"><path d="M23.5 6.2c-.3-1-1-1.8-2-2.1C19.6 3.5 12 3.5 12 3.5s-7.6 0-9.5.6c-1 .3-1.7 1.1-2 2.1C0 8.1 0 12 0 12s0 3.9.5 5.8c.3 1 1 1.8 2 2.1 1.9.6 9.5.6 9.5.6s7.6 0 9.5-.6c1-.3 1.7-1.1 2-2.1.5-1.9.5-5.8.5-5.8s0-3.9-.5-5.8zM9.5 15.6V8.4l6.3 3.6-6.3 3.6z"/></svg>
                     Open on YouTube
                 </a>
+                <button class="modal-thumb-btn" onclick="queueThumb(${v.id}, event)">Thumb</button>
             `;
 
             // Fetch details
