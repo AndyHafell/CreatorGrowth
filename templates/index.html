@@ -491,6 +491,10 @@
         .action-btn.move-done:hover { background: #4caf50; color: #fff; }
         .action-btn.transform-blue { color: #2196f3; }
         .action-btn.transform-blue:hover { background: #2196f3; color: #fff; }
+        .action-btn.thumb-btn { color: #ab47bc; }
+        .action-btn.thumb-btn:hover { background: #ab47bc; color: #fff; }
+        .action-btn.thumb-btn.queued { color: #777; cursor: default; }
+        .action-btn.thumb-btn.queued:hover { background: rgba(40,40,40,0.95); color: #777; }
         .card.transformed .channel-avatar img { transform: scale(1.15); }
 
         .delete-btn {
@@ -1857,6 +1861,7 @@
                     <button class="action-btn move-best-yellow" onclick="moveVideo(${v.id}, 'best', event)">Best</button>
                     <button class="action-btn move-done" onclick="moveVideo(${v.id}, 'done', event)">Done</button>
                     ${!v.transformed ? `<button class="action-btn transform-blue" onclick="transformVideo(${v.id}, event)">Transform</button>` : ''}
+                    <button class="action-btn thumb-btn" onclick="queueThumb(${v.id}, event)">Thumb</button>
                 `;
             }
             if (v.status === 'archived') {
@@ -1885,6 +1890,34 @@
                 }
             } catch (e) {
                 console.error('Transform failed:', e);
+            }
+        }
+
+        async function queueThumb(id, event) {
+            event.stopPropagation();
+            const btn = event.currentTarget;
+            const orig = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Queueing...';
+            try {
+                const res = await fetch(`/api/videos/${id}/queue-thumb`, { method: 'POST' });
+                const data = await res.json();
+                if (data.ok) {
+                    btn.classList.add('queued');
+                    btn.textContent = data.already ? 'Already queued' : 'Queued ✓';
+                    setTimeout(() => {
+                        btn.disabled = false;
+                        btn.classList.remove('queued');
+                        btn.textContent = orig;
+                    }, 4000);
+                } else {
+                    btn.textContent = 'Error';
+                    setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 2500);
+                }
+            } catch (e) {
+                console.error('Queue thumb failed:', e);
+                btn.textContent = 'Error';
+                setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 2500);
             }
         }
 

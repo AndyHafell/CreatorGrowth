@@ -32,6 +32,7 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 BLOTATO_API_KEY = os.environ.get("BLOTATO_API_KEY", "")
 BLOTATO_X_ACCOUNT_ID = int(os.environ.get("BLOTATO_X_ACCOUNT_ID", "13469"))
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
+THUMB_QUEUE_SECRET = os.environ.get("THUMB_QUEUE_SECRET", "")
 CONTENT_DIR = Path(os.environ.get("CONTENT_DIR", str(Path(__file__).resolve().parent.parent.parent / "content" / "content_docs")))
 CONTENT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -149,6 +150,17 @@ def init_db():
             conn.execute(f'ALTER TABLE tweets ADD COLUMN {col} {coltype} DEFAULT {default}')
         except:
             pass
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS thumb_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            status TEXT DEFAULT 'queued',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            picked_up_at TEXT DEFAULT '',
+            FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -551,6 +563,71 @@ def transform_video(vid):
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "transformed": bool(new_val)})
+
+
+@app.route("/api/videos/<int:vid>/queue-thumb", methods=["POST"])
+@login_required
+def queue_thumb(vid):
+    """Queue a thumbnail-generation task for the Mac poller to pick up."""
+    conn = get_db()
+    row = conn.execute("SELECT title FROM videos WHERE id = ?", (vid,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Not found"}), 404
+    title = row["title"] or ""
+    if not title:
+        conn.close()
+        return jsonify({"error": "Video has no title"}), 400
+    existing = conn.execute(
+        "SELECT id FROM thumb_queue WHERE video_id = ? AND status = 'queued'",
+        (vid,),
+    ).fetchone()
+    if existing:
+        conn.close()
+        return jsonify({"ok": True, "queued": True, "queue_id": existing["id"], "already": True})
+    cur = conn.execute(
+        "INSERT INTO thumb_queue (video_id, title) VALUES (?, ?)",
+        (vid, title),
+    )
+    conn.commit()
+    qid = cur.lastrowid
+    conn.close()
+    return jsonify({"ok": True, "queued": True, "queue_id": qid})
+
+
+def _thumb_queue_auth_ok():
+    if not THUMB_QUEUE_SECRET:
+        return False
+    header = request.headers.get("Authorization", "")
+    return header == f"Bearer {THUMB_QUEUE_SECRET}"
+
+
+@app.route("/api/thumb-queue", methods=["GET"])
+def thumb_queue_list():
+    """Mac poller: list pending queued tasks. Auth via Bearer secret."""
+    if not _thumb_queue_auth_ok():
+        return jsonify({"error": "Unauthorized"}), 401
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, video_id, title, created_at FROM thumb_queue WHERE status = 'queued' ORDER BY id ASC"
+    ).fetchall()
+    conn.close()
+    return jsonify([{"id": r["id"], "video_id": r["video_id"], "title": r["title"], "created_at": r["created_at"]} for r in rows])
+
+
+@app.route("/api/thumb-queue/<int:qid>/done", methods=["POST"])
+def thumb_queue_done(qid):
+    """Mac poller: mark task as picked up / done."""
+    if not _thumb_queue_auth_ok():
+        return jsonify({"error": "Unauthorized"}), 401
+    conn = get_db()
+    conn.execute(
+        "UPDATE thumb_queue SET status = 'done', picked_up_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (qid,),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
 
 
 @app.route("/api/videos/<int:vid>", methods=["DELETE"])
