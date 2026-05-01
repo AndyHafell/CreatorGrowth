@@ -32,7 +32,12 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 BLOTATO_API_KEY = os.environ.get("BLOTATO_API_KEY", "")
 BLOTATO_X_ACCOUNT_ID = int(os.environ.get("BLOTATO_X_ACCOUNT_ID", "13469"))
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
-THUMB_QUEUE_SECRET = os.environ.get("THUMB_QUEUE_SECRET", "")
+# THUMB_QUEUE_USERS format: email1:secret1,email2:secret2 — maps a Bearer secret to one user identity
+THUMB_QUEUE_USERS = {
+    pair.split(":", 1)[0].strip().lower(): pair.split(":", 1)[1].strip()
+    for pair in os.environ.get("THUMB_QUEUE_USERS", "").split(",")
+    if ":" in pair
+}
 CONTENT_DIR = Path(os.environ.get("CONTENT_DIR", str(Path(__file__).resolve().parent.parent.parent / "content" / "content_docs")))
 CONTENT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -158,9 +163,14 @@ def init_db():
             status TEXT DEFAULT 'queued',
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             picked_up_at TEXT DEFAULT '',
+            clicked_by_email TEXT DEFAULT '',
             FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
         )
     """)
+    try:
+        conn.execute("ALTER TABLE thumb_queue ADD COLUMN clicked_by_email TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -571,7 +581,10 @@ def transform_video(vid):
 @app.route("/api/videos/<int:vid>/queue-thumb", methods=["POST"])
 @login_required
 def queue_thumb(vid):
-    """Queue a thumbnail-generation task for the Mac poller to pick up."""
+    """Queue a thumbnail-generation task. Stamps the caller's email so only their poller picks it up."""
+    email = (session.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"error": "No session email"}), 400
     conn = get_db()
     row = conn.execute("SELECT title FROM videos WHERE id = ?", (vid,)).fetchone()
     if not row:
@@ -582,15 +595,15 @@ def queue_thumb(vid):
         conn.close()
         return jsonify({"error": "Video has no title"}), 400
     existing = conn.execute(
-        "SELECT id FROM thumb_queue WHERE video_id = ? AND status = 'queued'",
-        (vid,),
+        "SELECT id FROM thumb_queue WHERE video_id = ? AND clicked_by_email = ? AND status = 'queued'",
+        (vid, email),
     ).fetchone()
     if existing:
         conn.close()
         return jsonify({"ok": True, "queued": True, "queue_id": existing["id"], "already": True})
     cur = conn.execute(
-        "INSERT INTO thumb_queue (video_id, title) VALUES (?, ?)",
-        (vid, title),
+        "INSERT INTO thumb_queue (video_id, title, clicked_by_email) VALUES (?, ?, ?)",
+        (vid, title, email),
     )
     conn.commit()
     qid = cur.lastrowid
@@ -598,21 +611,29 @@ def queue_thumb(vid):
     return jsonify({"ok": True, "queued": True, "queue_id": qid})
 
 
-def _thumb_queue_auth_ok():
-    if not THUMB_QUEUE_SECRET:
-        return False
+def _bearer_user_email():
+    """Return the email mapped to the Bearer secret, or None if unknown."""
     header = request.headers.get("Authorization", "")
-    return header == f"Bearer {THUMB_QUEUE_SECRET}"
+    if not header.startswith("Bearer "):
+        return None
+    secret = header[7:]
+    for email, expected in THUMB_QUEUE_USERS.items():
+        if secret == expected:
+            return email
+    return None
 
 
 @app.route("/api/thumb-queue", methods=["GET"])
 def thumb_queue_list():
-    """Mac poller: list pending queued tasks. Auth via Bearer secret."""
-    if not _thumb_queue_auth_ok():
+    """Mac poller: list this user's pending queued tasks."""
+    user_email = _bearer_user_email()
+    if not user_email:
         return jsonify({"error": "Unauthorized"}), 401
     conn = get_db()
     rows = conn.execute(
-        "SELECT id, video_id, title, created_at FROM thumb_queue WHERE status = 'queued' ORDER BY id ASC"
+        "SELECT id, video_id, title, created_at FROM thumb_queue "
+        "WHERE status = 'queued' AND clicked_by_email = ? ORDER BY id ASC",
+        (user_email,),
     ).fetchall()
     conn.close()
     return jsonify([{"id": r["id"], "video_id": r["video_id"], "title": r["title"], "created_at": r["created_at"]} for r in rows])
@@ -620,13 +641,15 @@ def thumb_queue_list():
 
 @app.route("/api/thumb-queue/<int:qid>/done", methods=["POST"])
 def thumb_queue_done(qid):
-    """Mac poller: mark task as picked up / done."""
-    if not _thumb_queue_auth_ok():
+    """Mac poller: mark this user's task as done. Cannot mark another user's row."""
+    user_email = _bearer_user_email()
+    if not user_email:
         return jsonify({"error": "Unauthorized"}), 401
     conn = get_db()
     conn.execute(
-        "UPDATE thumb_queue SET status = 'done', picked_up_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (qid,),
+        "UPDATE thumb_queue SET status = 'done', picked_up_at = CURRENT_TIMESTAMP "
+        "WHERE id = ? AND clicked_by_email = ?",
+        (qid, user_email),
     )
     conn.commit()
     conn.close()
