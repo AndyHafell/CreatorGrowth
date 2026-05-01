@@ -31,7 +31,6 @@ UPLOAD_DIR = Path(__file__).resolve().parent / "static" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 BLOTATO_API_KEY = os.environ.get("BLOTATO_API_KEY", "")
 BLOTATO_X_ACCOUNT_ID = int(os.environ.get("BLOTATO_X_ACCOUNT_ID", "13469"))
-YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
 CONTENT_DIR = Path(os.environ.get("CONTENT_DIR", str(Path(__file__).resolve().parent.parent.parent / "content" / "content_docs")))
 CONTENT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -321,96 +320,8 @@ def fetch_channel_avg_views(channel_url: str) -> int:
         return 0
 
 
-def _iso8601_duration_to_seconds(s: str) -> int:
-    m = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", s or "")
-    if not m:
-        return 0
-    h, mi, sec = (int(x) if x else 0 for x in m.groups())
-    return h * 3600 + mi * 60 + sec
-
-
-def fetch_video_metadata_api(video_id: str) -> dict | None:
-    """Fetch video metadata via YouTube Data API v3. Returns None on any failure."""
-    if not YOUTUBE_API_KEY:
-        return None
-    try:
-        api_url = (
-            "https://www.googleapis.com/youtube/v3/videos"
-            f"?part=snippet,statistics,contentDetails&id={video_id}&key={YOUTUBE_API_KEY}"
-        )
-        with urlopen(api_url, timeout=15) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
-
-    items = payload.get("items") or []
-    if not items:
-        return None
-    item = items[0]
-    snippet = item.get("snippet", {})
-    stats = item.get("statistics", {})
-    details = item.get("contentDetails", {})
-
-    thumbs = snippet.get("thumbnails", {})
-    thumbnail_url = (
-        thumbs.get("maxres", {}).get("url")
-        or thumbs.get("standard", {}).get("url")
-        or thumbs.get("high", {}).get("url")
-        or thumbs.get("medium", {}).get("url")
-        or thumbs.get("default", {}).get("url", "")
-    )
-
-    channel_id = snippet.get("channelId", "")
-    channel_thumb = ""
-    if channel_id:
-        try:
-            ch_url = (
-                "https://www.googleapis.com/youtube/v3/channels"
-                f"?part=snippet&id={channel_id}&key={YOUTUBE_API_KEY}"
-            )
-            with urlopen(ch_url, timeout=10) as resp:
-                ch_payload = json.loads(resp.read().decode("utf-8"))
-            ch_items = ch_payload.get("items") or []
-            if ch_items:
-                ch_thumbs = ch_items[0].get("snippet", {}).get("thumbnails", {})
-                channel_thumb = (
-                    ch_thumbs.get("high", {}).get("url")
-                    or ch_thumbs.get("medium", {}).get("url")
-                    or ch_thumbs.get("default", {}).get("url", "")
-                )
-        except Exception:
-            pass
-
-    view_count = int(stats.get("viewCount", 0) or 0)
-
-    channel_url = f"https://www.youtube.com/channel/{channel_id}" if channel_id else ""
-    channel_avg_views = 0
-    outlier_score = 0.0
-    if channel_url:
-        channel_avg_views = fetch_channel_avg_views(channel_url)
-        if channel_avg_views > 0:
-            outlier_score = round(view_count / channel_avg_views, 1)
-
-    return {
-        "video_id": video_id,
-        "title": snippet.get("title", ""),
-        "channel_title": snippet.get("channelTitle", ""),
-        "channel_thumb": channel_thumb,
-        "thumbnail_url": thumbnail_url or "",
-        "view_count": view_count,
-        "duration": format_duration(_iso8601_duration_to_seconds(details.get("duration", ""))),
-        "published_at": snippet.get("publishedAt", ""),
-        "outlier_score": outlier_score,
-        "channel_avg_views": channel_avg_views,
-    }
-
-
 def fetch_video_metadata(video_id: str) -> dict | None:
-    """Fetch video metadata. Prefer YouTube Data API (no bot challenge); fall back to yt-dlp."""
-    meta = fetch_video_metadata_api(video_id)
-    if meta:
-        return meta
-
+    """Fetch video metadata using yt-dlp (no API key needed)."""
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
         result = subprocess.run(
@@ -1550,35 +1461,6 @@ def upload_file():
     filename = f"{uuid.uuid4().hex}{ext}"
     f.save(str(UPLOAD_DIR / filename))
     return jsonify({"url": f"/static/uploads/{filename}"})
-
-
-@app.route("/api/upload-content-doc", methods=["POST"])
-def upload_content_doc():
-    """Upload a markdown content doc into CONTENT_DIR/content_docs/.
-    Used by the Custom Fields → Content Doc field upload button so
-    collaborators (e.g. Hamflix) can drop a .md file via the web UI
-    instead of needing scp/VPS access."""
-    if "file" not in request.files:
-        return jsonify({"error": "No file provided"}), 400
-    f = request.files["file"]
-    if not f.filename:
-        return jsonify({"error": "Empty filename"}), 400
-    ext = Path(f.filename).suffix.lower()
-    if ext not in (".md", ".markdown", ".txt"):
-        return jsonify({"error": "Only .md / .markdown / .txt files allowed"}), 400
-    stem = re.sub(r"[^a-zA-Z0-9_\-]", "_", Path(f.filename).stem)[:120].strip("_")
-    if not stem:
-        stem = uuid.uuid4().hex[:12]
-    content_docs_subdir = CONTENT_DIR / "content_docs"
-    content_docs_subdir.mkdir(parents=True, exist_ok=True)
-    filename = f"{stem}.md"
-    filepath = content_docs_subdir / filename
-    if filepath.exists():
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{stem}_{ts}.md"
-        filepath = content_docs_subdir / filename
-    f.save(str(filepath))
-    return jsonify({"path": f"content_docs/{filename}", "filename": filename})
 
 
 # ── Keywords ──────────────────────────────────────────────

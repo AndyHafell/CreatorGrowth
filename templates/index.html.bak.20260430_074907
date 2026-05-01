@@ -2594,54 +2594,6 @@
                             valInput.addEventListener('input', () => { btn.style.display = valInput.value ? '' : 'none'; });
                             valInput.addEventListener('change', () => { btn.style.display = valInput.value ? '' : 'none'; });
                         }
-                        if (!row.querySelector('.doc-upload-btn')) {
-                            const upBtn = document.createElement('button');
-                            upBtn.className = 'doc-upload-btn';
-                            upBtn.textContent = 'Upload .md';
-                            upBtn.title = 'Upload a markdown content doc';
-                            upBtn.style.cssText = 'background:rgba(76,175,80,0.15); color:#7bc97f; border:1px solid rgba(76,175,80,0.3); border-radius:4px; padding:2px 8px; font-size:11px; cursor:pointer; margin-left:4px;';
-                            upBtn.onclick = () => {
-                                const fileInput = document.createElement('input');
-                                fileInput.type = 'file';
-                                fileInput.accept = '.md,.markdown,.txt';
-                                fileInput.style.display = 'none';
-                                fileInput.onchange = async () => {
-                                    const file = fileInput.files && fileInput.files[0];
-                                    if (!file) return;
-                                    const orig = upBtn.textContent;
-                                    upBtn.textContent = 'Uploading…';
-                                    upBtn.disabled = true;
-                                    try {
-                                        const fd = new FormData();
-                                        fd.append('file', file);
-                                        const resp = await fetch('/api/upload-content-doc', { method: 'POST', body: fd });
-                                        const data = await resp.json();
-                                        if (data.path) {
-                                            valInput.value = data.path;
-                                            valInput.dispatchEvent(new Event('change', { bubbles: true }));
-                                            valInput.dispatchEvent(new Event('input', { bubbles: true }));
-                                            saveModalData();
-                                            upBtn.textContent = 'Uploaded ✓';
-                                            setTimeout(() => { upBtn.textContent = orig; }, 1500);
-                                        } else {
-                                            upBtn.textContent = 'Error';
-                                            alert('Upload failed: ' + (data.error || 'unknown error'));
-                                            setTimeout(() => { upBtn.textContent = orig; }, 1500);
-                                        }
-                                    } catch (e) {
-                                        upBtn.textContent = 'Error';
-                                        alert('Upload failed: ' + e.message);
-                                        setTimeout(() => { upBtn.textContent = orig; }, 1500);
-                                    } finally {
-                                        upBtn.disabled = false;
-                                        fileInput.remove();
-                                    }
-                                };
-                                document.body.appendChild(fileInput);
-                                fileInput.click();
-                            };
-                            valInput.parentNode.insertBefore(upBtn, valInput.nextSibling);
-                        }
                     }
                 });
             }, 100);
