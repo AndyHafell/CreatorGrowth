@@ -1296,7 +1296,7 @@
 
     <div class="tabs-bar" id="tabsBar">
         <button class="tab active" data-tab="options" onclick="setTab('options')">
-            Options <span class="tab-count" id="countOptions">0</span>
+            Ideas <span class="tab-count" id="countOptions">0</span>
         </button>
         <button class="tab" data-tab="best" onclick="setTab('best')">
             Best <span class="tab-count" id="countBest">0</span>
@@ -1799,7 +1799,7 @@
                 if (v) v.status = newStatus;
                 updateCounts();
                 renderGrid();
-                const labels = { options: 'Options', best: 'Best', in_progress: 'In Progress' };
+                const labels = { options: 'Ideas', best: 'Best', in_progress: 'In Progress' };
                 showToast(`Moved to ${labels[newStatus]}`);
             } catch (err) {
                 showToast('Move failed', true);
@@ -1845,7 +1845,7 @@
             }
             if (v.status === 'in_progress') {
                 return `
-                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'options', event)">Options</button>
+                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'options', event)">Ideas</button>
                     <button class="action-btn move-best" onclick="moveVideo(${v.id}, 'best', event)">Best</button>
                     <button class="action-btn move-best" onclick="moveVideo(${v.id}, 'done', event)">Done</button>
                     ${!v.transformed ? `<button class="action-btn transform-btn" onclick="transformVideo(${v.id}, event)">Transform</button>` : ''}
@@ -1887,7 +1887,7 @@
             if (filtered.length === 0) {
                 const msgs = {
                     options: { icon: '&#127909;', title: 'No ideas yet', sub: 'Paste a YouTube URL above to start' },
-                    best: { icon: '&#11088;', title: 'No best picks yet', sub: 'Move your top ideas here from Options' },
+                    best: { icon: '&#11088;', title: 'No best picks yet', sub: 'Move your top ideas here from Ideas' },
                     in_progress: { icon: '&#128640;', title: 'Nothing in progress', sub: 'Move ideas here when you start working on them' },
                     done: { icon: '&#9989;', title: 'Nothing done yet', sub: 'Mark In Progress videos as Done when you\'ve made them' },
                 };
