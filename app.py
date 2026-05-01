@@ -229,6 +229,9 @@ def require_auth():
     path = request.path
     if path == "/" or path.startswith("/static/") or path in open_paths:
         return None
+    # Bearer-authed endpoints handle their own auth in the route
+    if path.startswith("/api/thumb-queue"):
+        return None
     if not session.get("authenticated"):
         return jsonify({"error": "Unauthorized"}), 401
 
