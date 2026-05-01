@@ -1845,9 +1845,10 @@
             }
             if (v.status === 'in_progress') {
                 return `
+                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'options', event)">Options</button>
+                    <button class="action-btn move-best" onclick="moveVideo(${v.id}, 'best', event)">Best</button>
                     <button class="action-btn move-best" onclick="moveVideo(${v.id}, 'done', event)">Done</button>
                     ${!v.transformed ? `<button class="action-btn transform-btn" onclick="transformVideo(${v.id}, event)">Transform</button>` : ''}
-                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'options', event)">Back</button>
                 `;
             }
             if (v.status === 'archived') {
