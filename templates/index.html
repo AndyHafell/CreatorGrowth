@@ -912,11 +912,28 @@
             color: #f1f1f1;
             margin-bottom: 8px;
             line-height: 20px;
-            max-width: 320px;
+            max-width: 600px;
+            cursor: text;
+            border-radius: 4px;
+            padding: 2px 6px;
+            margin-left: -6px;
+            transition: background 0.15s, box-shadow 0.15s;
+            outline: none;
             display: -webkit-box;
             -webkit-line-clamp: 2;
             -webkit-box-orient: vertical;
             overflow: hidden;
+        }
+        .modal-title:hover {
+            background: rgba(255,255,255,0.04);
+        }
+        .modal-title:focus {
+            background: rgba(91,155,213,0.08);
+            box-shadow: 0 0 0 1px #5b9bd5;
+            -webkit-line-clamp: unset;
+            display: block;
+            overflow: visible;
+            white-space: normal;
         }
         .modal-meta {
             display: flex;
@@ -1502,7 +1519,7 @@
         <div class="modal-card" id="modalCard">
             <button class="modal-close" onclick="closeModal()">&times;</button>
             <div class="modal-header">
-                <div class="modal-title" id="modalTitle"></div>
+                <div class="modal-title" id="modalTitle" contenteditable="true" spellcheck="false" title="Click to edit title" onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}"></div>
                 <div class="modal-meta" id="modalMeta"></div>
             </div>
             <hr class="modal-divider">
@@ -2443,6 +2460,12 @@
             btn.textContent = 'Saving...';
             try {
                 // Read current input values (in case user typed but didn't blur)
+                // Read edited title from the modal header
+                const titleEl = document.getElementById('modalTitle');
+                if (titleEl) {
+                    const newTitle = titleEl.textContent.trim();
+                    if (newTitle) modalDetails.title = newTitle;
+                }
                 document.querySelectorAll('#inspoTitleRow .title-input').forEach((inp, i) => {
                     modalDetails.inspo_titles[i] = inp.textContent.trim();
                 });
