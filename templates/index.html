@@ -1975,7 +1975,7 @@
                 const avatarUrl = isTransformed ? '/static/andy_avatar.png' : v.channel_thumb;
                 const channelName = isTransformed ? 'AI Andy' : v.channel_title;
                 return `
-                <div class="card${isTransformed ? ' transformed' : ''}" onclick="openModal(${v.id})" style="cursor:pointer;">
+                <div class="card${isTransformed ? ' transformed' : ''}" data-video-id="${v.id}" onclick="openModal(${v.id})" style="cursor:pointer;">
                     <div class="thumb-wrap">
                         <img src="${v.thumbnail_url}" alt="" loading="lazy">
                         ${v.duration ? `<span class="duration-badge">${v.duration}</span>` : ''}
@@ -2486,6 +2486,15 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(modalDetails),
                 });
+                // If title was edited, sync the in-memory videos array AND the visible dashboard tile
+                // so reopening the modal (or navigating) doesn't snap back to the stale title.
+                if (modalDetails.title) {
+                    const idx = videos.findIndex(v => v.id === modalVideoId);
+                    if (idx !== -1) videos[idx].title = modalDetails.title;
+                    document.querySelectorAll(`[data-video-id="${modalVideoId}"] .card-title`).forEach(el => {
+                        el.textContent = modalDetails.title;
+                    });
+                }
                 const indicator = document.getElementById('savedIndicator');
                 indicator.classList.add('show');
                 setTimeout(() => indicator.classList.remove('show'), 2000);
