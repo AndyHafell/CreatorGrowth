@@ -1551,13 +1551,17 @@
 
             <!-- Inspiration Row -->
             <div class="modal-section-label">Inspiration Thumbnails</div>
-            <div class="thumb-row" id="inspoThumbRow"></div>
-            <div class="title-row" id="inspoTitleRow"></div>
+            <div class="thumb-row" id="inspoThumbRow0"></div>
+            <div class="title-row inspo-titles" id="inspoTitleRow0"></div>
+            <div class="thumb-row" id="inspoThumbRow1"></div>
+            <div class="title-row inspo-titles" id="inspoTitleRow1"></div>
 
             <!-- Original Row -->
             <div class="modal-section-label">My Thumbnails</div>
-            <div class="thumb-row" id="originalThumbRow"></div>
-            <div class="title-row" id="originalTitleRow"></div>
+            <div class="thumb-row" id="originalThumbRow0"></div>
+            <div class="title-row original-titles" id="originalTitleRow0"></div>
+            <div class="thumb-row" id="originalThumbRow1"></div>
+            <div class="title-row original-titles" id="originalTitleRow1"></div>
 
             <hr class="modal-divider">
 
@@ -2366,10 +2370,10 @@
                 };
             }
 
-            renderThumbRow('inspoThumbRow', modalDetails.inspo_thumbs, 'inspo');
-            renderTitleRow('inspoTitleRow', modalDetails.inspo_titles, 'inspo');
-            renderThumbRow('originalThumbRow', modalDetails.original_thumbs, 'original');
-            renderTitleRow('originalTitleRow', modalDetails.original_titles, 'original');
+            renderThumbs('inspo', modalDetails.inspo_thumbs);
+            renderTitles('inspo', modalDetails.inspo_titles);
+            renderThumbs('original', modalDetails.original_thumbs);
+            renderTitles('original', modalDetails.original_titles);
             renderCustomFields();
 
             makeContentDocFieldClickable();
@@ -2403,10 +2407,12 @@
             modalDetails = null;
         }
 
-        function renderThumbRow(containerId, thumbs, prefix) {
+        function renderThumbRow(containerId, thumbs, prefix, startIdx = 0, endIdx) {
+            if (endIdx === undefined) endIdx = thumbs.length;
             const container = document.getElementById(containerId);
             const currentCard = (videos.find(v => v.id === modalVideoId) || {}).thumbnail_url || '';
-            container.innerHTML = thumbs.map((src, i) => {
+            container.innerHTML = thumbs.slice(startIdx, endIdx).map((src, localI) => {
+                const i = startIdx + localI;
                 const isCurrent = src && src === currentCard;
                 return `
                 <div class="thumb-slot ${src ? 'has-image' : ''}" onclick="triggerThumbUpload('${prefix}', ${i})" id="thumb-${prefix}-${i}">
@@ -2425,6 +2431,20 @@
             }).join('');
         }
 
+        function renderThumbs(prefix, thumbs) {
+            const a = prefix === 'inspo' ? 'inspoThumbRow0' : 'originalThumbRow0';
+            const b = prefix === 'inspo' ? 'inspoThumbRow1' : 'originalThumbRow1';
+            renderThumbRow(a, thumbs, prefix, 0, 3);
+            renderThumbRow(b, thumbs, prefix, 3, 6);
+        }
+
+        function renderTitles(prefix, titles) {
+            const a = prefix === 'inspo' ? 'inspoTitleRow0' : 'originalTitleRow0';
+            const b = prefix === 'inspo' ? 'inspoTitleRow1' : 'originalTitleRow1';
+            renderTitleRow(a, titles, prefix, 0, 3);
+            renderTitleRow(b, titles, prefix, 3, 6);
+        }
+
         async function setCardThumb(url, event) {
             event.stopPropagation();
             if (!modalVideoId || !url) return;
@@ -2437,19 +2457,23 @@
                 if (!resp.ok) { showToast('Set failed', true); return; }
                 const v = videos.find(v => v.id === modalVideoId);
                 if (v) v.thumbnail_url = url;
-                renderThumbRow('inspoThumbRow', modalDetails.inspo_thumbs, 'inspo');
-                renderThumbRow('originalThumbRow', modalDetails.original_thumbs, 'original');
+                renderThumbs('inspo', modalDetails.inspo_thumbs);
+                renderThumbs('original', modalDetails.original_thumbs);
                 renderGrid();
                 showToast('Card thumbnail set');
             } catch (e) { showToast('Set failed', true); }
         }
 
-        function renderTitleRow(containerId, titles, prefix) {
+        function renderTitleRow(containerId, titles, prefix, startIdx = 0, endIdx) {
+            if (endIdx === undefined) endIdx = titles.length;
             const container = document.getElementById(containerId);
-            container.innerHTML = titles.map((t, i) => `
+            container.innerHTML = titles.slice(startIdx, endIdx).map((t, localI) => {
+                const i = startIdx + localI;
+                return `
                 <div class="title-input" contenteditable="true" data-placeholder="Title ${i + 1}"
                      onblur="updateTitle('${prefix}', ${i}, this.textContent.trim())">${esc(t)}</div>
-            `).join('');
+                `;
+            }).join('');
         }
 
         function triggerThumbUpload(prefix, index) {
@@ -2467,7 +2491,7 @@
                     if (!resp.ok) { showToast(data.error || 'Upload failed', true); return; }
                     const arr = prefix === 'inspo' ? modalDetails.inspo_thumbs : modalDetails.original_thumbs;
                     arr[index] = data.url;
-                    renderThumbRow(prefix === "inspo" ? "inspoThumbRow" : "originalThumbRow", arr, prefix);
+                    renderThumbs(prefix, arr);
                     await saveModalData();
                 } catch (err) {
                     showToast('Upload failed', true);
@@ -2480,7 +2504,7 @@
             event.stopPropagation();
             const arr = prefix === 'inspo' ? modalDetails.inspo_thumbs : modalDetails.original_thumbs;
             arr[index] = '';
-            renderThumbRow(prefix === "inspo" ? "inspoThumbRow" : "originalThumbRow", arr, prefix);
+            renderThumbs(prefix, arr);
             saveModalData();
         }
 
@@ -2529,10 +2553,10 @@
                     const newTitle = titleEl.textContent.trim();
                     if (newTitle) modalDetails.title = newTitle;
                 }
-                document.querySelectorAll('#inspoTitleRow .title-input').forEach((inp, i) => {
+                document.querySelectorAll('.inspo-titles .title-input').forEach((inp, i) => {
                     modalDetails.inspo_titles[i] = inp.textContent.trim();
                 });
-                document.querySelectorAll('#originalTitleRow .title-input').forEach((inp, i) => {
+                document.querySelectorAll('.original-titles .title-input').forEach((inp, i) => {
                     modalDetails.original_titles[i] = inp.textContent.trim();
                 });
                 document.querySelectorAll('.custom-field-row').forEach((row, i) => {
