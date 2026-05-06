@@ -1152,8 +1152,6 @@ def update_abc_choices(vid):
     for url in raw:
         if isinstance(url, str) and url.strip() and url not in cleaned:
             cleaned.append(url)
-        if len(cleaned) >= 3:
-            break
     payload = json.dumps(cleaned)
     conn = get_db()
     existing = conn.execute("SELECT id FROM video_details WHERE video_id = ?", (vid,)).fetchone()
