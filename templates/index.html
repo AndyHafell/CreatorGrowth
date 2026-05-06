@@ -1930,6 +1930,7 @@
                 return `
                     <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'in_progress', event)">In Progress</button>
                     <button class="action-btn move-done" onclick="moveVideo(${v.id}, 'done', event)">Done</button>
+                    ${!v.transformed ? `<button class="action-btn transform-blue" onclick="transformVideo(${v.id}, event)">Transform</button>` : ''}
                     <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'archived', event)">Archive</button>
                 `;
             }
