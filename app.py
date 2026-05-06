@@ -89,10 +89,10 @@ def init_db():
         CREATE TABLE IF NOT EXISTS video_details (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             video_id INTEGER UNIQUE NOT NULL,
-            inspo_thumbs TEXT DEFAULT '["","",""]',
-            inspo_titles TEXT DEFAULT '["","",""]',
-            original_thumbs TEXT DEFAULT '["","",""]',
-            original_titles TEXT DEFAULT '["","",""]',
+            inspo_thumbs TEXT DEFAULT '["","","","","",""]',
+            inspo_titles TEXT DEFAULT '["","","","","",""]',
+            original_thumbs TEXT DEFAULT '["","","","","",""]',
+            original_titles TEXT DEFAULT '["","","","","",""]',
             custom_fields TEXT DEFAULT '[]',
             FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
         )
@@ -1103,9 +1103,9 @@ def get_video_details(vid):
         video = conn.execute("SELECT thumbnail_url, title FROM videos WHERE id = ?", (vid,)).fetchone()
         scraped_thumb = video["thumbnail_url"] if video else ""
         scraped_title = video["title"] if video else ""
-        default_inspo = json.dumps([scraped_thumb, "", ""])
-        default_inspo_titles = json.dumps([scraped_title, "", ""])
-        default_empty3 = json.dumps(["", "", ""])
+        default_inspo = json.dumps([scraped_thumb, "", "", "", "", ""])
+        default_inspo_titles = json.dumps([scraped_title, "", "", "", "", ""])
+        default_empty3 = json.dumps(["", "", "", "", "", ""])
         default_fields = json.dumps([{"key": "Content Doc", "value": ""}])
         conn.execute(
             """INSERT INTO video_details (video_id, inspo_thumbs, inspo_titles, original_thumbs, original_titles, custom_fields)
@@ -1115,12 +1115,14 @@ def get_video_details(vid):
         conn.commit()
         row = conn.execute("SELECT * FROM video_details WHERE video_id = ?", (vid,)).fetchone()
     conn.close()
+    def _pad6(arr):
+        return (arr + ["", "", "", "", "", ""])[:6]
     return jsonify({
         "video_id": row["video_id"],
-        "inspo_thumbs": json.loads(row["inspo_thumbs"]),
-        "inspo_titles": json.loads(row["inspo_titles"]),
-        "original_thumbs": json.loads(row["original_thumbs"]),
-        "original_titles": json.loads(row["original_titles"]),
+        "inspo_thumbs": _pad6(json.loads(row["inspo_thumbs"])),
+        "inspo_titles": _pad6(json.loads(row["inspo_titles"])),
+        "original_thumbs": _pad6(json.loads(row["original_thumbs"])),
+        "original_titles": _pad6(json.loads(row["original_titles"])),
         "custom_fields": json.loads(row["custom_fields"]),
     })
 
@@ -1132,10 +1134,10 @@ def save_video_details(vid):
     # Upsert
     existing = conn.execute("SELECT id FROM video_details WHERE video_id = ?", (vid,)).fetchone()
     values = {
-        "inspo_thumbs": json.dumps(data.get("inspo_thumbs", ["", "", ""])),
-        "inspo_titles": json.dumps(data.get("inspo_titles", ["", "", ""])),
-        "original_thumbs": json.dumps(data.get("original_thumbs", ["", "", ""])),
-        "original_titles": json.dumps(data.get("original_titles", ["", "", ""])),
+        "inspo_thumbs": json.dumps(data.get("inspo_thumbs", ["", "", "", "", "", ""])),
+        "inspo_titles": json.dumps(data.get("inspo_titles", ["", "", "", "", "", ""])),
+        "original_thumbs": json.dumps(data.get("original_thumbs", ["", "", "", "", "", ""])),
+        "original_titles": json.dumps(data.get("original_titles", ["", "", "", "", "", ""])),
         "custom_fields": json.dumps(data.get("custom_fields", [])),
     }
     if existing:
@@ -1148,7 +1150,7 @@ def save_video_details(vid):
             (vid, *values.values()),
         )
     # If a custom thumbnail (My Thumbnails slot 1) is set, update the card thumbnail
-    original_thumbs = data.get("original_thumbs", ["", "", ""])
+    original_thumbs = data.get("original_thumbs", ["", "", "", "", "", ""])
     if original_thumbs and original_thumbs[0]:
         conn.execute("UPDATE videos SET thumbnail_url = ? WHERE id = ?", (original_thumbs[0], vid))
 
