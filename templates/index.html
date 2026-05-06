@@ -1345,6 +1345,9 @@
             In Progress <span class="tab-count" id="countProgress">0</span>
         </button>
         <button class="tab" id="newVideoBtn" style="display:none; padding:4px 10px; font-size:16px; min-width:0;" onclick="createBlankVideo()" title="Create new video card">+</button>
+        <button class="tab" data-tab="edited" onclick="setTab('edited')">
+            Edited <span class="tab-count" id="countEdited">0</span>
+        </button>
         <button class="tab" data-tab="done" onclick="setTab('done')">
             Done <span class="tab-count" id="countDone">0</span>
         </button>
@@ -1764,11 +1767,12 @@
         }
 
         function updateCounts() {
-            const counts = { options: 0, best: 0, in_progress: 0, done: 0 };
+            const counts = { options: 0, best: 0, in_progress: 0, edited: 0, done: 0 };
             videos.forEach(v => { counts[v.status] = (counts[v.status] || 0) + 1; });
             document.getElementById('countOptions').textContent = counts.options;
             document.getElementById('countBest').textContent = counts.best;
             document.getElementById('countProgress').textContent = counts.in_progress;
+            document.getElementById('countEdited').textContent = counts.edited;
             document.getElementById('countDone').textContent = counts.done;
             document.getElementById('countCreators').textContent = channels.length;
             document.getElementById('videoCount').textContent =
@@ -1839,7 +1843,7 @@
                 if (v) v.status = newStatus;
                 updateCounts();
                 renderGrid();
-                const labels = { options: 'Ideas', best: 'Best', in_progress: 'In Progress' };
+                const labels = { options: 'Ideas', best: 'Best', in_progress: 'In Progress', edited: 'Edited', done: 'Done' };
                 showToast(`Moved to ${labels[newStatus]}`);
             } catch (err) {
                 showToast('Move failed', true);
@@ -1887,8 +1891,14 @@
                 return `
                     <button class="action-btn move-ideas" onclick="moveVideo(${v.id}, 'options', event)">Ideas</button>
                     <button class="action-btn move-best-yellow" onclick="moveVideo(${v.id}, 'best', event)">Best</button>
-                    <button class="action-btn move-done" onclick="moveVideo(${v.id}, 'done', event)">Done</button>
+                    <button class="action-btn move-done" onclick="moveVideo(${v.id}, 'edited', event)">Edited</button>
                     ${!v.transformed ? `<button class="action-btn transform-blue" onclick="transformVideo(${v.id}, event)">Transform</button>` : ''}
+                `;
+            }
+            if (v.status === 'edited') {
+                return `
+                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'in_progress', event)">In Progress</button>
+                    <button class="action-btn move-done" onclick="moveVideo(${v.id}, 'done', event)">Done</button>
                 `;
             }
             if (v.status === 'archived') {
@@ -1899,7 +1909,7 @@
             // done
             return `
                 ${!v.transformed ? `<button class="action-btn transform-btn" onclick="transformVideo(${v.id}, event)">Transform</button>` : ''}
-                <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'in_progress', event)">Reopen</button>
+                <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'edited', event)">Reopen</button>
             `;
         }
 
@@ -1957,7 +1967,8 @@
                     options: { icon: '&#127909;', title: 'No ideas yet', sub: 'Paste a YouTube URL above to start' },
                     best: { icon: '&#11088;', title: 'No best picks yet', sub: 'Move your top ideas here from Ideas' },
                     in_progress: { icon: '&#128640;', title: 'Nothing in progress', sub: 'Move ideas here when you start working on them' },
-                    done: { icon: '&#9989;', title: 'Nothing done yet', sub: 'Mark In Progress videos as Done when you\'ve made them' },
+                    edited: { icon: '&#9999;', title: 'Nothing edited yet', sub: 'Move In Progress videos here when the edit is finished' },
+                    done: { icon: '&#9989;', title: 'Nothing done yet', sub: 'Mark Edited videos as Done when published' },
                 };
                 const m = msgs[currentTab];
                 grid.innerHTML = `
