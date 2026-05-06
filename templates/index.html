@@ -2449,7 +2449,7 @@
                 const isCurrent = src && src === currentCard;
                 const abcIdx = src ? choices.indexOf(src) : -1;
                 const abcLabel = abcIdx >= 0 ? String.fromCharCode(65 + abcIdx) : '';
-                const abcTitle = abcIdx >= 0 ? `Test ${abcLabel} — click to remove` : (choices.length >= 3 ? '3 tests already chosen' : 'Mark as A/B/C test');
+                const abcTitle = abcIdx >= 0 ? `Test ${abcLabel} — click to remove` : 'Mark as candidate';
                 return `
                 <div class="thumb-slot ${src ? 'has-image' : ''}" onclick="triggerThumbUpload('${prefix}', ${i})" id="thumb-${prefix}-${i}">
                     ${src ? `
@@ -2492,10 +2492,6 @@
             if (idx >= 0) {
                 choices.splice(idx, 1);
             } else {
-                if (choices.length >= 3) {
-                    showToast('3 tests already chosen — uncheck one first', true);
-                    return;
-                }
                 choices.push(url);
             }
             try {
