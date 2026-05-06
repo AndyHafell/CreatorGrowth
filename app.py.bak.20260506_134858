@@ -562,19 +562,6 @@ def update_status(vid):
     return jsonify({"ok": True, "status": new_status})
 
 
-@app.route("/api/videos/<int:vid>/thumbnail", methods=["POST"])
-def update_thumbnail(vid):
-    data = request.get_json(force=True)
-    url = (data.get("url") or "").strip()
-    if not url:
-        return jsonify({"error": "Missing url"}), 400
-    conn = get_db()
-    conn.execute("UPDATE videos SET thumbnail_url = ? WHERE id = ?", (url, vid))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True, "thumbnail_url": url})
-
-
 @app.route("/api/videos/<int:vid>/transform", methods=["POST"])
 @login_required
 def transform_video(vid):
