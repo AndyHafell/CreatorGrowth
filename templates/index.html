@@ -2332,6 +2332,7 @@
 
         let modalVideoId = null;
         let modalDetails = null;
+        let modalInitialDetails = null;  // snapshot of server state at open — used to detect which slots the user actually changed
 
         // Close on Escape
         document.addEventListener('keydown', (e) => {
@@ -2371,6 +2372,7 @@
                     custom_fields: [{ key: 'Content Doc', value: '' }],
                 };
             }
+            modalInitialDetails = JSON.parse(JSON.stringify(modalDetails));
 
             renderThumbs('inspo', modalDetails.inspo_thumbs);
             renderTitles('inspo', modalDetails.inspo_titles);
@@ -2578,11 +2580,45 @@
                     }
                 });
 
+                // ── Merge against latest server state to prevent stale-DOM clobbers ──
+                // For slots the user didn't actively change since open, keep the server's value
+                // (it may have been written out-of-band — e.g. by a script — after we opened).
+                if (modalInitialDetails) {
+                    try {
+                        const latestResp = await fetch(`/api/videos/${modalVideoId}/details`);
+                        const latest = await latestResp.json();
+                        const arrFields = ['inspo_thumbs', 'inspo_titles', 'original_thumbs', 'original_titles'];
+                        arrFields.forEach(field => {
+                            const cur = modalDetails[field] || [];
+                            const init = modalInitialDetails[field] || [];
+                            const srv = latest[field] || [];
+                            const n = Math.max(cur.length, init.length, srv.length);
+                            for (let i = 0; i < n; i++) {
+                                const userTouched = (cur[i] || '') !== (init[i] || '');
+                                if (!userTouched && srv[i] !== undefined) {
+                                    cur[i] = srv[i];
+                                }
+                            }
+                            modalDetails[field] = cur;
+                        });
+                    } catch (mergeErr) {
+                        // If the re-fetch fails, fall through and POST what we have.
+                        console.warn('merge re-fetch failed', mergeErr);
+                    }
+                }
+
                 await fetch(`/api/videos/${modalVideoId}/details`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(modalDetails),
                 });
+                // Refresh the initial snapshot so the next save baselines correctly.
+                modalInitialDetails = JSON.parse(JSON.stringify(modalDetails));
+                // Re-render so any slots that came back from the server merge show up in the DOM.
+                renderThumbs('inspo', modalDetails.inspo_thumbs);
+                renderTitles('inspo', modalDetails.inspo_titles);
+                renderThumbs('original', modalDetails.original_thumbs);
+                renderTitles('original', modalDetails.original_titles);
                 // If title was edited, sync the in-memory videos array AND the visible dashboard tile
                 // so reopening the modal (or navigating) doesn't snap back to the stale title.
                 if (modalDetails.title) {
