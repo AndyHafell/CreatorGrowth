@@ -1047,6 +1047,25 @@
         }
         .thumb-slot:hover .remove-thumb { display: flex; }
         .thumb-slot .remove-thumb:hover { background: rgba(200,0,0,0.8); color: #fff; }
+        .thumb-slot .set-thumb {
+            position: absolute;
+            bottom: 6px;
+            left: 6px;
+            background: rgba(0,0,0,0.75);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: #fff;
+            padding: 3px 9px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            cursor: pointer;
+            display: none;
+            line-height: 1;
+        }
+        .thumb-slot:hover .set-thumb { display: block; }
+        .thumb-slot .set-thumb:hover { background: #2196f3; border-color: #2196f3; }
+        .thumb-slot .set-thumb.is-current { background: #4caf50; border-color: #4caf50; display: block; }
 
         .title-row {
             display: grid;
@@ -2386,10 +2405,14 @@
 
         function renderThumbRow(containerId, thumbs, prefix) {
             const container = document.getElementById(containerId);
-            container.innerHTML = thumbs.map((src, i) => `
+            const currentCard = (videos.find(v => v.id === modalVideoId) || {}).thumbnail_url || '';
+            container.innerHTML = thumbs.map((src, i) => {
+                const isCurrent = src && src === currentCard;
+                return `
                 <div class="thumb-slot ${src ? 'has-image' : ''}" onclick="triggerThumbUpload('${prefix}', ${i})" id="thumb-${prefix}-${i}">
                     ${src ? `
                         <img src="${esc(src)}" alt="">
+                        <button class="set-thumb${isCurrent ? ' is-current' : ''}" onclick="setCardThumb('${esc(src)}', event)" title="Use as card thumbnail">${isCurrent ? '&#10003; Set' : 'Set'}</button>
                         <button class="remove-thumb" onclick="removeThumb('${prefix}', ${i}, event)">&times;</button>
                     ` : `
                         <div class="upload-hint">
@@ -2398,7 +2421,27 @@
                         </div>
                     `}
                 </div>
-            `).join('');
+                `;
+            }).join('');
+        }
+
+        async function setCardThumb(url, event) {
+            event.stopPropagation();
+            if (!modalVideoId || !url) return;
+            try {
+                const resp = await fetch(`/api/videos/${modalVideoId}/thumbnail`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ url })
+                });
+                if (!resp.ok) { showToast('Set failed', true); return; }
+                const v = videos.find(v => v.id === modalVideoId);
+                if (v) v.thumbnail_url = url;
+                renderThumbRow('inspoThumbRow', modalDetails.inspo_thumbs, 'inspo');
+                renderThumbRow('originalThumbRow', modalDetails.original_thumbs, 'original');
+                renderGrid();
+                showToast('Card thumbnail set');
+            } catch (e) { showToast('Set failed', true); }
         }
 
         function renderTitleRow(containerId, titles, prefix) {
