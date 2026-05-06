@@ -1065,7 +1065,7 @@
         }
         .thumb-slot:hover .set-thumb { display: block; }
         .thumb-slot .set-thumb:hover { background: #2196f3; border-color: #2196f3; }
-        .thumb-slot .set-thumb.is-current { background: #4caf50; border-color: #4caf50; }
+        .thumb-slot .set-thumb.is-current { background: #4caf50; border-color: #4caf50; display: block; }
 
         .title-row {
             display: grid;
@@ -1553,8 +1553,6 @@
             <div class="modal-section-label">Inspiration Thumbnails</div>
             <div class="thumb-row" id="inspoThumbRow0"></div>
             <div class="title-row inspo-titles" id="inspoTitleRow0"></div>
-            <div class="thumb-row" id="inspoThumbRow1"></div>
-            <div class="title-row inspo-titles" id="inspoTitleRow1"></div>
 
             <!-- Original Row -->
             <div class="modal-section-label">My Thumbnails</div>
@@ -1562,6 +1560,8 @@
             <div class="title-row original-titles" id="originalTitleRow0"></div>
             <div class="thumb-row" id="originalThumbRow1"></div>
             <div class="title-row original-titles" id="originalTitleRow1"></div>
+            <div class="thumb-row" id="originalThumbRow2"></div>
+            <div class="title-row original-titles" id="originalTitleRow2"></div>
 
             <hr class="modal-divider">
 
@@ -2362,10 +2362,10 @@
                 modalDetails = await resp.json();
             } catch (e) {
                 modalDetails = {
-                    inspo_thumbs: [v.thumbnail_url, '', '', '', '', ''],
-                    inspo_titles: ['', '', '', '', '', ''],
-                    original_thumbs: ['', '', '', '', '', ''],
-                    original_titles: ['', '', '', '', '', ''],
+                    inspo_thumbs: [v.thumbnail_url, '', ''],
+                    inspo_titles: ['', '', ''],
+                    original_thumbs: ['', '', '', '', '', '', '', '', ''],
+                    original_titles: ['', '', '', '', '', '', '', '', ''],
                     custom_fields: [{ key: 'Content Doc', value: '' }],
                 };
             }
@@ -2431,18 +2431,20 @@
             }).join('');
         }
 
+        const SLOT_COUNT = { inspo: 3, original: 9 };
+
         function renderThumbs(prefix, thumbs) {
-            const a = prefix === 'inspo' ? 'inspoThumbRow0' : 'originalThumbRow0';
-            const b = prefix === 'inspo' ? 'inspoThumbRow1' : 'originalThumbRow1';
-            renderThumbRow(a, thumbs, prefix, 0, 3);
-            renderThumbRow(b, thumbs, prefix, 3, 6);
+            const rows = SLOT_COUNT[prefix] / 3;
+            for (let r = 0; r < rows; r++) {
+                renderThumbRow(`${prefix}ThumbRow${r}`, thumbs, prefix, r * 3, (r + 1) * 3);
+            }
         }
 
         function renderTitles(prefix, titles) {
-            const a = prefix === 'inspo' ? 'inspoTitleRow0' : 'originalTitleRow0';
-            const b = prefix === 'inspo' ? 'inspoTitleRow1' : 'originalTitleRow1';
-            renderTitleRow(a, titles, prefix, 0, 3);
-            renderTitleRow(b, titles, prefix, 3, 6);
+            const rows = SLOT_COUNT[prefix] / 3;
+            for (let r = 0; r < rows; r++) {
+                renderTitleRow(`${prefix}TitleRow${r}`, titles, prefix, r * 3, (r + 1) * 3);
+            }
         }
 
         async function setCardThumb(url, event) {
