@@ -1064,6 +1064,7 @@
             line-height: 1;
         }
         .thumb-slot:hover .set-thumb { display: block; }
+        .thumb-slot.just-set:hover .set-thumb { display: none; }
         .thumb-slot .set-thumb:hover { background: #2196f3; border-color: #2196f3; }
         .thumb-slot .set-thumb.is-current { background: #4caf50; border-color: #4caf50; }
 
@@ -2463,6 +2464,12 @@
                 renderThumbs('original', modalDetails.original_thumbs);
                 renderGrid();
                 showToast('Card thumbnail set');
+                document.querySelectorAll('.thumb-slot .set-thumb.is-current').forEach(btn => {
+                    const slot = btn.closest('.thumb-slot');
+                    if (!slot) return;
+                    slot.classList.add('just-set');
+                    setTimeout(() => slot.classList.remove('just-set'), 1200);
+                });
             } catch (e) { showToast('Set failed', true); }
         }
 
