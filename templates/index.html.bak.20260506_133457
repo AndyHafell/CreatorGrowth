@@ -1351,9 +1351,6 @@
         <button class="tab" data-tab="done" onclick="setTab('done')">
             Done <span class="tab-count" id="countDone">0</span>
         </button>
-        <button class="tab" data-tab="archived" onclick="setTab('archived')">
-            Archived <span class="tab-count" id="countArchived">0</span>
-        </button>
         <button class="tab" data-tab="keywords" onclick="setTab('keywords')" style="margin-left:auto;">
             Keywords <span class="tab-count" id="countKeywords">0</span>
         </button>
@@ -1770,14 +1767,13 @@
         }
 
         function updateCounts() {
-            const counts = { options: 0, best: 0, in_progress: 0, edited: 0, done: 0, archived: 0 };
+            const counts = { options: 0, best: 0, in_progress: 0, edited: 0, done: 0 };
             videos.forEach(v => { counts[v.status] = (counts[v.status] || 0) + 1; });
             document.getElementById('countOptions').textContent = counts.options;
             document.getElementById('countBest').textContent = counts.best;
             document.getElementById('countProgress').textContent = counts.in_progress;
             document.getElementById('countEdited').textContent = counts.edited;
             document.getElementById('countDone').textContent = counts.done;
-            document.getElementById('countArchived').textContent = counts.archived;
             document.getElementById('countCreators').textContent = channels.length;
             document.getElementById('videoCount').textContent =
                 videos.length ? `${videos.length} total` : '';
@@ -1847,7 +1843,7 @@
                 if (v) v.status = newStatus;
                 updateCounts();
                 renderGrid();
-                const labels = { options: 'Ideas', best: 'Best', in_progress: 'In Progress', edited: 'Edited', done: 'Done', archived: 'Archived' };
+                const labels = { options: 'Ideas', best: 'Best', in_progress: 'In Progress', edited: 'Edited', done: 'Done' };
                 showToast(`Moved to ${labels[newStatus]}`);
             } catch (err) {
                 showToast('Move failed', true);
@@ -1883,14 +1879,12 @@
                 return `
                     <button class="action-btn move-best" onclick="moveVideo(${v.id}, 'best', event)">Best</button>
                     <button class="action-btn move-progress" onclick="moveVideo(${v.id}, 'in_progress', event)">In Progress</button>
-                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'archived', event)">Archive</button>
                 `;
             }
             if (v.status === 'best') {
                 return `
                     <button class="action-btn move-progress" onclick="moveVideo(${v.id}, 'in_progress', event)">In Progress</button>
                     <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'options', event)">Back</button>
-                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'archived', event)">Archive</button>
                 `;
             }
             if (v.status === 'in_progress') {
@@ -1899,14 +1893,12 @@
                     <button class="action-btn move-best-yellow" onclick="moveVideo(${v.id}, 'best', event)">Best</button>
                     <button class="action-btn move-done" onclick="moveVideo(${v.id}, 'edited', event)">Edited</button>
                     ${!v.transformed ? `<button class="action-btn transform-blue" onclick="transformVideo(${v.id}, event)">Transform</button>` : ''}
-                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'archived', event)">Archive</button>
                 `;
             }
             if (v.status === 'edited') {
                 return `
                     <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'in_progress', event)">In Progress</button>
                     <button class="action-btn move-done" onclick="moveVideo(${v.id}, 'done', event)">Done</button>
-                    <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'archived', event)">Archive</button>
                 `;
             }
             if (v.status === 'archived') {
@@ -1918,7 +1910,6 @@
             return `
                 ${!v.transformed ? `<button class="action-btn transform-btn" onclick="transformVideo(${v.id}, event)">Transform</button>` : ''}
                 <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'edited', event)">Reopen</button>
-                <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'archived', event)">Archive</button>
             `;
         }
 
@@ -1978,7 +1969,6 @@
                     in_progress: { icon: '&#128640;', title: 'Nothing in progress', sub: 'Move ideas here when you start working on them' },
                     edited: { icon: '&#9999;', title: 'Nothing edited yet', sub: 'Move In Progress videos here when the edit is finished' },
                     done: { icon: '&#9989;', title: 'Nothing done yet', sub: 'Mark Edited videos as Done when published' },
-                    archived: { icon: '&#128451;', title: 'Nothing archived', sub: 'Archive ideas to keep them out of the way without deleting' },
                 };
                 const m = msgs[currentTab];
                 grid.innerHTML = `
