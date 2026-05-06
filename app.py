@@ -94,9 +94,14 @@ def init_db():
             original_thumbs TEXT DEFAULT '["","","","","","","","",""]',
             original_titles TEXT DEFAULT '["","","","","","","","",""]',
             custom_fields TEXT DEFAULT '[]',
+            abc_choices TEXT DEFAULT '[]',
             FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
         )
     """)
+    try:
+        conn.execute("ALTER TABLE video_details ADD COLUMN abc_choices TEXT DEFAULT '[]'")
+    except sqlite3.OperationalError:
+        pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS channels (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1122,6 +1127,10 @@ def get_video_details(vid):
     conn.close()
     def _pad(arr, n):
         return (arr + [""] * n)[:n]
+    try:
+        abc_choices = json.loads(row["abc_choices"]) if row["abc_choices"] else []
+    except (TypeError, ValueError, IndexError):
+        abc_choices = []
     return jsonify({
         "video_id": row["video_id"],
         "inspo_thumbs": _pad(json.loads(row["inspo_thumbs"]), 3),
@@ -1129,7 +1138,35 @@ def get_video_details(vid):
         "original_thumbs": _pad(json.loads(row["original_thumbs"]), 9),
         "original_titles": _pad(json.loads(row["original_titles"]), 9),
         "custom_fields": json.loads(row["custom_fields"]),
+        "abc_choices": abc_choices,
     })
+
+
+@app.route("/api/videos/<int:vid>/abc-choices", methods=["POST"])
+def update_abc_choices(vid):
+    data = request.get_json(force=True)
+    raw = data.get("choices") or []
+    if not isinstance(raw, list):
+        return jsonify({"error": "choices must be a list"}), 400
+    cleaned = []
+    for url in raw:
+        if isinstance(url, str) and url.strip() and url not in cleaned:
+            cleaned.append(url)
+        if len(cleaned) >= 3:
+            break
+    payload = json.dumps(cleaned)
+    conn = get_db()
+    existing = conn.execute("SELECT id FROM video_details WHERE video_id = ?", (vid,)).fetchone()
+    if existing:
+        conn.execute("UPDATE video_details SET abc_choices = ? WHERE video_id = ?", (payload, vid))
+    else:
+        conn.execute(
+            "INSERT INTO video_details (video_id, abc_choices) VALUES (?, ?)",
+            (vid, payload),
+        )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "abc_choices": cleaned})
 
 
 @app.route("/api/videos/<int:vid>/details", methods=["POST"])
