@@ -2448,14 +2448,13 @@
                 const i = startIdx + localI;
                 const isCurrent = src && src === currentCard;
                 const abcIdx = src ? choices.indexOf(src) : -1;
-                const abcLabel = abcIdx >= 0 ? String.fromCharCode(65 + abcIdx) : '';
-                const abcTitle = abcIdx >= 0 ? `Test ${abcLabel} — click to remove` : 'Mark as candidate';
+                const abcTitle = abcIdx >= 0 ? 'Unmark candidate' : 'Mark as candidate';
                 return `
                 <div class="thumb-slot ${src ? 'has-image' : ''}" onclick="triggerThumbUpload('${prefix}', ${i})" id="thumb-${prefix}-${i}">
                     ${src ? `
                         <img src="${esc(src)}" alt="">
                         <button class="set-thumb${isCurrent ? ' is-current' : ''}" onclick="setCardThumb('${prefix}', ${i}, '${esc(src)}', event)" title="Use as card thumbnail + paired title">${isCurrent ? '&#10003; Set' : 'Set'}</button>
-                        <button class="abc-check${abcIdx >= 0 ? ' checked' : ''}" onclick="toggleAbcChoice('${esc(src)}', event)" title="${abcTitle}">${abcLabel || '&#10003;'}</button>
+                        <button class="abc-check${abcIdx >= 0 ? ' checked' : ''}" onclick="toggleAbcChoice('${esc(src)}', event)" title="${abcTitle}">&#10003;</button>
                         <button class="remove-thumb" onclick="removeThumb('${prefix}', ${i}, event)">&times;</button>
                     ` : `
                         <div class="upload-hint">
