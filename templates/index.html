@@ -2422,7 +2422,7 @@
                 <div class="thumb-slot ${src ? 'has-image' : ''}" onclick="triggerThumbUpload('${prefix}', ${i})" id="thumb-${prefix}-${i}">
                     ${src ? `
                         <img src="${esc(src)}" alt="">
-                        <button class="set-thumb${isCurrent ? ' is-current' : ''}" onclick="setCardThumb('${esc(src)}', event)" title="Use as card thumbnail">${isCurrent ? '&#10003; Set' : 'Set'}</button>
+                        <button class="set-thumb${isCurrent ? ' is-current' : ''}" onclick="setCardThumb('${prefix}', ${i}, '${esc(src)}', event)" title="Use as card thumbnail + paired title">${isCurrent ? '&#10003; Set' : 'Set'}</button>
                         <button class="remove-thumb" onclick="removeThumb('${prefix}', ${i}, event)">&times;</button>
                     ` : `
                         <div class="upload-hint">
@@ -2451,22 +2451,32 @@
             }
         }
 
-        async function setCardThumb(url, event) {
+        async function setCardThumb(prefix, index, url, event) {
             event.stopPropagation();
             if (!modalVideoId || !url) return;
+            const titlesArr = prefix === 'inspo' ? modalDetails.inspo_titles : modalDetails.original_titles;
+            const pairedTitle = (titlesArr && titlesArr[index] ? titlesArr[index] : '').trim();
             try {
                 const resp = await fetch(`/api/videos/${modalVideoId}/thumbnail`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ url })
+                    body: JSON.stringify({ url, title: pairedTitle })
                 });
                 if (!resp.ok) { showToast('Set failed', true); return; }
                 const v = videos.find(v => v.id === modalVideoId);
-                if (v) v.thumbnail_url = url;
+                if (v) {
+                    v.thumbnail_url = url;
+                    if (pairedTitle) v.title = pairedTitle;
+                }
+                if (pairedTitle) {
+                    const titleEl = document.getElementById('modalTitle');
+                    if (titleEl) titleEl.textContent = pairedTitle;
+                    if (modalDetails) modalDetails.title = pairedTitle;
+                }
                 renderThumbs('inspo', modalDetails.inspo_thumbs);
                 renderThumbs('original', modalDetails.original_thumbs);
                 renderGrid();
-                showToast('Card thumbnail set');
+                showToast(pairedTitle ? 'Card thumbnail + title set' : 'Card thumbnail set');
                 document.querySelectorAll('.thumb-slot .set-thumb.is-current').forEach(btn => {
                     const slot = btn.closest('.thumb-slot');
                     if (!slot) return;
