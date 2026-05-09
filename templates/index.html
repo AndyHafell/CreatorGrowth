@@ -1689,6 +1689,11 @@
                     <div><strong>Uploaded:</strong> <a id="videoInfoLink" href="#" target="_blank" rel="noopener"></a></div>
                     <div id="videoInfoMeta" style="color:#888; margin-top:4px;"></div>
                     <div class="video-actions">
+                        <select id="videoPublishPrivacy" style="background:#0d0d1a; color:#ddd; border:1px solid #2a2a4a; border-radius:4px; padding:5px 8px; font-size:12px;">
+                            <option value="private" selected>Private (draft)</option>
+                            <option value="unlisted">Unlisted</option>
+                            <option value="public">Public</option>
+                        </select>
                         <button id="videoPublishBtn" onclick="publishToBlotato()">Publish to socials</button>
                         <button class="danger" onclick="clearVideoUpload()">Replace</button>
                     </div>
@@ -2948,10 +2953,11 @@
             btn.textContent = 'Publishing…';
             const vid = modalVideoId;
             try {
+                const privacy = (document.getElementById('videoPublishPrivacy') || {}).value || 'private';
                 const resp = await fetch(`/api/videos/${vid}/publish-blotato`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({}),
+                    body: JSON.stringify({ privacy }),
                 });
                 const data = await resp.json();
                 if (!resp.ok) throw new Error(data.error || 'publish failed');

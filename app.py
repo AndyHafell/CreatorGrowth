@@ -1897,8 +1897,11 @@ def video_publish_blotato(vid):
     fb_page_id = os.environ.get("BLOTATO_FACEBOOK_PAGE_ID", "")
     pin_board_id = os.environ.get("BLOTATO_PINTEREST_BOARD_ID", "")
 
+    privacy = (body.get("privacy") or "private").lower()
+    if privacy not in ("public", "private", "unlisted"):
+        privacy = "private"
     targets = {
-        "youtube":   {"targetType": "youtube", "title": title, "privacyStatus": "public", "shouldNotifySubscribers": False},
+        "youtube":   {"targetType": "youtube", "title": title, "privacyStatus": privacy, "shouldNotifySubscribers": False},
         "tiktok":    {"targetType": "tiktok", "privacyLevel": "PUBLIC_TO_EVERYONE", "disabledComments": False, "disabledDuet": False, "disabledStitch": False, "isBrandedContent": False, "isYourBrand": False, "isAiGenerated": True},
         "facebook":  {"targetType": "facebook", "pageId": fb_page_id} if fb_page_id else None,
         "instagram": {"targetType": "instagram"},
@@ -1974,13 +1977,14 @@ def video_publish_status(vid):
             results[platform] = {**info, "poll_error": str(e)}
             continue
         status = (data.get("status") or "").lower()
-        if status == "succeeded":
-            results[platform] = {"status": "ok", "id": sub_id, "post_url": data.get("postUrl")}
+        post_url = data.get("publicUrl") or data.get("postUrl")
+        if status in ("published", "succeeded", "completed"):
+            results[platform] = {"status": "ok", "id": sub_id, "post_url": post_url}
             updated = True
         elif status == "failed":
             results[platform] = {"status": "fail", "id": sub_id, "error": data.get("errorMessage", "unknown")}
             updated = True
-        elif status in ("processing", "queued", "pending"):
+        elif status in ("processing", "queued", "pending", "submitted"):
             results[platform] = {"status": "processing", "id": sub_id}
         else:
             results[platform] = {"status": status or "unknown", "id": sub_id, "raw": data}
