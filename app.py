@@ -1925,7 +1925,9 @@ def video_publish_blotato(vid):
             "target": target,
         }})
         if "postSubmissionId" in resp:
-            results[platform] = {"status": "ok", "id": resp["postSubmissionId"]}
+            # Submission accepted; actual posting is async on Blotato's side.
+            # Caller should poll /publish-status to resolve.
+            results[platform] = {"status": "processing", "id": resp["postSubmissionId"]}
         else:
             results[platform] = {"status": "fail", "raw": resp}
 
@@ -1936,6 +1938,60 @@ def video_publish_blotato(vid):
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "results": results, "media_url": media_url})
+
+
+@app.route("/api/videos/<int:vid>/publish-status", methods=["POST"])
+def video_publish_status(vid):
+    """Re-poll Blotato for each platform that returned a postSubmissionId, update DB."""
+    api_key = os.environ.get("BLOTATO_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "BLOTATO_API_KEY not configured"}), 500
+
+    conn = get_db()
+    meta, _ = _details_meta(conn, vid)
+    results = meta.get("publish_status") or {}
+    if not isinstance(results, dict):
+        conn.close()
+        return jsonify({"error": "no publish history"}), 400
+
+    updated = False
+    for platform, info in list(results.items()):
+        if not isinstance(info, dict):
+            continue
+        if info.get("status") not in ("ok", "submitted", "processing"):
+            continue
+        sub_id = info.get("id")
+        if not sub_id:
+            continue
+        req = Request(
+            f"{BLOTATO_API}/posts/{sub_id}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        try:
+            resp = urlopen(req, timeout=30)
+            data = json.loads(resp.read())
+        except Exception as e:
+            results[platform] = {**info, "poll_error": str(e)}
+            continue
+        status = (data.get("status") or "").lower()
+        if status == "succeeded":
+            results[platform] = {"status": "ok", "id": sub_id, "post_url": data.get("postUrl")}
+            updated = True
+        elif status == "failed":
+            results[platform] = {"status": "fail", "id": sub_id, "error": data.get("errorMessage", "unknown")}
+            updated = True
+        elif status in ("processing", "queued", "pending"):
+            results[platform] = {"status": "processing", "id": sub_id}
+        else:
+            results[platform] = {"status": status or "unknown", "id": sub_id, "raw": data}
+            updated = True
+
+    if updated:
+        meta["publish_status"] = results
+        _save_details_meta(conn, vid, meta)
+        conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "results": results})
 
 
 # ── Keywords ──────────────────────────────────────────────

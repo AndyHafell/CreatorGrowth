@@ -2702,8 +2702,14 @@
         // ── Video upload + Blotato publish ────────────────────────
 
         function renderVideoUpload() {
+            stopPublishPoll();
             const meta = (modalDetails && modalDetails.meta) || {};
             const url = meta.video_url || '';
+            // Resume polling if any platform is still processing
+            const ps = meta.publish_status;
+            if (ps && typeof ps === 'object' && Object.values(ps).some(v => v && v.status === 'processing')) {
+                startPublishPoll(modalVideoId);
+            }
             const dropZone = document.getElementById('videoDropZone');
             const dropHint = document.getElementById('videoDropHint');
             const dropProgress = document.getElementById('videoDropProgress');
@@ -2752,20 +2758,55 @@
                 .filter(p => status[p])
                 .map(p => {
                     const r = status[p];
-                    const cls = r.status === 'ok' ? 'pr-ok' : (r.status === 'fail' ? 'pr-fail' : 'pr-skip');
-                    const detail = r.status === 'ok' ? r.id : (r.status === 'skipped' ? r.reason : (r.raw && r.raw.message) || 'failed');
-                    return `<div class="pr-row"><span>${p}</span><span class="${cls}">${r.status} · ${detail}</span></div>`;
+                    const s = r.status;
+                    const cls = s === 'ok' ? 'pr-ok'
+                              : s === 'fail' ? 'pr-fail'
+                              : (s === 'processing' ? '' : 'pr-skip');
+                    let detail = '';
+                    if (s === 'ok' && r.post_url) detail = `<a href="${r.post_url}" target="_blank" rel="noopener" style="color:#4caf50">view post</a>`;
+                    else if (s === 'ok') detail = 'posted';
+                    else if (s === 'fail') detail = (r.error || 'failed').slice(0, 100);
+                    else if (s === 'skipped') detail = r.reason || 'skipped';
+                    else if (s === 'processing') detail = 'submitted, waiting…';
+                    else detail = s;
+                    return `<div class="pr-row"><span>${p}</span><span class="${cls}">${s} · ${detail}</span></div>`;
                 }).join('');
+        }
+
+        let publishPollHandle = null;
+        function stopPublishPoll() {
+            if (publishPollHandle) { clearInterval(publishPollHandle); publishPollHandle = null; }
+        }
+        function startPublishPoll(vid) {
+            stopPublishPoll();
+            const startedAt = Date.now();
+            publishPollHandle = setInterval(async () => {
+                if (modalVideoId !== vid) { stopPublishPoll(); return; }
+                try {
+                    const r = await fetch(`/api/videos/${vid}/publish-status`, { method: 'POST' });
+                    const data = await r.json();
+                    if (data.results) {
+                        if (!modalDetails.meta) modalDetails.meta = {};
+                        modalDetails.meta.publish_status = data.results;
+                        renderPublishResults(data.results);
+                        const stillProcessing = Object.values(data.results).some(v => v && v.status === 'processing');
+                        if (!stillProcessing) stopPublishPoll();
+                    }
+                } catch (e) { /* keep polling */ }
+                // Cap polling at 5 min
+                if (Date.now() - startedAt > 5 * 60 * 1000) stopPublishPoll();
+            }, 5000);
         }
 
         // Cloudflare Free caps a single HTTP request body at 100MB. Anything bigger goes via /upload-chunk.
         const VIDEO_CHUNK_THRESHOLD = 90 * 1024 * 1024;
-        const VIDEO_CHUNK_SIZE = 50 * 1024 * 1024;
+        const VIDEO_CHUNK_SIZE = 80 * 1024 * 1024;
+        const VIDEO_CHUNK_PARALLEL = 4;
 
         function _xhrSend(xhr, body, onProgress) {
             return new Promise((resolve, reject) => {
                 xhr.upload.onprogress = (e) => {
-                    if (e.lengthComputable) onProgress(e.loaded, e.total);
+                    if (e.lengthComputable && onProgress) onProgress(e.loaded, e.total);
                 };
                 xhr.onload = () => xhr.status >= 200 && xhr.status < 300
                     ? resolve(JSON.parse(xhr.responseText || '{}'))
@@ -2788,28 +2829,56 @@
 
         async function _uploadChunked(file, init, onProgress) {
             const chunkEndpoint = init.endpoint.replace(/\/upload$/, '/upload-chunk');
+            const finalizeEndpoint = init.endpoint.replace(/\/upload$/, '/upload-finalize');
             const uploadId = (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '-' + Math.random())).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
             const total = Math.ceil(file.size / VIDEO_CHUNK_SIZE);
-            let lastResult = null;
-            for (let i = 0; i < total; i++) {
-                const start = i * VIDEO_CHUNK_SIZE;
+
+            // Per-chunk loaded byte count, summed for overall progress
+            const loaded = new Array(total).fill(0);
+            const tick = () => onProgress(loaded.reduce((a, b) => a + b, 0), file.size);
+
+            async function uploadOne(idx) {
+                const start = idx * VIDEO_CHUNK_SIZE;
                 const end = Math.min(start + VIDEO_CHUNK_SIZE, file.size);
-                const chunk = file.slice(start, end);
+                const blob = file.slice(start, end);
                 const xhr = new XMLHttpRequest();
                 xhr.open('POST', chunkEndpoint);
                 xhr.setRequestHeader('X-Upload-Secret', init.secret);
                 xhr.setRequestHeader('X-Upload-Id', uploadId);
-                xhr.setRequestHeader('X-Chunk-Index', String(i));
+                xhr.setRequestHeader('X-Chunk-Index', String(idx));
                 xhr.setRequestHeader('X-Chunk-Total', String(total));
-                xhr.setRequestHeader('X-Filename', file.name);
-                xhr.setRequestHeader('X-Folder', init.folder || 'creatorgrowth');
                 xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-                lastResult = await _xhrSend(xhr, chunk, (loaded, totalChunk) => {
-                    const overall = (start + loaded) / file.size;
-                    onProgress(overall * file.size, file.size);
-                });
+                await _xhrSend(xhr, blob, (l) => { loaded[idx] = l; tick(); });
+                loaded[idx] = end - start;
+                tick();
             }
-            return lastResult; // last chunk's response carries path/key/size
+
+            // Worker pool: VIDEO_CHUNK_PARALLEL workers pulling chunk indices off a shared queue
+            let nextIdx = 0;
+            const errors = [];
+            await Promise.all(Array.from({ length: Math.min(VIDEO_CHUNK_PARALLEL, total) }, async () => {
+                while (true) {
+                    const idx = nextIdx++;
+                    if (idx >= total) return;
+                    try { await uploadOne(idx); }
+                    catch (e) { errors.push(`chunk ${idx}: ${e.message}`); throw e; }
+                }
+            }));
+            if (errors.length) throw new Error(errors.join('; '));
+
+            // Finalize
+            const fzResp = await fetch(finalizeEndpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Upload-Secret': init.secret },
+                body: JSON.stringify({
+                    upload_id: uploadId,
+                    filename: file.name,
+                    folder: init.folder || 'creatorgrowth',
+                    total: total,
+                }),
+            });
+            if (!fzResp.ok) throw new Error('finalize failed: ' + (await fzResp.text()).slice(0, 200));
+            return await fzResp.json();
         }
 
         async function handleVideoFile(file) {
@@ -2877,8 +2946,9 @@
             const btn = document.getElementById('videoPublishBtn');
             btn.disabled = true;
             btn.textContent = 'Publishing…';
+            const vid = modalVideoId;
             try {
-                const resp = await fetch(`/api/videos/${modalVideoId}/publish-blotato`, {
+                const resp = await fetch(`/api/videos/${vid}/publish-blotato`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({}),
@@ -2889,6 +2959,7 @@
                 modalDetails.meta.publish_status = data.results;
                 renderPublishResults(data.results);
                 btn.textContent = 'Publish to socials';
+                startPublishPoll(vid);
             } catch (err) {
                 alert('Publish failed: ' + err.message);
                 btn.textContent = 'Publish to socials';
