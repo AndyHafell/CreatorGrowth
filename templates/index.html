@@ -1131,6 +1131,89 @@
             color: #555;
         }
 
+        /* Video upload */
+        .video-upload-section { margin-top: 4px; margin-bottom: 16px; }
+        .video-drop-zone {
+            border: 2px dashed #2a2a4a;
+            border-radius: 8px;
+            padding: 24px;
+            text-align: center;
+            color: #888;
+            background: #0d0d1a;
+            cursor: pointer;
+            transition: border-color 0.15s, background 0.15s;
+        }
+        .video-drop-zone:hover { border-color: #4a4a7a; background: #11112a; }
+        .video-drop-zone.dragover { border-color: #5b9bd5; background: #14223a; color: #5b9bd5; }
+        .video-drop-zone input[type=file] { display: none; }
+        .video-drop-hint { font-size: 13px; }
+        .video-drop-progress {
+            margin-top: 10px;
+            height: 6px;
+            background: #1a1a2e;
+            border-radius: 3px;
+            overflow: hidden;
+            display: none;
+        }
+        .video-drop-progress > div {
+            height: 100%;
+            background: linear-gradient(90deg, #5b9bd5, #4caf50);
+            width: 0%;
+            transition: width 0.2s;
+        }
+        .video-info {
+            display: none;
+            margin-top: 10px;
+            padding: 10px 12px;
+            background: #0f1f0f;
+            border: 1px solid #2a4a2a;
+            border-radius: 6px;
+            color: #ddd;
+            font-size: 13px;
+        }
+        .video-info a { color: #4caf50; word-break: break-all; }
+        .video-info .video-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+            flex-wrap: wrap;
+        }
+        .video-info .video-actions button {
+            background: #1a3a8a;
+            color: #fff;
+            border: none;
+            padding: 6px 14px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .video-info .video-actions button:hover { background: #2050b0; }
+        .video-info .video-actions button:disabled { background: #333; color: #666; cursor: not-allowed; }
+        .video-info .video-actions button.danger { background: #5a1a1a; }
+        .video-info .video-actions button.danger:hover { background: #7a2020; }
+        .publish-results {
+            display: none;
+            margin-top: 10px;
+            padding: 10px 12px;
+            background: #0d0d1a;
+            border: 1px solid #2a2a4a;
+            border-radius: 6px;
+            font-size: 12px;
+        }
+        .publish-results .pr-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 3px 0;
+            border-bottom: 1px solid #1a1a2e;
+        }
+        .publish-results .pr-row:last-child { border-bottom: none; }
+        .publish-results .pr-ok { color: #4caf50; }
+        .publish-results .pr-fail { color: #e57373; }
+        .publish-results .pr-skip { color: #666; }
+
         /* Custom fields */
         .custom-fields-section { margin-top: 4px; }
         .custom-field-row {
@@ -1591,6 +1674,27 @@
             <div class="title-row original-titles" id="originalTitleRow1"></div>
             <div class="thumb-row" id="originalThumbRow2"></div>
             <div class="title-row original-titles" id="originalTitleRow2"></div>
+
+            <hr class="modal-divider">
+
+            <!-- Video Upload -->
+            <div class="video-upload-section">
+                <div class="modal-section-label">Video</div>
+                <label class="video-drop-zone" id="videoDropZone">
+                    <input type="file" id="videoFileInput" accept="video/*">
+                    <div class="video-drop-hint" id="videoDropHint">Drag &amp; drop a video here, or click to choose</div>
+                    <div class="video-drop-progress" id="videoDropProgress"><div></div></div>
+                </label>
+                <div class="video-info" id="videoInfo">
+                    <div><strong>Uploaded:</strong> <a id="videoInfoLink" href="#" target="_blank" rel="noopener"></a></div>
+                    <div id="videoInfoMeta" style="color:#888; margin-top:4px;"></div>
+                    <div class="video-actions">
+                        <button id="videoPublishBtn" onclick="publishToBlotato()">Publish to socials</button>
+                        <button class="danger" onclick="clearVideoUpload()">Replace</button>
+                    </div>
+                    <div class="publish-results" id="videoPublishResults"></div>
+                </div>
+            </div>
 
             <hr class="modal-divider">
 
@@ -2409,6 +2513,7 @@
             renderThumbs('original', modalDetails.original_thumbs);
             renderTitles('original', modalDetails.original_titles);
             renderCustomFields();
+            renderVideoUpload();
 
             makeContentDocFieldClickable();
             // Auto-load content doc if field has a value
@@ -2592,6 +2697,159 @@
             if (prefix === 'inspo') modalDetails.inspo_titles[index] = value;
             else modalDetails.original_titles[index] = value;
             saveModalData();
+        }
+
+        // ── Video upload + Blotato publish ────────────────────────
+
+        function renderVideoUpload() {
+            const meta = (modalDetails && modalDetails.meta) || {};
+            const url = meta.video_url || '';
+            const dropZone = document.getElementById('videoDropZone');
+            const dropHint = document.getElementById('videoDropHint');
+            const dropProgress = document.getElementById('videoDropProgress');
+            const info = document.getElementById('videoInfo');
+            const link = document.getElementById('videoInfoLink');
+            const metaEl = document.getElementById('videoInfoMeta');
+            const results = document.getElementById('videoPublishResults');
+
+            dropProgress.style.display = 'none';
+            dropProgress.firstElementChild.style.width = '0%';
+            dropHint.textContent = 'Drag & drop a video here, or click to choose';
+
+            if (url) {
+                info.style.display = 'block';
+                link.href = url;
+                link.textContent = url;
+                const sizeMb = meta.video_size ? (meta.video_size / 1024 / 1024).toFixed(1) + ' MB · ' : '';
+                const when = meta.video_uploaded_at ? new Date(meta.video_uploaded_at).toLocaleString() : '';
+                metaEl.textContent = sizeMb + when;
+                renderPublishResults(meta.publish_status);
+            } else {
+                info.style.display = 'none';
+                results.style.display = 'none';
+            }
+
+            // Hook handlers (idempotent)
+            const fileInput = document.getElementById('videoFileInput');
+            fileInput.onchange = (e) => {
+                if (e.target.files && e.target.files[0]) handleVideoFile(e.target.files[0]);
+            };
+            dropZone.ondragover = (e) => { e.preventDefault(); dropZone.classList.add('dragover'); };
+            dropZone.ondragleave = () => dropZone.classList.remove('dragover');
+            dropZone.ondrop = (e) => {
+                e.preventDefault();
+                dropZone.classList.remove('dragover');
+                if (e.dataTransfer.files && e.dataTransfer.files[0]) handleVideoFile(e.dataTransfer.files[0]);
+            };
+        }
+
+        function renderPublishResults(status) {
+            const el = document.getElementById('videoPublishResults');
+            if (!status || typeof status !== 'object') { el.style.display = 'none'; return; }
+            el.style.display = 'block';
+            const order = ['youtube','tiktok','facebook','instagram','linkedin','twitter','pinterest','bluesky','threads'];
+            el.innerHTML = order
+                .filter(p => status[p])
+                .map(p => {
+                    const r = status[p];
+                    const cls = r.status === 'ok' ? 'pr-ok' : (r.status === 'fail' ? 'pr-fail' : 'pr-skip');
+                    const detail = r.status === 'ok' ? r.id : (r.status === 'skipped' ? r.reason : (r.raw && r.raw.message) || 'failed');
+                    return `<div class="pr-row"><span>${p}</span><span class="${cls}">${r.status} · ${detail}</span></div>`;
+                }).join('');
+        }
+
+        async function handleVideoFile(file) {
+            if (!modalVideoId) return;
+            const dropZone = document.getElementById('videoDropZone');
+            const dropHint = document.getElementById('videoDropHint');
+            const dropProgress = document.getElementById('videoDropProgress');
+            const bar = dropProgress.firstElementChild;
+
+            dropHint.textContent = `Uploading ${file.name} (${(file.size/1024/1024).toFixed(1)} MB)…`;
+            dropProgress.style.display = 'block';
+            bar.style.width = '0%';
+
+            try {
+                const initResp = await fetch(`/api/videos/${modalVideoId}/upload-init`, { method: 'POST' });
+                if (!initResp.ok) throw new Error('upload-init failed');
+                const init = await initResp.json();
+
+                const fd = new FormData();
+                fd.append('folder', init.folder || 'creatorgrowth');
+                fd.append('file', file);
+
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', init.endpoint);
+                xhr.setRequestHeader('X-Upload-Secret', init.secret);
+                xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable) bar.style.width = (e.loaded / e.total * 100).toFixed(1) + '%';
+                };
+                const result = await new Promise((resolve, reject) => {
+                    xhr.onload = () => xhr.status >= 200 && xhr.status < 300
+                        ? resolve(JSON.parse(xhr.responseText))
+                        : reject(new Error(`upload ${xhr.status}: ${xhr.responseText}`));
+                    xhr.onerror = () => reject(new Error('network error'));
+                    xhr.send(fd);
+                });
+
+                bar.style.width = '100%';
+                dropHint.textContent = 'Saving…';
+
+                const completeResp = await fetch(`/api/videos/${modalVideoId}/upload-complete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: result.path, size: result.size }),
+                });
+                const completeData = await completeResp.json();
+                if (!completeData.ok) throw new Error(completeData.error || 'save failed');
+
+                if (!modalDetails.meta) modalDetails.meta = {};
+                modalDetails.meta.video_url = completeData.url;
+                modalDetails.meta.video_size = result.size;
+                modalDetails.meta.video_uploaded_at = new Date().toISOString();
+                modalDetails.meta.publish_status = null;
+                renderVideoUpload();
+            } catch (err) {
+                dropHint.textContent = 'Upload failed: ' + err.message;
+                dropProgress.style.display = 'none';
+            }
+        }
+
+        function clearVideoUpload() {
+            if (!modalDetails || !modalDetails.meta) return;
+            if (!confirm('Replace the uploaded video?')) return;
+            modalDetails.meta.video_url = '';
+            modalDetails.meta.video_size = null;
+            modalDetails.meta.publish_status = null;
+            fetch(`/api/videos/${modalVideoId}/upload-complete`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ clear: true })
+            }).catch(()=>{});
+            renderVideoUpload();
+        }
+
+        async function publishToBlotato() {
+            const btn = document.getElementById('videoPublishBtn');
+            btn.disabled = true;
+            btn.textContent = 'Publishing…';
+            try {
+                const resp = await fetch(`/api/videos/${modalVideoId}/publish-blotato`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.error || 'publish failed');
+                if (!modalDetails.meta) modalDetails.meta = {};
+                modalDetails.meta.publish_status = data.results;
+                renderPublishResults(data.results);
+                btn.textContent = 'Publish to socials';
+            } catch (err) {
+                alert('Publish failed: ' + err.message);
+                btn.textContent = 'Publish to socials';
+            } finally {
+                btn.disabled = false;
+            }
         }
 
         function renderCustomFields() {

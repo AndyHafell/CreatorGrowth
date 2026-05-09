@@ -102,6 +102,10 @@ def init_db():
         conn.execute("ALTER TABLE video_details ADD COLUMN abc_choices TEXT DEFAULT '[]'")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE video_details ADD COLUMN meta TEXT DEFAULT '{}'")
+    except sqlite3.OperationalError:
+        pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS channels (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1131,6 +1135,10 @@ def get_video_details(vid):
         abc_choices = json.loads(row["abc_choices"]) if row["abc_choices"] else []
     except (TypeError, ValueError, IndexError):
         abc_choices = []
+    try:
+        meta = json.loads(row["meta"]) if "meta" in row.keys() and row["meta"] else {}
+    except (TypeError, ValueError, IndexError):
+        meta = {}
     return jsonify({
         "video_id": row["video_id"],
         "inspo_thumbs": _pad(json.loads(row["inspo_thumbs"]), 3),
@@ -1139,6 +1147,7 @@ def get_video_details(vid):
         "original_titles": _pad(json.loads(row["original_titles"]), 9),
         "custom_fields": json.loads(row["custom_fields"]),
         "abc_choices": abc_choices,
+        "meta": meta,
     })
 
 
@@ -1737,6 +1746,196 @@ def upload_content_doc():
         filepath = content_docs_subdir / filename
     f.save(str(filepath))
     return jsonify({"path": f"content_docs/{filename}", "filename": filename})
+
+
+# ── Video Upload (NAS) + Blotato Publish ─────────────────
+
+NAS_UPLOAD_URL = os.environ.get("NAS_UPLOAD_URL", "https://media.agentflow.net/upload")
+NAS_UPLOAD_SECRET = os.environ.get("NAS_UPLOAD_SECRET", "")
+NAS_PUBLIC_BASE = os.environ.get("NAS_PUBLIC_BASE", "https://media.agentflow.net")
+BLOTATO_API = "https://backend.blotato.com/v2"
+
+
+def _details_meta(conn, vid):
+    row = conn.execute("SELECT meta FROM video_details WHERE video_id = ?", (vid,)).fetchone()
+    if not row:
+        return {}, False
+    try:
+        return (json.loads(row["meta"]) if row["meta"] else {}), True
+    except (TypeError, ValueError):
+        return {}, True
+
+
+def _save_details_meta(conn, vid, meta):
+    payload = json.dumps(meta)
+    existing = conn.execute("SELECT id FROM video_details WHERE video_id = ?", (vid,)).fetchone()
+    if existing:
+        conn.execute("UPDATE video_details SET meta = ? WHERE video_id = ?", (payload, vid))
+    else:
+        conn.execute(
+            "INSERT INTO video_details (video_id, meta) VALUES (?, ?)",
+            (vid, payload),
+        )
+
+
+@app.route("/api/videos/<int:vid>/upload-init", methods=["POST"])
+def video_upload_init(vid):
+    """Return the NAS upload endpoint + secret + folder so the browser can POST direct."""
+    if not NAS_UPLOAD_SECRET:
+        return jsonify({"error": "NAS_UPLOAD_SECRET not configured"}), 500
+    return jsonify({
+        "endpoint": NAS_UPLOAD_URL,
+        "secret": NAS_UPLOAD_SECRET,
+        "folder": "creatorgrowth",
+    })
+
+
+@app.route("/api/videos/<int:vid>/upload-complete", methods=["POST"])
+def video_upload_complete(vid):
+    data = request.get_json(force=True) or {}
+    conn = get_db()
+    meta, _ = _details_meta(conn, vid)
+    if data.get("clear"):
+        meta["video_url"] = ""
+        meta["video_size"] = None
+        meta["publish_status"] = None
+        _save_details_meta(conn, vid, meta)
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "url": ""})
+    path = (data.get("path") or "").strip()
+    if not path or not path.startswith("/uploads/"):
+        return jsonify({"error": "invalid path"}), 400
+    public_url = NAS_PUBLIC_BASE.rstrip("/") + path
+    meta["video_url"] = public_url
+    meta["video_uploaded_at"] = datetime.utcnow().isoformat() + "Z"
+    meta["video_size"] = data.get("size")
+    meta["publish_status"] = None
+    _save_details_meta(conn, vid, meta)
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "url": public_url})
+
+
+def _blotato_post(api_key, body):
+    req = Request(
+        f"{BLOTATO_API}/posts",
+        data=json.dumps(body).encode(),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        resp = urlopen(req, timeout=120)
+        return json.loads(resp.read())
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _blotato_upload_media(api_key, video_url):
+    req = Request(
+        f"{BLOTATO_API}/media",
+        data=json.dumps({"url": video_url}).encode(),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    resp = urlopen(req, timeout=300)
+    return json.loads(resp.read())
+
+
+@app.route("/api/videos/<int:vid>/publish-blotato", methods=["POST"])
+def video_publish_blotato(vid):
+    api_key = os.environ.get("BLOTATO_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "BLOTATO_API_KEY not configured"}), 500
+
+    conn = get_db()
+    meta, _ = _details_meta(conn, vid)
+    video_url = meta.get("video_url", "")
+    if not video_url:
+        conn.close()
+        return jsonify({"error": "no video uploaded yet"}), 400
+
+    # Pull title + caption from request or fall back to video title
+    body = request.get_json(silent=True) or {}
+    caption = (body.get("caption") or "").strip()
+    title = (body.get("title") or "").strip()
+    if not title:
+        v = conn.execute("SELECT title FROM videos WHERE id = ?", (vid,)).fetchone()
+        title = (v["title"] if v else "") or ""
+    if not caption:
+        caption = title
+
+    # Upload to Blotato media
+    try:
+        media = _blotato_upload_media(api_key, video_url)
+    except Exception as e:
+        conn.close()
+        return jsonify({"error": f"blotato media upload failed: {e}"}), 502
+    media_url = media.get("url", "")
+    if not media_url:
+        conn.close()
+        return jsonify({"error": "blotato did not return media url", "raw": media}), 502
+
+    # Per-platform publish — only platforms with an account ID configured
+    accounts = {
+        "youtube":   os.environ.get("BLOTATO_YOUTUBE_ACCOUNT_ID", ""),
+        "tiktok":    os.environ.get("BLOTATO_TIKTOK_ACCOUNT_ID", ""),
+        "facebook":  os.environ.get("BLOTATO_FACEBOOK_ACCOUNT_ID", ""),
+        "instagram": os.environ.get("BLOTATO_INSTAGRAM_ACCOUNT_ID", ""),
+        "linkedin":  os.environ.get("BLOTATO_LINKEDIN_ACCOUNT_ID", ""),
+        "twitter":   os.environ.get("BLOTATO_X_ACCOUNT_ID", ""),
+        "pinterest": os.environ.get("BLOTATO_PINTEREST_ACCOUNT_ID", ""),
+        "bluesky":   os.environ.get("BLOTATO_BLUESKY_ACCOUNT_ID", ""),
+        "threads":   os.environ.get("BLOTATO_THREADS_ACCOUNT_ID", ""),
+    }
+    fb_page_id = os.environ.get("BLOTATO_FACEBOOK_PAGE_ID", "")
+    pin_board_id = os.environ.get("BLOTATO_PINTEREST_BOARD_ID", "")
+
+    targets = {
+        "youtube":   {"targetType": "youtube", "title": title, "privacyStatus": "public", "shouldNotifySubscribers": False},
+        "tiktok":    {"targetType": "tiktok", "privacyLevel": "PUBLIC_TO_EVERYONE", "disabledComments": False, "disabledDuet": False, "disabledStitch": False, "isBrandedContent": False, "isYourBrand": False, "isAiGenerated": True},
+        "facebook":  {"targetType": "facebook", "pageId": fb_page_id} if fb_page_id else None,
+        "instagram": {"targetType": "instagram"},
+        "linkedin":  {"targetType": "linkedin"},
+        "twitter":   {"targetType": "twitter"},
+        "pinterest": {"targetType": "pinterest", "boardId": pin_board_id} if pin_board_id else None,
+        "bluesky":   {"targetType": "bluesky"},
+        "threads":   {"targetType": "threads"},
+    }
+
+    results = {}
+    for platform, account_id in accounts.items():
+        if not account_id:
+            results[platform] = {"status": "skipped", "reason": "no account id"}
+            continue
+        target = targets.get(platform)
+        if target is None:
+            results[platform] = {"status": "skipped", "reason": "missing config (page/board)"}
+            continue
+        text = caption + (" #short" if platform == "youtube" else "")
+        resp = _blotato_post(api_key, {"post": {
+            "accountId": account_id,
+            "content": {"text": text, "mediaUrls": [media_url], "platform": platform},
+            "target": target,
+        }})
+        if "postSubmissionId" in resp:
+            results[platform] = {"status": "ok", "id": resp["postSubmissionId"]}
+        else:
+            results[platform] = {"status": "fail", "raw": resp}
+
+    meta["publish_status"] = results
+    meta["published_at"] = datetime.utcnow().isoformat() + "Z"
+    meta["blotato_media_url"] = media_url
+    _save_details_meta(conn, vid, meta)
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "results": results, "media_url": media_url})
 
 
 # ── Keywords ──────────────────────────────────────────────
