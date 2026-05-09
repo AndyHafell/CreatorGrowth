@@ -1134,52 +1134,91 @@
         /* Video upload */
         .video-upload-section { margin-top: 4px; margin-bottom: 16px; }
         .video-drop-zone {
-            border: 2px dashed #2a2a4a;
-            border-radius: 8px;
-            padding: 24px;
+            display: block;
+            border: 1px dashed #2a2a4a;
+            border-radius: 6px;
+            padding: 22px 16px;
             text-align: center;
-            color: #888;
+            color: #777;
             background: #0d0d1a;
             cursor: pointer;
-            transition: border-color 0.15s, background 0.15s;
+            transition: border-color 0.15s, background 0.15s, color 0.15s;
         }
-        .video-drop-zone:hover { border-color: #4a4a7a; background: #11112a; }
+        .video-drop-zone:hover { border-color: #3a3a5a; background: #10101e; color: #aaa; }
         .video-drop-zone.dragover { border-color: #5b9bd5; background: #14223a; color: #5b9bd5; }
         .video-drop-zone input[type=file] { display: none; }
         .video-drop-hint { font-size: 13px; }
         .video-drop-progress {
-            margin-top: 10px;
-            height: 6px;
+            margin-top: 12px;
+            height: 4px;
             background: #1a1a2e;
-            border-radius: 3px;
+            border-radius: 2px;
             overflow: hidden;
             display: none;
         }
         .video-drop-progress > div {
             height: 100%;
-            background: linear-gradient(90deg, #5b9bd5, #4caf50);
+            background: linear-gradient(90deg, #5b9bd5, #6fb8d6);
             width: 0%;
             transition: width 0.2s;
         }
+
         .video-info {
             display: none;
-            margin-top: 10px;
-            padding: 10px 12px;
-            background: #0f1f0f;
-            border: 1px solid #2a4a2a;
+            margin-top: 0;
+            padding: 14px 16px;
+            background: #0d0d1a;
+            border: 1px solid #1f2030;
             border-radius: 6px;
             color: #ddd;
             font-size: 13px;
         }
-        .video-info a { color: #4caf50; word-break: break-all; }
+        .video-info-head {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #aaa;
+        }
+        .video-info-head svg {
+            flex-shrink: 0;
+            width: 18px;
+            height: 18px;
+            color: #5b9bd5;
+        }
+        .video-info-link {
+            color: #b8c8e0;
+            font-size: 12px;
+            text-decoration: none;
+            word-break: break-all;
+            line-height: 1.4;
+        }
+        .video-info-link:hover { color: #5b9bd5; text-decoration: underline; }
+        .video-info-meta {
+            color: #555;
+            font-size: 11px;
+            margin-top: 6px;
+            margin-left: 28px;
+        }
         .video-info .video-actions {
             display: flex;
+            align-items: center;
             gap: 8px;
-            margin-top: 8px;
-            flex-wrap: wrap;
+            margin-top: 14px;
+            padding-top: 12px;
+            border-top: 1px solid #1a1a2e;
         }
-        .video-info .video-actions button {
-            background: #1a3a8a;
+        .video-actions select {
+            background: #11111e;
+            color: #bbb;
+            border: 1px solid #2a2a3a;
+            border-radius: 4px;
+            padding: 6px 10px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .video-actions select:hover { border-color: #3a3a5a; }
+        .video-actions .btn-primary {
+            background: #2050b0;
             color: #fff;
             border: none;
             padding: 6px 14px;
@@ -1187,32 +1226,51 @@
             font-size: 12px;
             font-weight: 600;
             cursor: pointer;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.3px;
         }
-        .video-info .video-actions button:hover { background: #2050b0; }
-        .video-info .video-actions button:disabled { background: #333; color: #666; cursor: not-allowed; }
-        .video-info .video-actions button.danger { background: #5a1a1a; }
-        .video-info .video-actions button.danger:hover { background: #7a2020; }
+        .video-actions .btn-primary:hover { background: #2860d0; }
+        .video-actions .btn-primary:disabled { background: #333; color: #666; cursor: not-allowed; }
+        .video-actions .btn-ghost {
+            margin-left: auto;
+            background: transparent;
+            color: #666;
+            border: 1px solid #2a2a3a;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .video-actions .btn-ghost:hover { color: #aaa; border-color: #3a3a5a; }
+
         .publish-results {
             display: none;
-            margin-top: 10px;
-            padding: 10px 12px;
-            background: #0d0d1a;
-            border: 1px solid #2a2a4a;
-            border-radius: 6px;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #1a1a2e;
             font-size: 12px;
         }
         .publish-results .pr-row {
             display: flex;
             justify-content: space-between;
-            padding: 3px 0;
-            border-bottom: 1px solid #1a1a2e;
+            align-items: center;
+            padding: 5px 0;
+            color: #999;
         }
-        .publish-results .pr-row:last-child { border-bottom: none; }
-        .publish-results .pr-ok { color: #4caf50; }
-        .publish-results .pr-fail { color: #e57373; }
-        .publish-results .pr-skip { color: #666; }
+        .publish-results .pr-row span:first-child {
+            text-transform: capitalize;
+            font-weight: 500;
+            color: #ccc;
+        }
+        .publish-results .pr-row .pr-status {
+            font-size: 11px;
+            color: #666;
+        }
+        .publish-results a { color: #5b9bd5; text-decoration: none; }
+        .publish-results a:hover { text-decoration: underline; }
+        .publish-results .pr-ok .pr-status { color: #6fbf73; }
+        .publish-results .pr-fail .pr-status { color: #e57373; }
+        .publish-results .pr-skip { color: #444; }
+        .publish-results .pr-skip span:first-child { color: #555; }
 
         /* Custom fields */
         .custom-fields-section { margin-top: 4px; }
@@ -1686,16 +1744,19 @@
                     <div class="video-drop-progress" id="videoDropProgress"><div></div></div>
                 </label>
                 <div class="video-info" id="videoInfo">
-                    <div><strong>Uploaded:</strong> <a id="videoInfoLink" href="#" target="_blank" rel="noopener"></a></div>
-                    <div id="videoInfoMeta" style="color:#888; margin-top:4px;"></div>
+                    <div class="video-info-head">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+                        <a class="video-info-link" id="videoInfoLink" href="#" target="_blank" rel="noopener"></a>
+                    </div>
+                    <div class="video-info-meta" id="videoInfoMeta"></div>
                     <div class="video-actions">
-                        <select id="videoPublishPrivacy" style="background:#0d0d1a; color:#ddd; border:1px solid #2a2a4a; border-radius:4px; padding:5px 8px; font-size:12px;">
+                        <select id="videoPublishPrivacy">
                             <option value="private" selected>Private (draft)</option>
                             <option value="unlisted">Unlisted</option>
                             <option value="public">Public</option>
                         </select>
-                        <button id="videoPublishBtn" onclick="publishToBlotato()">Publish to socials</button>
-                        <button class="danger" onclick="clearVideoUpload()">Replace</button>
+                        <button id="videoPublishBtn" class="btn-primary" onclick="publishToBlotato()">Publish to socials</button>
+                        <button class="btn-ghost" onclick="clearVideoUpload()">Replace</button>
                     </div>
                     <div class="publish-results" id="videoPublishResults"></div>
                 </div>
@@ -2764,17 +2825,18 @@
                 .map(p => {
                     const r = status[p];
                     const s = r.status;
-                    const cls = s === 'ok' ? 'pr-ok'
-                              : s === 'fail' ? 'pr-fail'
-                              : (s === 'processing' ? '' : 'pr-skip');
+                    const rowCls = s === 'ok' ? 'pr-row pr-ok'
+                                 : s === 'fail' ? 'pr-row pr-fail'
+                                 : s === 'skipped' ? 'pr-row pr-skip'
+                                 : 'pr-row';
                     let detail = '';
-                    if (s === 'ok' && r.post_url) detail = `<a href="${r.post_url}" target="_blank" rel="noopener" style="color:#4caf50">view post</a>`;
+                    if (s === 'ok' && r.post_url) detail = `<a href="${r.post_url}" target="_blank" rel="noopener">view post →</a>`;
                     else if (s === 'ok') detail = 'posted';
-                    else if (s === 'fail') detail = (r.error || 'failed').slice(0, 100);
+                    else if (s === 'fail') detail = (r.error || 'failed').slice(0, 80);
                     else if (s === 'skipped') detail = r.reason || 'skipped';
-                    else if (s === 'processing') detail = 'submitted, waiting…';
+                    else if (s === 'processing') detail = 'submitted…';
                     else detail = s;
-                    return `<div class="pr-row"><span>${p}</span><span class="${cls}">${s} · ${detail}</span></div>`;
+                    return `<div class="${rowCls}"><span>${p}</span><span class="pr-status">${detail}</span></div>`;
                 }).join('');
         }
 
