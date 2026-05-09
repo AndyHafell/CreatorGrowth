@@ -2758,14 +2758,69 @@
                 }).join('');
         }
 
+        // Cloudflare Free caps a single HTTP request body at 100MB. Anything bigger goes via /upload-chunk.
+        const VIDEO_CHUNK_THRESHOLD = 90 * 1024 * 1024;
+        const VIDEO_CHUNK_SIZE = 50 * 1024 * 1024;
+
+        function _xhrSend(xhr, body, onProgress) {
+            return new Promise((resolve, reject) => {
+                xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable) onProgress(e.loaded, e.total);
+                };
+                xhr.onload = () => xhr.status >= 200 && xhr.status < 300
+                    ? resolve(JSON.parse(xhr.responseText || '{}'))
+                    : reject(new Error(`HTTP ${xhr.status}${xhr.responseText ? ': ' + xhr.responseText.slice(0,120) : ''}`));
+                xhr.onerror = () => reject(new Error('network error (likely CORS or size limit)'));
+                xhr.ontimeout = () => reject(new Error('timeout'));
+                xhr.send(body);
+            });
+        }
+
+        async function _uploadSingle(file, init, onProgress) {
+            const fd = new FormData();
+            fd.append('folder', init.folder || 'creatorgrowth');
+            fd.append('file', file);
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', init.endpoint);
+            xhr.setRequestHeader('X-Upload-Secret', init.secret);
+            return await _xhrSend(xhr, fd, onProgress);
+        }
+
+        async function _uploadChunked(file, init, onProgress) {
+            const chunkEndpoint = init.endpoint.replace(/\/upload$/, '/upload-chunk');
+            const uploadId = (crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '-' + Math.random())).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32);
+            const total = Math.ceil(file.size / VIDEO_CHUNK_SIZE);
+            let lastResult = null;
+            for (let i = 0; i < total; i++) {
+                const start = i * VIDEO_CHUNK_SIZE;
+                const end = Math.min(start + VIDEO_CHUNK_SIZE, file.size);
+                const chunk = file.slice(start, end);
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', chunkEndpoint);
+                xhr.setRequestHeader('X-Upload-Secret', init.secret);
+                xhr.setRequestHeader('X-Upload-Id', uploadId);
+                xhr.setRequestHeader('X-Chunk-Index', String(i));
+                xhr.setRequestHeader('X-Chunk-Total', String(total));
+                xhr.setRequestHeader('X-Filename', file.name);
+                xhr.setRequestHeader('X-Folder', init.folder || 'creatorgrowth');
+                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                lastResult = await _xhrSend(xhr, chunk, (loaded, totalChunk) => {
+                    const overall = (start + loaded) / file.size;
+                    onProgress(overall * file.size, file.size);
+                });
+            }
+            return lastResult; // last chunk's response carries path/key/size
+        }
+
         async function handleVideoFile(file) {
             if (!modalVideoId) return;
-            const dropZone = document.getElementById('videoDropZone');
             const dropHint = document.getElementById('videoDropHint');
             const dropProgress = document.getElementById('videoDropProgress');
             const bar = dropProgress.firstElementChild;
 
-            dropHint.textContent = `Uploading ${file.name} (${(file.size/1024/1024).toFixed(1)} MB)…`;
+            const sizeMb = (file.size / 1024 / 1024).toFixed(1);
+            const mode = file.size >= VIDEO_CHUNK_THRESHOLD ? 'chunked' : 'single';
+            dropHint.textContent = `Uploading ${file.name} (${sizeMb} MB, ${mode})…`;
             dropProgress.style.display = 'block';
             bar.style.width = '0%';
 
@@ -2774,23 +2829,13 @@
                 if (!initResp.ok) throw new Error('upload-init failed');
                 const init = await initResp.json();
 
-                const fd = new FormData();
-                fd.append('folder', init.folder || 'creatorgrowth');
-                fd.append('file', file);
-
-                const xhr = new XMLHttpRequest();
-                xhr.open('POST', init.endpoint);
-                xhr.setRequestHeader('X-Upload-Secret', init.secret);
-                xhr.upload.onprogress = (e) => {
-                    if (e.lengthComputable) bar.style.width = (e.loaded / e.total * 100).toFixed(1) + '%';
+                const onProgress = (loaded, total) => {
+                    bar.style.width = (loaded / total * 100).toFixed(1) + '%';
                 };
-                const result = await new Promise((resolve, reject) => {
-                    xhr.onload = () => xhr.status >= 200 && xhr.status < 300
-                        ? resolve(JSON.parse(xhr.responseText))
-                        : reject(new Error(`upload ${xhr.status}: ${xhr.responseText}`));
-                    xhr.onerror = () => reject(new Error('network error'));
-                    xhr.send(fd);
-                });
+
+                const result = mode === 'chunked'
+                    ? await _uploadChunked(file, init, onProgress)
+                    : await _uploadSingle(file, init, onProgress);
 
                 bar.style.width = '100%';
                 dropHint.textContent = 'Saving…';
