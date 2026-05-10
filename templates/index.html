@@ -2869,9 +2869,12 @@
         }
 
         // Cloudflare Free caps a single HTTP request body at 100MB. Anything bigger goes via /upload-chunk.
+        // Tuned for residential upstream: small chunks finish faster (less likely to hit nginx body timeout),
+        // moderate parallelism keeps total time low without starving each stream.
         const VIDEO_CHUNK_THRESHOLD = 90 * 1024 * 1024;
-        const VIDEO_CHUNK_SIZE = 80 * 1024 * 1024;
-        const VIDEO_CHUNK_PARALLEL = 4;
+        const VIDEO_CHUNK_SIZE = 50 * 1024 * 1024;
+        const VIDEO_CHUNK_PARALLEL = 2;
+        const VIDEO_CHUNK_RETRIES = 3;
 
         function _xhrSend(xhr, body, onProgress) {
             return new Promise((resolve, reject) => {
@@ -2911,16 +2914,29 @@
                 const start = idx * VIDEO_CHUNK_SIZE;
                 const end = Math.min(start + VIDEO_CHUNK_SIZE, file.size);
                 const blob = file.slice(start, end);
-                const xhr = new XMLHttpRequest();
-                xhr.open('POST', chunkEndpoint);
-                xhr.setRequestHeader('X-Upload-Secret', init.secret);
-                xhr.setRequestHeader('X-Upload-Id', uploadId);
-                xhr.setRequestHeader('X-Chunk-Index', String(idx));
-                xhr.setRequestHeader('X-Chunk-Total', String(total));
-                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-                await _xhrSend(xhr, blob, (l) => { loaded[idx] = l; tick(); });
-                loaded[idx] = end - start;
-                tick();
+                let lastErr = null;
+                for (let attempt = 0; attempt < VIDEO_CHUNK_RETRIES; attempt++) {
+                    if (attempt > 0) {
+                        loaded[idx] = 0; tick();
+                        await new Promise(r => setTimeout(r, 1500 * attempt));
+                    }
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('POST', chunkEndpoint);
+                    xhr.setRequestHeader('X-Upload-Secret', init.secret);
+                    xhr.setRequestHeader('X-Upload-Id', uploadId);
+                    xhr.setRequestHeader('X-Chunk-Index', String(idx));
+                    xhr.setRequestHeader('X-Chunk-Total', String(total));
+                    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                    try {
+                        await _xhrSend(xhr, blob, (l) => { loaded[idx] = l; tick(); });
+                        loaded[idx] = end - start;
+                        tick();
+                        return;
+                    } catch (e) {
+                        lastErr = e;
+                    }
+                }
+                throw lastErr || new Error('chunk failed after retries');
             }
 
             // Worker pool: VIDEO_CHUNK_PARALLEL workers pulling chunk indices off a shared queue
