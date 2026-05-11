@@ -1789,7 +1789,7 @@
             <div id="modalInlineDoc" style="display:none; margin-top:12px;">
                 <hr class="modal-divider">
                 <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
-                    <div id="docTabs" style="display:flex; gap:4px; flex-wrap:wrap;"></div>
+                    <h3 style="margin:0; font-size:14px; text-transform:uppercase; letter-spacing:1px; color:#888;">Content Doc</h3>
                     <span id="modalInlineDocStatus" style="font-size:11px; color:#4caf50; margin-left:auto;"></span>
                 </div>
                 <div class="notion-toolbar" id="modalDocToolbar">
@@ -2682,20 +2682,26 @@
             renderTitles('inspo', modalDetails.inspo_titles);
             renderThumbs('original', modalDetails.original_thumbs);
             renderTitles('original', modalDetails.original_titles);
-            // Ensure all 3 doc-type slots exist (Content Doc / Bullet Doc / Vocal Doc), in order, at the top
-            (function ensureDocSlots() {
-                const DOC_KEYS = ['Content Doc', 'Bullet Doc', 'Vocal Doc'];
-                modalDetails.custom_fields = modalDetails.custom_fields || [];
-                const existing = new Map(modalDetails.custom_fields.map(f => [f.key, f]));
-                const docFields = DOC_KEYS.map(k => existing.get(k) || { key: k, value: '' });
-                const otherFields = modalDetails.custom_fields.filter(f => !DOC_KEYS.includes(f.key));
-                modalDetails.custom_fields = [...docFields, ...otherFields];
-            })();
             renderCustomFields();
             renderVideoUpload();
 
             makeContentDocFieldClickable();
-            buildDocTabs();
+            // Auto-load content doc if field has a value
+            const docField = modalDetails.custom_fields.find(f => f.key === 'Content Doc' && f.value);
+            if (docField) {
+                let path = docField.value.trim();
+                if (!path.includes('/')) {
+                    if (!path.endsWith('.md')) path += '.md';
+                    try {
+                        const resp = await fetch('/api/content/resolve?name=' + encodeURIComponent(path));
+                        const data = await resp.json();
+                        if (data.path) path = data.path;
+                    } catch (e) {}
+                }
+                loadModalInlineDoc(path);
+            } else {
+                document.getElementById('modalInlineDoc').style.display = 'none';
+            }
 
             document.getElementById('savedIndicator').classList.remove('show');
             document.getElementById('modalOverlay').classList.add('open');
@@ -3415,7 +3421,7 @@
                 fields.forEach(row => {
                     const keyInput = row.querySelector('input:first-child');
                     const valInput = row.querySelector('input:nth-child(2)');
-                    if (keyInput && valInput && ['Content Doc', 'Bullet Doc', 'Vocal Doc'].includes(keyInput.value)) {
+                    if (keyInput && valInput && keyInput.value === 'Content Doc') {
                         if (!row.querySelector('.doc-open-btn')) {
                             const btn = document.createElement('button');
                             btn.className = 'doc-open-btn';
@@ -4062,85 +4068,6 @@
                 });
             }, 1200);
         }
-
-        // ===== Doc-type tabs (Content Doc / Bullet Doc / Vocal Doc) =====
-        const DOC_TAB_TYPES = [
-            { key: 'Content Doc', label: 'Content Doc' },
-            { key: 'Bullet Doc',  label: 'Bullet Doc' },
-            { key: 'Vocal Doc',   label: 'Vocal Doc' }
-        ];
-        function buildDocTabs() {
-            const container = document.getElementById('modalInlineDoc');
-            const tabsEl = document.getElementById('docTabs');
-            if (!container || !tabsEl || !modalDetails || !modalDetails.custom_fields) {
-                if (container) container.style.display = 'none';
-                return;
-            }
-            const available = DOC_TAB_TYPES
-                .map(t => ({ ...t, field: modalDetails.custom_fields.find(f => f.key === t.key && f.value) }))
-                .filter(t => t.field);
-            if (available.length === 0) {
-                container.style.display = 'none';
-                tabsEl.innerHTML = '';
-                return;
-            }
-            container.style.display = 'block';
-            tabsEl.innerHTML = available.map((t, i) => `
-                <button class="doc-tab${i === 0 ? ' active' : ''}"
-                        data-doc-key="${t.key}"
-                        data-doc-path="${t.field.value.replace(/"/g, '&quot;')}"
-                        onclick="switchDocTab(this)"
-                        style="background:${i === 0 ? '#1a1a2e' : 'transparent'}; border:1px solid #2a2a4a; color:${i === 0 ? '#fff' : '#888'}; padding:6px 12px; border-radius:4px 4px 0 0; cursor:pointer; font-size:11px; letter-spacing:1px; text-transform:uppercase; font-weight:600;">
-                  ${t.label}
-                </button>
-            `).join('');
-            // Auto-load the first available doc
-            resolveAndLoadDoc(available[0].field.value);
-        }
-        async function resolveAndLoadDoc(path) {
-            let resolved = (path || '').trim();
-            if (!resolved) return;
-            if (!resolved.includes('/')) {
-                if (!resolved.endsWith('.md')) resolved += '.md';
-                try {
-                    const resp = await fetch('/api/content/resolve?name=' + encodeURIComponent(resolved));
-                    const data = await resp.json();
-                    if (data.path) resolved = data.path;
-                } catch (e) {}
-            }
-            loadModalInlineDoc(resolved);
-        }
-        async function flushDocSave() {
-            if (!modalDocSaveTimer || !modalDocPath) return;
-            clearTimeout(modalDocSaveTimer);
-            modalDocSaveTimer = null;
-            const editor = document.getElementById('modalDocEditor');
-            const td = (typeof getTurndown === 'function') ? getTurndown() : null;
-            const md = td ? td.turndown(editor.innerHTML) : editor.innerText;
-            try {
-                await fetch('/api/content/file', {
-                    method: 'PUT',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ path: modalDocPath, content: md })
-                });
-            } catch (e) {}
-        }
-        async function switchDocTab(btn) {
-            const path = btn.getAttribute('data-doc-path');
-            if (!path) return;
-            await flushDocSave();
-            document.querySelectorAll('#docTabs .doc-tab').forEach(t => {
-                t.classList.remove('active');
-                t.style.background = 'transparent';
-                t.style.color = '#888';
-            });
-            btn.classList.add('active');
-            btn.style.background = '#1a1a2e';
-            btn.style.color = '#fff';
-            stopDocPolling();
-            await resolveAndLoadDoc(path);
-        }
-        // ===== end doc-type tabs =====
 
         function loadModalInlineDoc(path) {
             modalDocPath = path;

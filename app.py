@@ -106,6 +106,10 @@ def init_db():
         conn.execute("ALTER TABLE video_details ADD COLUMN meta TEXT DEFAULT '{}'")
     except sqlite3.OperationalError:
         pass
+    # Pipeline rename (2026-05): in_progress → packaging, done → published.
+    # Idempotent: no-op once values are already migrated.
+    conn.execute("UPDATE videos SET status = 'packaging' WHERE status = 'in_progress'")
+    conn.execute("UPDATE videos SET status = 'published' WHERE status = 'done'")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS channels (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -562,7 +566,7 @@ def add_video():
 def update_status(vid):
     data = request.get_json(force=True)
     new_status = data.get("status", "options")
-    if new_status not in ("options", "best", "in_progress", "edited", "archived", "done"):
+    if new_status not in ("options", "best", "packaging", "script", "edited", "archived", "published"):
         return jsonify({"error": "Invalid status"}), 400
     conn = get_db()
     conn.execute("UPDATE videos SET status = ? WHERE id = ?", (new_status, vid))
@@ -1294,7 +1298,7 @@ def create_blank_video():
     conn.execute(
         """INSERT INTO videos (video_id, title, channel_title, channel_thumb, thumbnail_url,
                view_count, duration, published_at, status, outlier_score, channel_avg_views)
-           VALUES (?, ?, ?, ?, '', 0, '', '', 'in_progress', 0, 0)""",
+           VALUES (?, ?, ?, ?, '', 0, '', '', 'packaging', 0, 0)""",
         (video_id, title, channel_title, channel_thumb),
     )
     conn.commit()
