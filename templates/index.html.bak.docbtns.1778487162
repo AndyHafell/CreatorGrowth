@@ -2682,15 +2682,6 @@
             renderTitles('inspo', modalDetails.inspo_titles);
             renderThumbs('original', modalDetails.original_thumbs);
             renderTitles('original', modalDetails.original_titles);
-            // Ensure all 3 doc-type slots exist (Content Doc / Bullet Doc / Vocal Doc), in order, at the top
-            (function ensureDocSlots() {
-                const DOC_KEYS = ['Content Doc', 'Bullet Doc', 'Vocal Doc'];
-                modalDetails.custom_fields = modalDetails.custom_fields || [];
-                const existing = new Map(modalDetails.custom_fields.map(f => [f.key, f]));
-                const docFields = DOC_KEYS.map(k => existing.get(k) || { key: k, value: '' });
-                const otherFields = modalDetails.custom_fields.filter(f => !DOC_KEYS.includes(f.key));
-                modalDetails.custom_fields = [...docFields, ...otherFields];
-            })();
             renderCustomFields();
             renderVideoUpload();
 
@@ -3415,7 +3406,7 @@
                 fields.forEach(row => {
                     const keyInput = row.querySelector('input:first-child');
                     const valInput = row.querySelector('input:nth-child(2)');
-                    if (keyInput && valInput && ['Content Doc', 'Bullet Doc', 'Vocal Doc'].includes(keyInput.value)) {
+                    if (keyInput && valInput && keyInput.value === 'Content Doc') {
                         if (!row.querySelector('.doc-open-btn')) {
                             const btn = document.createElement('button');
                             btn.className = 'doc-open-btn';
