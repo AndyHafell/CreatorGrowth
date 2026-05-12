@@ -74,6 +74,7 @@ def init_db():
         ("outlier_score", "REAL", "0"),
         ("channel_avg_views", "INTEGER", "0"),
         ("transformed", "INTEGER", "0"),
+        ("tucked", "INTEGER", "0"),
     ]:
         try:
             conn.execute(f"ALTER TABLE videos ADD COLUMN {col} {coltype} DEFAULT {default}")
@@ -330,6 +331,7 @@ def row_to_dict(r):
         "status": r["status"] or "options",
         "outlier_score": outlier,
         "transformed": bool(r["transformed"]) if "transformed" in r.keys() else False,
+        "tucked": bool(r["tucked"]) if "tucked" in r.keys() else False,
     }
 
 
@@ -573,6 +575,21 @@ def update_status(vid):
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "status": new_status})
+
+
+@app.route("/api/videos/<int:vid>/tuck", methods=["POST"])
+def toggle_tuck(vid):
+    """Toggle the tucked flag — hides card behind a '+ N tucked' row in its tab."""
+    conn = get_db()
+    row = conn.execute("SELECT tucked FROM videos WHERE id = ?", (vid,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Not found"}), 404
+    new_val = 0 if row["tucked"] else 1
+    conn.execute("UPDATE videos SET tucked = ? WHERE id = ?", (new_val, vid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "tucked": bool(new_val)})
 
 
 @app.route("/api/videos/<int:vid>/thumbnail", methods=["POST"])

@@ -526,6 +526,48 @@
         .card:hover .delete-btn { display: flex; }
         .delete-btn:hover { background: rgba(255,68,68,0.9); color: #fff; }
 
+        .tuck-btn {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            background: rgba(0,0,0,0.75);
+            border: none;
+            color: #ddd;
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 14px;
+            line-height: 1;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 3;
+            transition: all 0.15s;
+        }
+        .card:hover .tuck-btn { display: flex; }
+        .tuck-btn:hover { background: rgba(255,193,7,0.9); color: #1a1a1a; }
+        .card.is-tucked .tuck-btn { display: flex; background: rgba(255,193,7,0.85); color: #1a1a1a; }
+        .card.is-tucked .tuck-btn:hover { background: rgba(255,213,79,0.95); }
+
+        .tucked-divider {
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 18px 4px 10px;
+            color: #888;
+            font-size: 13px;
+            cursor: pointer;
+            user-select: none;
+            transition: color 0.15s;
+        }
+        .tucked-divider:hover { color: #ffc107; }
+        .tucked-divider .line { flex: 1; height: 1px; background: #333; }
+        .tucked-divider .label { font-weight: 500; letter-spacing: 0.3px; }
+        .tucked-divider .chevron { display: inline-block; transition: transform 0.2s; }
+        .tucked-divider.expanded .chevron { transform: rotate(180deg); }
+
         /* Card info */
         .card-info { display: flex; gap: 12px; padding-top: 12px; }
 
@@ -2293,11 +2335,43 @@
             }
         }
 
+        let tuckedExpanded = {};  // per-tab: { packaging: true, best: false, ... }
+
+        function cardHtml(v) {
+            const isTransformed = v.transformed;
+            const avatarUrl = isTransformed ? '/static/andy_avatar.png' : v.channel_thumb;
+            const channelName = isTransformed ? 'AI Andy' : v.channel_title;
+            const tuckTitle = v.tucked ? 'Bring back to top' : 'Tuck away';
+            const tuckIcon = v.tucked ? '&#9650;' : '&#9660;';
+            return `
+            <div class="card${isTransformed ? ' transformed' : ''}${v.tucked ? ' is-tucked' : ''}" data-video-id="${v.id}" draggable="true" ondragstart="cardDragStart(event, ${v.id})" ondragend="cardDragEnd(event)" onclick="openModal(${v.id})" style="cursor:pointer;">
+                <button class="tuck-btn" title="${tuckTitle}" onclick="toggleTuck(${v.id}, event)">${tuckIcon}</button>
+                <div class="thumb-wrap">
+                    <img src="${v.thumbnail_url}" alt="" loading="lazy">
+                    ${v.duration ? `<span class="duration-badge">${v.duration}</span>` : ''}
+                    <div class="card-actions">${getActionButtons(v)}</div>
+                </div>
+                <div class="card-info">
+                    <div class="channel-avatar">
+                        ${avatarUrl ? `<img src="${avatarUrl}" alt="">` : ''}
+                    </div>
+                    <div class="card-text">
+                        <div class="card-title">${esc(v.title)}</div>
+                        <div class="card-channel">${esc(channelName)}</div>
+                        <div class="card-stats">${v.view_count_formatted}${v.time_ago ? ' &middot; ' + v.time_ago : ''}${outlierBadge(v.outlier_score)}</div>
+                    </div>
+                </div>
+            </div>
+            `;
+        }
+
         function renderGrid() {
             const grid = document.getElementById('videoGrid');
-            const filtered = sortVideos(videos.filter(v => v.status === currentTab));
+            const all = sortVideos(videos.filter(v => v.status === currentTab));
+            const main = all.filter(v => !v.tucked);
+            const tucked = all.filter(v => v.tucked);
 
-            if (filtered.length === 0) {
+            if (all.length === 0) {
                 const msgs = {
                     options: { icon: '&#127909;', title: 'No ideas yet', sub: 'Paste a YouTube URL above to start' },
                     best: { icon: '&#11088;', title: 'No best picks yet', sub: 'Move your top ideas here from Ideas' },
@@ -2318,30 +2392,44 @@
                 return;
             }
 
-            grid.innerHTML = filtered.map(v => {
-                const isTransformed = v.transformed;
-                const avatarUrl = isTransformed ? '/static/andy_avatar.png' : v.channel_thumb;
-                const channelName = isTransformed ? 'AI Andy' : v.channel_title;
-                return `
-                <div class="card${isTransformed ? ' transformed' : ''}" data-video-id="${v.id}" draggable="true" ondragstart="cardDragStart(event, ${v.id})" ondragend="cardDragEnd(event)" onclick="openModal(${v.id})" style="cursor:pointer;">
-                    <div class="thumb-wrap">
-                        <img src="${v.thumbnail_url}" alt="" loading="lazy">
-                        ${v.duration ? `<span class="duration-badge">${v.duration}</span>` : ''}
-                        <div class="card-actions">${getActionButtons(v)}</div>
+            const expanded = !!tuckedExpanded[currentTab];
+            let html = main.map(cardHtml).join('');
+            if (tucked.length > 0) {
+                html += `
+                    <div class="tucked-divider${expanded ? ' expanded' : ''}" onclick="toggleTuckedSection()">
+                        <div class="line"></div>
+                        <span class="label">${tucked.length} tucked <span class="chevron">&#9660;</span></span>
+                        <div class="line"></div>
                     </div>
-                    <div class="card-info">
-                        <div class="channel-avatar">
-                            ${avatarUrl ? `<img src="${avatarUrl}" alt="">` : ''}
-                        </div>
-                        <div class="card-text">
-                            <div class="card-title">${esc(v.title)}</div>
-                            <div class="card-channel">${esc(channelName)}</div>
-                            <div class="card-stats">${v.view_count_formatted}${v.time_ago ? ' &middot; ' + v.time_ago : ''}${outlierBadge(v.outlier_score)}</div>
-                        </div>
-                    </div>
-                </div>
                 `;
-            }).join('');
+                if (expanded) html += tucked.map(cardHtml).join('');
+            }
+            grid.innerHTML = html;
+        }
+
+        function toggleTuckedSection() {
+            tuckedExpanded[currentTab] = !tuckedExpanded[currentTab];
+            renderGrid();
+        }
+
+        async function toggleTuck(id, event) {
+            event.stopPropagation();
+            try {
+                const res = await fetch(`/api/videos/${id}/tuck`, { method: 'POST' });
+                const data = await res.json();
+                if (data.ok) {
+                    const v = videos.find(v => v.id === id);
+                    if (v) {
+                        v.tucked = data.tucked;
+                        // Auto-expand the tucked section when user just tucked a card,
+                        // so they can see where it went and easily undo.
+                        if (data.tucked) tuckedExpanded[currentTab] = true;
+                        renderGrid();
+                    }
+                }
+            } catch (e) {
+                console.error('Tuck failed:', e);
+            }
         }
 
         function addLoadingCard() {
