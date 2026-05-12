@@ -1067,8 +1067,9 @@ def backfill_dates_deep():
 
 @app.route("/api/videos/backfill-views", methods=["POST"])
 def backfill_views():
-    """Backfill missing/zero view counts using yt-dlp individual lookups."""
-    limit = request.args.get("limit", 10, type=int)
+    """Backfill missing/zero view counts via YouTube Data API v3 (batched, 50 IDs/call).
+    Falls back to per-video yt-dlp if no API key is configured."""
+    limit = request.args.get("limit", 50, type=int)
     conn = get_db()
     missing = conn.execute(
         "SELECT id, video_id FROM videos WHERE view_count IS NULL OR view_count = 0 LIMIT ?",
@@ -1077,30 +1078,66 @@ def backfill_views():
     if not missing:
         conn.close()
         return jsonify({"backfilled": 0, "remaining": 0})
+
     updated = 0
-    for row in missing:
-        vid = row["video_id"]
-        try:
-            result = subprocess.run(
-                ["yt-dlp", "--dump-json", "--no-download", "--no-warnings",
-                 f"https://www.youtube.com/watch?v={vid}"],
-                capture_output=True, text=True, timeout=15,
-            )
-            if result.returncode != 0:
+    channel_avg_cache: dict[str, int] = {}
+
+    if YOUTUBE_API_KEY:
+        ids = [r["video_id"] for r in missing]
+        id_to_row = {r["video_id"]: r["id"] for r in missing}
+        for i in range(0, len(ids), 50):
+            chunk = ids[i:i + 50]
+            try:
+                api_url = (
+                    "https://www.googleapis.com/youtube/v3/videos"
+                    f"?part=snippet,statistics&id={','.join(chunk)}&key={YOUTUBE_API_KEY}"
+                )
+                with urlopen(api_url, timeout=15) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+            except Exception:
                 continue
-            data = json.loads(result.stdout)
-            view_count = int(data.get("view_count", 0))
-            if view_count > 0:
-                channel_url = data.get("channel_url", "")
-                channel_avg = fetch_channel_avg_views(channel_url) if channel_url else 0
+            for item in payload.get("items", []):
+                vid = item.get("id")
+                stats = item.get("statistics", {})
+                view_count = int(stats.get("viewCount", 0) or 0)
+                if not vid or view_count <= 0 or vid not in id_to_row:
+                    continue
+                channel_id = item.get("snippet", {}).get("channelId", "")
+                if channel_id and channel_id not in channel_avg_cache:
+                    channel_url = f"https://www.youtube.com/channel/{channel_id}"
+                    channel_avg_cache[channel_id] = fetch_channel_avg_views(channel_url)
+                channel_avg = channel_avg_cache.get(channel_id, 0)
                 outlier = round(view_count / channel_avg, 1) if channel_avg > 0 else 0.0
                 conn.execute(
                     "UPDATE videos SET view_count = ?, outlier_score = ?, channel_avg_views = ? WHERE id = ?",
-                    (view_count, outlier, channel_avg, row["id"]),
+                    (view_count, outlier, channel_avg, id_to_row[vid]),
                 )
                 updated += 1
-        except (subprocess.TimeoutExpired, json.JSONDecodeError):
-            continue
+    else:
+        for row in missing:
+            vid = row["video_id"]
+            try:
+                result = subprocess.run(
+                    ["yt-dlp", "--dump-json", "--no-download", "--no-warnings",
+                     f"https://www.youtube.com/watch?v={vid}"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if result.returncode != 0:
+                    continue
+                data = json.loads(result.stdout)
+                view_count = int(data.get("view_count", 0))
+                if view_count > 0:
+                    channel_url = data.get("channel_url", "")
+                    channel_avg = fetch_channel_avg_views(channel_url) if channel_url else 0
+                    outlier = round(view_count / channel_avg, 1) if channel_avg > 0 else 0.0
+                    conn.execute(
+                        "UPDATE videos SET view_count = ?, outlier_score = ?, channel_avg_views = ? WHERE id = ?",
+                        (view_count, outlier, channel_avg, row["id"]),
+                    )
+                    updated += 1
+            except (subprocess.TimeoutExpired, json.JSONDecodeError):
+                continue
+
     conn.commit()
     remaining = conn.execute(
         "SELECT COUNT(*) FROM videos WHERE view_count IS NULL OR view_count = 0"
