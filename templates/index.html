@@ -5052,6 +5052,7 @@
         }
         diagramBoxes = (d.boxes || []).slice();
         renderBoxes();
+        renderBoxAnimList();
 
         // audio
         if (d.audioUrl) {
@@ -5346,6 +5347,7 @@
         if (w > 8 && h > 8) {
             diagramBoxes.push({ x: x / r.width, y: y / r.height, w: w / r.width, h: h / r.height });
             renderBoxes();
+            renderBoxAnimList();
             // Auto-select the just-drawn box so the user can immediately hit W/A/S/D/Q/E/C/H
             if (typeof setSelectedBox === 'function') setSelectedBox(diagramBoxes.length - 1);
             if (typeof schedulePatch === 'function') schedulePatch();
@@ -5402,18 +5404,20 @@
         });
         document.getElementById('diagramsBoxCount').textContent = diagramBoxes.length + ' box' + (diagramBoxes.length === 1 ? '' : 'es');
         if (typeof renderSidebar === 'function' && diagramsList && diagramsList.length) renderSidebar();
-        if (typeof renderBoxAnimList === 'function') renderBoxAnimList();
+        // Note: renderBoxAnimList NOT called here. Callers that change box structure
+        // call it explicitly. This keeps setSelectedBox (which uses renderBoxes for
+        // the on-image glow) from rebuilding the panel and closing open dropdowns.
     }
 
     var ANIM_OPTIONS = [
         ['fade', 'Crossfade (C)'],
-        ['from_right', 'Slide ← (from right) (A)'],
-        ['from_left', 'Slide → (from left) (D)'],
-        ['from_above', 'Slide ↓ (from above) (S)'],
-        ['from_below', 'Slide ↑ (from below) (W)'],
+        ['from_right', 'Slide ← (A)'],
+        ['from_left', 'Slide → (D)'],
+        ['from_above', 'Slide ↓ (S)'],
+        ['from_below', 'Slide ↑ (W)'],
         ['zoom_in', 'Zoom in (Q)'],
         ['zoom_out', 'Zoom out (E)'],
-        ['hide', 'Hide (persistent — no reveal) (H)'],
+        ['hide', 'Hide (persistent) (H)'],
     ];
     // WASD = direction of motion (like in games). 'W' = box moves up = comes from below.
     var KEY_TO_ANIM = {
@@ -5590,6 +5594,7 @@
                 if (src < dst) dst -= 1;   // we removed an item before the target
                 diagramBoxes.splice(dst, 0, moved);
                 renderBoxes();
+                renderBoxAnimList();
                 if (typeof schedulePatch === 'function') schedulePatch();
             };
             var head = document.createElement('div');
@@ -5651,12 +5656,14 @@
         if (idx < 0 || idx >= diagramBoxes.length) return;
         diagramBoxes.splice(idx, 1);
         renderBoxes();
+        renderBoxAnimList();
         if (typeof schedulePatch === 'function') schedulePatch();
     }
     function undoLastBox() {
         if (diagramBoxes.length === 0) return;
         diagramBoxes.pop();
         renderBoxes();
+        renderBoxAnimList();
         if (typeof schedulePatch === 'function') schedulePatch();
     }
     function clearBoxes() {
@@ -5665,6 +5672,7 @@
         if (layer) Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.remove(); });
         var counter = document.getElementById('diagramsBoxCount');
         if (counter) counter.textContent = '0 boxes';
+        renderBoxAnimList();
         if (typeof schedulePatch === 'function') schedulePatch();
     }
 
