@@ -1869,7 +1869,7 @@
         <div class="modal-card" style="max-width:780px;">
             <button class="modal-close" onclick="closeDiagrams()">&times;</button>
             <div class="modal-title" style="color:#f5b942;">DIAGRAMS</div>
-            <div class="modal-meta">Image + script &rarr; animated MP4. Iteration 1: upload + script chunk.</div>
+            <div class="modal-meta">Image + boxes + audio + script &rarr; animated MP4. Iteration 2: manual cutouts + audio upload.</div>
 
             <div id="diagramsDropZone" style="margin-top:18px; padding:32px; border:2px dashed #3a3a5a; border-radius:8px; text-align:center; cursor:pointer; background:#0d0d1a; transition:all 0.15s;"
                  onclick="document.getElementById('diagramsFileInput').click()"
@@ -1881,15 +1881,46 @@
             <input type="file" id="diagramsFileInput" accept="image/*" style="display:none;" onchange="handleDiagramsFile(this.files[0])">
 
             <div id="diagramsPreview" style="display:none; margin-top:18px;">
-                <img id="diagramsImage" style="max-width:100%; border-radius:6px; border:1px solid #2a2a4a; display:block;">
-                <div style="margin-top:8px; display:flex; gap:10px; align-items:center;">
-                    <button onclick="resetDiagramsImage()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:4px 10px; font-size:11px; cursor:pointer;">Replace</button>
-                    <span style="color:#555; font-size:11px;">Box-drawing UI lands in iteration 2.</span>
+                <div id="diagramsImageWrap" style="position:relative; display:inline-block; max-width:100%; user-select:none;">
+                    <img id="diagramsImage" style="max-width:100%; border-radius:6px; border:1px solid #2a2a4a; display:block; pointer-events:none;">
+                    <div id="diagramsBoxLayer" style="position:absolute; inset:0; cursor:crosshair;"
+                         onmousedown="boxLayerDown(event)"
+                         onmousemove="boxLayerMove(event)"
+                         onmouseup="boxLayerUp(event)"
+                         onmouseleave="boxLayerUp(event)"></div>
+                </div>
+                <div style="margin-top:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                    <button onclick="resetDiagramsImage()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:4px 10px; font-size:11px; cursor:pointer;">Replace image</button>
+                    <button onclick="undoLastBox()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:4px 10px; font-size:11px; cursor:pointer;">Undo last box</button>
+                    <button onclick="clearBoxes()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:4px 10px; font-size:11px; cursor:pointer;">Clear boxes</button>
+                    <span id="diagramsBoxCount" style="color:#f5b942; font-size:11px; letter-spacing:0.5px;">0 boxes</span>
+                    <span style="color:#555; font-size:11px;">&middot; click &amp; drag to draw. number = reveal order.</span>
                 </div>
             </div>
 
             <div style="margin-top:18px;">
-                <label style="display:block; color:#888; font-size:11px; letter-spacing:0.5px; margin-bottom:6px;">SCRIPT CHUNK (narration that plays over this diagram)</label>
+                <label style="display:block; color:#888; font-size:11px; letter-spacing:0.5px; margin-bottom:6px;">AUDIO CLIP (narration that plays over this diagram)</label>
+                <div id="diagramsAudioDropZone" style="padding:20px; border:2px dashed #3a3a5a; border-radius:8px; text-align:center; cursor:pointer; background:#0d0d1a; transition:all 0.15s;"
+                     onclick="document.getElementById('diagramsAudioInput').click()"
+                     ondragover="event.preventDefault(); this.style.borderColor='#f5b942'; this.style.background='#15151f';"
+                     ondragleave="this.style.borderColor='#3a3a5a'; this.style.background='#0d0d1a';"
+                     ondrop="event.preventDefault(); this.style.borderColor='#3a3a5a'; this.style.background='#0d0d1a'; handleDiagramsAudio(event.dataTransfer.files[0]);">
+                    <div style="color:#888; font-size:13px;">Drag &amp; drop audio (.mp3 / .wav / .m4a), or click to choose</div>
+                </div>
+                <input type="file" id="diagramsAudioInput" accept="audio/*" style="display:none;" onchange="handleDiagramsAudio(this.files[0])">
+                <div id="diagramsAudioPreview" style="display:none; margin-top:10px; padding:10px 12px; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px;">
+                    <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                        <span style="color:#f5b942; font-size:12px;">&#9835;</span>
+                        <span id="diagramsAudioName" style="color:#ddd; font-size:12px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+                        <span id="diagramsAudioDuration" style="color:#888; font-size:11px;"></span>
+                        <button onclick="resetDiagramsAudio()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:3px 8px; font-size:11px; cursor:pointer;">Replace</button>
+                    </div>
+                    <audio id="diagramsAudioPlayer" controls style="width:100%; margin-top:8px; height:32px;"></audio>
+                </div>
+            </div>
+
+            <div style="margin-top:18px;">
+                <label style="display:block; color:#888; font-size:11px; letter-spacing:0.5px; margin-bottom:6px;">SCRIPT CHUNK (narration text — used to align reveals to phrases)</label>
                 <textarea id="diagramsScript" style="width:100%; min-height:120px; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px; padding:12px; color:#ddd; font-size:13px; line-height:1.6; resize:vertical; font-family:inherit;" placeholder="Paste the section of script that this diagram appears under..."></textarea>
             </div>
 
@@ -4755,6 +4786,7 @@
             document.getElementById('diagramsImage').src = e.target.result;
             document.getElementById('diagramsPreview').style.display = 'block';
             document.getElementById('diagramsDropZone').style.display = 'none';
+            clearBoxes();
         };
         reader.readAsDataURL(file);
     }
@@ -4763,14 +4795,131 @@
         document.getElementById('diagramsPreview').style.display = 'none';
         document.getElementById('diagramsDropZone').style.display = 'block';
         document.getElementById('diagramsFileInput').value = '';
+        clearBoxes();
     }
+
+    // ---- box drawing ----
+    var diagramBoxes = []; // [{x,y,w,h}] in fractions of image displayed size
+    var diagramDragStart = null;
+    var diagramActiveEl = null;
+
+    function boxLayerDown(e) {
+        var layer = document.getElementById('diagramsBoxLayer');
+        var r = layer.getBoundingClientRect();
+        diagramDragStart = { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height };
+        diagramActiveEl = document.createElement('div');
+        diagramActiveEl.style.cssText = 'position:absolute; border:2px dashed #f5b942; background:rgba(245,185,66,0.12); pointer-events:none;';
+        diagramActiveEl.style.left = diagramDragStart.x + 'px';
+        diagramActiveEl.style.top = diagramDragStart.y + 'px';
+        diagramActiveEl.style.width = '0px';
+        diagramActiveEl.style.height = '0px';
+        layer.appendChild(diagramActiveEl);
+        e.preventDefault();
+    }
+    function boxLayerMove(e) {
+        if (!diagramDragStart || !diagramActiveEl) return;
+        var layer = document.getElementById('diagramsBoxLayer');
+        var r = layer.getBoundingClientRect();
+        var cx = e.clientX - r.left, cy = e.clientY - r.top;
+        cx = Math.max(0, Math.min(cx, r.width));
+        cy = Math.max(0, Math.min(cy, r.height));
+        var x = Math.min(diagramDragStart.x, cx), y = Math.min(diagramDragStart.y, cy);
+        var w = Math.abs(cx - diagramDragStart.x), h = Math.abs(cy - diagramDragStart.y);
+        diagramActiveEl.style.left = x + 'px';
+        diagramActiveEl.style.top = y + 'px';
+        diagramActiveEl.style.width = w + 'px';
+        diagramActiveEl.style.height = h + 'px';
+    }
+    function boxLayerUp(e) {
+        if (!diagramDragStart || !diagramActiveEl) return;
+        var rect = diagramActiveEl.getBoundingClientRect();
+        var layer = document.getElementById('diagramsBoxLayer');
+        var r = layer.getBoundingClientRect();
+        var w = parseFloat(diagramActiveEl.style.width) || 0;
+        var h = parseFloat(diagramActiveEl.style.height) || 0;
+        var x = parseFloat(diagramActiveEl.style.left) || 0;
+        var y = parseFloat(diagramActiveEl.style.top) || 0;
+        diagramActiveEl.remove();
+        diagramActiveEl = null;
+        diagramDragStart = null;
+        if (w > 8 && h > 8) {
+            diagramBoxes.push({ x: x / r.width, y: y / r.height, w: w / r.width, h: h / r.height });
+            renderBoxes();
+        }
+    }
+    function renderBoxes() {
+        var layer = document.getElementById('diagramsBoxLayer');
+        // clear committed boxes (but keep any drag preview)
+        Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.remove(); });
+        var r = layer.getBoundingClientRect();
+        diagramBoxes.forEach(function(b, i) {
+            var d = document.createElement('div');
+            d.className = 'diagram-box';
+            d.style.cssText = 'position:absolute; border:2px solid #f5b942; background:rgba(245,185,66,0.10); pointer-events:none; box-shadow:0 0 0 1px rgba(0,0,0,0.4);';
+            d.style.left = (b.x * 100) + '%';
+            d.style.top = (b.y * 100) + '%';
+            d.style.width = (b.w * 100) + '%';
+            d.style.height = (b.h * 100) + '%';
+            var badge = document.createElement('div');
+            badge.textContent = (i + 1);
+            badge.style.cssText = 'position:absolute; top:-10px; left:-10px; background:#f5b942; color:#000; font-weight:700; font-size:12px; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 4px rgba(0,0,0,0.5);';
+            d.appendChild(badge);
+            layer.appendChild(d);
+        });
+        document.getElementById('diagramsBoxCount').textContent = diagramBoxes.length + ' box' + (diagramBoxes.length === 1 ? '' : 'es');
+    }
+    function undoLastBox() {
+        if (diagramBoxes.length === 0) return;
+        diagramBoxes.pop();
+        renderBoxes();
+    }
+    function clearBoxes() {
+        diagramBoxes = [];
+        var layer = document.getElementById('diagramsBoxLayer');
+        if (layer) Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.remove(); });
+        var counter = document.getElementById('diagramsBoxCount');
+        if (counter) counter.textContent = '0 boxes';
+    }
+
+    // ---- audio upload ----
+    var diagramsAudioFile = null;
+    function handleDiagramsAudio(file) {
+        if (!file || !file.type || !file.type.startsWith('audio/')) {
+            alert('Pick an audio file (.mp3 / .wav / .m4a).');
+            return;
+        }
+        diagramsAudioFile = file;
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var player = document.getElementById('diagramsAudioPlayer');
+            player.src = e.target.result;
+            player.onloadedmetadata = function() {
+                var d = player.duration;
+                document.getElementById('diagramsAudioDuration').textContent = d.toFixed(1) + 's';
+            };
+            document.getElementById('diagramsAudioName').textContent = file.name;
+            document.getElementById('diagramsAudioPreview').style.display = 'block';
+            document.getElementById('diagramsAudioDropZone').style.display = 'none';
+        };
+        reader.readAsDataURL(file);
+    }
+    function resetDiagramsAudio() {
+        diagramsAudioFile = null;
+        document.getElementById('diagramsAudioPlayer').src = '';
+        document.getElementById('diagramsAudioPreview').style.display = 'none';
+        document.getElementById('diagramsAudioDropZone').style.display = 'block';
+        document.getElementById('diagramsAudioInput').value = '';
+    }
+
     function renderDiagram() {
         var src = document.getElementById('diagramsImage').src || '';
         var hasImage = src && src.indexOf('data:image') === 0;
         var script = document.getElementById('diagramsScript').value.trim();
         if (!hasImage) { alert('Upload an image first.'); return; }
+        if (diagramBoxes.length === 0) { alert('Draw at least one box on the image (click & drag).'); return; }
+        if (!diagramsAudioFile) { alert('Upload the audio clip.'); return; }
         if (!script) { alert('Paste the script chunk first.'); return; }
-        alert('Render pipeline lands in iteration 3.\n\nImage: ✓\nScript: ' + script.length + ' chars');
+        alert('Render pipeline lands in iteration 3.\n\nImage: ✓\nBoxes: ' + diagramBoxes.length + '\nAudio: ' + diagramsAudioFile.name + '\nScript: ' + script.length + ' chars');
     }
     </script>
     <script>
