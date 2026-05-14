@@ -185,6 +185,27 @@ def init_db():
         conn.execute("ALTER TABLE thumb_queue ADD COLUMN clicked_by_email TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS diagrams (
+            id TEXT PRIMARY KEY,
+            video_id INTEGER NOT NULL,
+            name TEXT,
+            image_path TEXT,
+            audio_path TEXT,
+            audio_name TEXT,
+            audio_duration TEXT,
+            boxes_json TEXT NOT NULL DEFAULT '[]',
+            script TEXT DEFAULT '',
+            result_url TEXT,
+            result_meta_json TEXT,
+            position INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_diagrams_video ON diagrams(video_id, position)")
     conn.commit()
     conn.close()
 
@@ -2330,32 +2351,265 @@ def _gemini_align_boxes(image_with_boxes_bytes, audio_bytes, audio_mime, transcr
         return None
 
 
+# ── Diagrams: persistence ────────────────────────────────────────────────
+
+def _diagrams_dir():
+    d = Path(app.root_path) / "static" / "uploads" / "diagrams"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _diagram_dir(video_id, diagram_id):
+    d = _diagrams_dir() / str(video_id) / diagram_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _diagram_row_to_dict(row):
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["boxes"] = json.loads(d.pop("boxes_json") or "[]")
+    except Exception:
+        d["boxes"] = []
+    rm = d.pop("result_meta_json", None)
+    try:
+        d["result_meta"] = json.loads(rm) if rm else None
+    except Exception:
+        d["result_meta"] = None
+    # expose URLs (paths are stored relative to /app, e.g. "static/uploads/diagrams/..")
+    for k in ("image_path", "audio_path"):
+        v = d.get(k)
+        if v and not v.startswith("/"):
+            d[k + "_url"] = "/" + v
+        else:
+            d[k + "_url"] = v
+    return d
+
+
+@app.route("/api/videos/<int:vid>/diagrams", methods=["GET"])
+def diagrams_list(vid):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM diagrams WHERE video_id=? ORDER BY position, created_at",
+        (vid,)
+    ).fetchall()
+    conn.close()
+    return jsonify([_diagram_row_to_dict(r) for r in rows])
+
+
+@app.route("/api/videos/<int:vid>/diagrams", methods=["POST"])
+def diagrams_create(vid):
+    diagram_id = "d" + uuid.uuid4().hex[:14]
+    name = (request.json or {}).get("name") if request.is_json else None
+    conn = get_db()
+    pos_row = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM diagrams WHERE video_id=?", (vid,)).fetchone()
+    pos = pos_row[0] if pos_row else 0
+    if not name:
+        name = f"Diagram {pos + 1}"
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO diagrams (id, video_id, name, boxes_json, position, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+        (diagram_id, vid, name, "[]", pos, now, now)
+    )
+    conn.commit()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    conn.close()
+    return jsonify(_diagram_row_to_dict(row))
+
+
+@app.route("/api/diagrams/<diagram_id>", methods=["GET"])
+def diagrams_get(diagram_id):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(_diagram_row_to_dict(row))
+
+
+@app.route("/api/diagrams/<diagram_id>", methods=["PATCH"])
+def diagrams_patch(diagram_id):
+    payload = request.get_json(force=True, silent=True) or {}
+    fields = []
+    values = []
+    if "name" in payload:
+        fields.append("name=?"); values.append(payload["name"])
+    if "boxes" in payload:
+        fields.append("boxes_json=?"); values.append(json.dumps(payload["boxes"]))
+    if "script" in payload:
+        fields.append("script=?"); values.append(payload["script"])
+    if not fields:
+        return jsonify({"error": "no fields to update"}), 400
+    fields.append("updated_at=?")
+    values.append(datetime.now(timezone.utc).isoformat())
+    values.append(diagram_id)
+    conn = get_db()
+    conn.execute(f"UPDATE diagrams SET {', '.join(fields)} WHERE id=?", values)
+    conn.commit()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(_diagram_row_to_dict(row))
+
+
+@app.route("/api/diagrams/<diagram_id>", methods=["DELETE"])
+def diagrams_delete(diagram_id):
+    import shutil
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT video_id FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "not found"}), 404
+    vid = row["video_id"]
+    conn.execute("DELETE FROM diagrams WHERE id=?", (diagram_id,))
+    conn.commit()
+    conn.close()
+    asset_dir = _diagrams_dir() / str(vid) / diagram_id
+    try:
+        if asset_dir.exists():
+            shutil.rmtree(asset_dir)
+    except Exception:
+        pass
+    return jsonify({"ok": True})
+
+
+@app.route("/api/diagrams/<diagram_id>/image", methods=["POST"])
+def diagrams_upload_image(diagram_id):
+    f = request.files.get("image")
+    if not f:
+        return jsonify({"error": "no image file"}), 400
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT video_id, image_path FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "not found"}), 404
+    vid = row["video_id"]
+    # remove old image
+    if row["image_path"]:
+        old = Path(app.root_path) / row["image_path"]
+        try:
+            if old.exists(): old.unlink()
+        except Exception: pass
+    ext = (f.filename.rsplit(".", 1)[-1] if f.filename and "." in f.filename else "png").lower()
+    if ext not in ("png", "jpg", "jpeg", "webp", "gif", "bmp"):
+        ext = "png"
+    target = _diagram_dir(vid, diagram_id) / f"image.{ext}"
+    f.save(str(target))
+    rel = str(target.relative_to(Path(app.root_path)))
+    conn.execute("UPDATE diagrams SET image_path=?, updated_at=? WHERE id=?",
+                 (rel, datetime.now(timezone.utc).isoformat(), diagram_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"image_path": rel, "image_path_url": "/" + rel})
+
+
+@app.route("/api/diagrams/<diagram_id>/audio", methods=["POST"])
+def diagrams_upload_audio(diagram_id):
+    f = request.files.get("audio")
+    if not f:
+        return jsonify({"error": "no audio file"}), 400
+    duration = request.form.get("duration", "")
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT video_id, audio_path FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "not found"}), 404
+    vid = row["video_id"]
+    if row["audio_path"]:
+        old = Path(app.root_path) / row["audio_path"]
+        try:
+            if old.exists(): old.unlink()
+        except Exception: pass
+    ext = (f.filename.rsplit(".", 1)[-1] if f.filename and "." in f.filename else "mp3").lower()
+    if ext not in ("mp3", "wav", "m4a", "aac", "ogg", "flac"):
+        ext = "mp3"
+    target = _diagram_dir(vid, diagram_id) / f"audio.{ext}"
+    f.save(str(target))
+    rel = str(target.relative_to(Path(app.root_path)))
+    conn.execute("UPDATE diagrams SET audio_path=?, audio_name=?, audio_duration=?, updated_at=? WHERE id=?",
+                 (rel, f.filename or "audio", duration, datetime.now(timezone.utc).isoformat(), diagram_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"audio_path": rel, "audio_path_url": "/" + rel, "audio_name": f.filename, "audio_duration": duration})
+
+
 @app.route("/api/diagrams/render", methods=["POST"])
 def diagrams_render():
-    """Render image + boxes + audio -> MP4 with timed fade-in reveals."""
+    """Render image + boxes + audio -> MP4 with timed fade-in reveals.
+    Accepts either:
+      - form field `diagram_id` (uses persisted image+audio+boxes+script), or
+      - inline files (legacy): image, audio, boxes JSON, script."""
     import tempfile, subprocess, shutil
     from io import BytesIO
     from PIL import Image, ImageDraw, ImageFont
 
-    image_file = request.files.get("image")
-    audio_file = request.files.get("audio")
-    boxes_json = request.form.get("boxes", "[]")
-    if not image_file or not audio_file:
-        return jsonify({"error": "image and audio required"}), 400
-    try:
-        boxes = json.loads(boxes_json)
-    except Exception:
-        return jsonify({"error": "invalid boxes JSON"}), 400
-    if not boxes:
-        return jsonify({"error": "at least one box required"}), 400
-
+    diagram_id = request.form.get("diagram_id", "").strip()
+    script_input = request.form.get("script", "")
     job_id = uuid.uuid4().hex[:12]
     work_dir = Path(tempfile.mkdtemp(prefix=f"diagrams_{job_id}_"))
+
+    # Resolve inputs from either persisted diagram or inline files
+    diagram_row = None
+    if diagram_id:
+        conn = get_db()
+        conn.row_factory = sqlite3.Row
+        diagram_row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+        conn.close()
+        if not diagram_row:
+            return jsonify({"error": "diagram not found"}), 404
+
+    if diagram_row:
+        # Pull from persisted diagram
+        if not diagram_row["image_path"] or not diagram_row["audio_path"]:
+            return jsonify({"error": "diagram is missing image or audio"}), 400
+        src_image = Path(app.root_path) / diagram_row["image_path"]
+        src_audio = Path(app.root_path) / diagram_row["audio_path"]
+        if not src_image.exists() or not src_audio.exists():
+            return jsonify({"error": "stored image/audio file missing on disk"}), 500
+        try:
+            boxes = json.loads(diagram_row["boxes_json"] or "[]")
+        except Exception:
+            boxes = []
+        if not boxes:
+            return jsonify({"error": "diagram has no boxes drawn"}), 400
+        if not script_input:
+            script_input = diagram_row["script"] or ""
+        audio_mime_hint = None  # ffprobe will figure it out
+    else:
+        # Legacy inline upload
+        image_file = request.files.get("image")
+        audio_file = request.files.get("audio")
+        boxes_json = request.form.get("boxes", "[]")
+        if not image_file or not audio_file:
+            return jsonify({"error": "image and audio required (or pass diagram_id)"}), 400
+        try:
+            boxes = json.loads(boxes_json)
+        except Exception:
+            return jsonify({"error": "invalid boxes JSON"}), 400
+        if not boxes:
+            return jsonify({"error": "at least one box required"}), 400
+        src_image = work_dir / "_inline_image"
+        image_file.save(str(src_image))
+        a_ext_inline = (audio_file.filename.rsplit(".", 1)[-1] if audio_file.filename and "." in audio_file.filename else "mp3").lower()
+        if a_ext_inline not in ("mp3", "wav", "m4a", "aac", "ogg", "flac"):
+            a_ext_inline = "mp3"
+        src_audio = work_dir / f"_inline_audio.{a_ext_inline}"
+        audio_file.save(str(src_audio))
+        audio_mime_hint = audio_file.mimetype
+
     try:
         # Save + normalize image
-        raw_image_path = work_dir / "raw_input"
-        image_file.save(str(raw_image_path))
-        img = Image.open(raw_image_path).convert("RGB")
+        img = Image.open(src_image).convert("RGB")
         W, H = img.size
         W = W - (W % 2)
         H = H - (H % 2)
@@ -2365,13 +2619,12 @@ def diagrams_render():
         image_path = work_dir / "input.png"
         img.save(image_path)
 
-        # Save audio
-        a_name = (image_file.filename or "audio").lower()
-        a_ext = (audio_file.filename.rsplit(".", 1)[-1] if audio_file.filename and "." in audio_file.filename else "mp3").lower()
+        # Copy audio into work dir
+        a_ext = src_audio.suffix.lstrip(".").lower() or "mp3"
         if a_ext not in ("mp3", "wav", "m4a", "aac", "ogg", "flac"):
             a_ext = "mp3"
         audio_path = work_dir / f"audio.{a_ext}"
-        audio_file.save(str(audio_path))
+        shutil.copy(str(src_audio), str(audio_path))
 
         # Probe audio duration
         probe = subprocess.run(
@@ -2477,8 +2730,10 @@ def diagrams_render():
         align_img.save(buf, format="PNG")
         align_bytes = buf.getvalue()
 
-        script = (request.form.get("script") or "").strip()
-        audio_mime = audio_file.mimetype or "audio/mpeg"
+        script = (script_input or "").strip()
+        mime_by_ext = {"mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4",
+                       "aac": "audio/aac", "ogg": "audio/ogg", "flac": "audio/flac"}
+        audio_mime = audio_mime_hint or mime_by_ext.get(a_ext, "audio/mpeg")
         audio_bytes = Path(audio_path).read_bytes()
         ai_result = _gemini_align_boxes(align_bytes, audio_bytes, audio_mime, script, N, duration) if N <= 12 and duration <= 120 else None
 
@@ -2540,20 +2795,39 @@ def diagrams_render():
         if r.returncode != 0:
             return jsonify({"error": "ffmpeg failed", "stderr": r.stderr[-1500:], "cmd": " ".join(cmd[:5])}), 500
 
-        out_dir = Path(app.root_path) / "static" / "uploads" / "diagrams"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        final_path = out_dir / f"{job_id}.mp4"
-        shutil.move(str(out_path), str(final_path))
+        # Store result: under the diagram's folder if persisted, else flat
+        if diagram_row:
+            vid = diagram_row["video_id"]
+            out_dir = _diagram_dir(vid, diagram_id)
+            final_path = out_dir / "result.mp4"
+            shutil.move(str(out_path), str(final_path))
+            rel = str(final_path.relative_to(Path(app.root_path)))
+            result_url = "/" + rel
+        else:
+            out_dir = Path(app.root_path) / "static" / "uploads" / "diagrams"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            final_path = out_dir / f"{job_id}.mp4"
+            shutil.move(str(out_path), str(final_path))
+            result_url = f"/static/uploads/diagrams/{job_id}.mp4"
 
-        return jsonify({
-            "url": f"/static/uploads/diagrams/{job_id}.mp4",
+        result_payload = {
+            "url": result_url,
             "duration": round(duration, 2),
             "boxes": N,
             "reveal_times": [round(t, 2) for t in times],
             "alignment": alignment_mode,
             "descriptions": alignment_descs,
             "size": (W, H),
-        })
+        }
+
+        if diagram_row:
+            conn = get_db()
+            conn.execute("UPDATE diagrams SET result_url=?, result_meta_json=?, updated_at=? WHERE id=?",
+                         (result_url, json.dumps(result_payload), datetime.now(timezone.utc).isoformat(), diagram_id))
+            conn.commit()
+            conn.close()
+
+        return jsonify(result_payload)
     except Exception as e:
         return jsonify({"error": f"render exception: {type(e).__name__}: {e}"}), 500
     finally:

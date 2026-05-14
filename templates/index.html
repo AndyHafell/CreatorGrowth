@@ -1946,7 +1946,7 @@
                         <span style="color:#666; font-size:10px; letter-spacing:2px;">SCRIPT</span>
                         <span id="diagramsScriptStatus" style="color:#555; font-size:11px;"></span>
                     </div>
-                    <textarea id="diagramsScript" style="width:100%; min-height:120px; background:transparent; border:1px solid #2a2a4a; border-radius:6px; padding:12px; color:#ddd; font-size:13px; line-height:1.6; resize:vertical; font-family:inherit; box-sizing:border-box;" placeholder="Auto-fills when you upload audio. Or paste here."></textarea>
+                    <textarea id="diagramsScript" oninput="schedulePatch()" style="width:100%; min-height:120px; background:transparent; border:1px solid #2a2a4a; border-radius:6px; padding:12px; color:#ddd; font-size:13px; line-height:1.6; resize:vertical; font-family:inherit; box-sizing:border-box;" placeholder="Auto-fills when you upload audio. Or paste here."></textarea>
                 </div>
 
                 <!-- RENDER -->
@@ -4811,71 +4811,148 @@
         }
     }
 
-    // ---- studio shell + multi-diagram state ----
-    var diagramsList = [];   // [{id, name, imageSrc, boxes, audioFile, audioDataUrl, audioName, audioDuration, script, scriptStatus}]
+    // ---- studio shell + multi-diagram state (server-backed) ----
+    var diagramsList = [];   // local mirror; each entry has {id, name, imageUrl, boxes, audioUrl, audioName, audioDuration, script, resultUrl, resultMeta}
     var activeDiagramIdx = -1;
+    var _patchTimer = null;
+
+    function _getStudioVideoId() {
+        return (typeof modalVideoId !== 'undefined' && modalVideoId) ? modalVideoId : null;
+    }
+    function setStudioStatus(text, color) {
+        var el = document.getElementById('diagramsStudioStatus');
+        if (!el) return;
+        el.textContent = text || '';
+        el.style.color = color || '#555';
+    }
+    function _serverRowToLocal(row) {
+        return {
+            id: row.id,
+            name: row.name || 'Diagram',
+            imageUrl: row.image_path_url || '',
+            boxes: row.boxes || [],
+            audioUrl: row.audio_path_url || '',
+            audioName: row.audio_name || '',
+            audioDuration: row.audio_duration || '',
+            script: row.script || '',
+            scriptStatus: '',
+            resultUrl: row.result_url || '',
+            resultMeta: row.result_meta || null
+        };
+    }
+    function _apiPatch(id, body) {
+        return fetch('/api/diagrams/' + id, {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        }).then(function(r) { return r.json(); });
+    }
+    function schedulePatch() {
+        if (_patchTimer) clearTimeout(_patchTimer);
+        _patchTimer = setTimeout(function() {
+            var d = diagramsList[activeDiagramIdx];
+            if (!d) return;
+            setStudioStatus('Saving…', '#f5b942');
+            var payload = {
+                boxes: diagramBoxes,
+                script: document.getElementById('diagramsScript').value
+            };
+            _apiPatch(d.id, payload).then(function(res) {
+                d.boxes = payload.boxes.slice();
+                d.script = payload.script;
+                setStudioStatus('Saved', '#4caf50');
+            }).catch(function(err) {
+                setStudioStatus('Save failed: ' + err, '#e07070');
+            });
+        }, 700);
+    }
 
     function openDiagrams() {
+        var vid = _getStudioVideoId();
+        if (!vid) { alert('Open a video first.'); return; }
         var studio = document.getElementById('diagramsStudio');
         studio.style.display = 'block';
-        // header context (video title from open modal, if any)
-        var videoTitle = '';
         var t = document.getElementById('modalTitle');
-        if (t && t.textContent) videoTitle = t.textContent.trim();
-        document.getElementById('diagramsStudioTitle').textContent = videoTitle || 'untitled video';
+        document.getElementById('diagramsStudioTitle').textContent = (t && t.textContent.trim()) || 'untitled';
 
-        if (diagramsList.length === 0) {
-            addNewDiagram();
-        } else {
-            renderSidebar();
-            loadDiagram(activeDiagramIdx >= 0 ? activeDiagramIdx : 0);
-        }
+        setStudioStatus('Loading…', '#f5b942');
+        fetch('/api/videos/' + vid + '/diagrams')
+            .then(function(r) { return r.json(); })
+            .then(function(rows) {
+                diagramsList = (rows || []).map(_serverRowToLocal);
+                if (diagramsList.length === 0) {
+                    return fetch('/api/videos/' + vid + '/diagrams', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+                        .then(function(r) { return r.json(); })
+                        .then(function(d) { diagramsList.push(_serverRowToLocal(d)); });
+                }
+            })
+            .then(function() {
+                activeDiagramIdx = 0;
+                renderSidebar();
+                loadDiagram(0);
+                setStudioStatus('Saved', '#4caf50');
+            })
+            .catch(function(err) { setStudioStatus('Load failed: ' + err, '#e07070'); });
     }
     function closeDiagramsStudio() {
-        saveActiveDiagramState();
+        // flush any pending debounced save synchronously by triggering it now
+        if (_patchTimer) { clearTimeout(_patchTimer); _patchTimer = null; }
+        var d = diagramsList[activeDiagramIdx];
+        if (d) {
+            _apiPatch(d.id, { boxes: diagramBoxes, script: document.getElementById('diagramsScript').value })
+                .catch(function() {});
+        }
         document.getElementById('diagramsStudio').style.display = 'none';
     }
     function addNewDiagram() {
-        saveActiveDiagramState();
-        var d = {
-            id: 'd' + Date.now() + Math.random().toString(36).slice(2,6),
-            name: 'Diagram ' + (diagramsList.length + 1),
-            imageSrc: '',
-            boxes: [],
-            audioFile: null,
-            audioDataUrl: '',
-            audioName: '',
-            audioDuration: '',
-            script: '',
-            scriptStatus: ''
-        };
-        diagramsList.push(d);
-        activeDiagramIdx = diagramsList.length - 1;
-        renderSidebar();
-        loadDiagram(activeDiagramIdx);
+        var vid = _getStudioVideoId();
+        if (!vid) return;
+        // flush current pending save
+        if (_patchTimer) { clearTimeout(_patchTimer); _patchTimer = null; }
+        var prev = diagramsList[activeDiagramIdx];
+        var prevPromise = prev
+            ? _apiPatch(prev.id, { boxes: diagramBoxes, script: document.getElementById('diagramsScript').value })
+            : Promise.resolve();
+        setStudioStatus('Saving…', '#f5b942');
+        prevPromise
+            .then(function() {
+                return fetch('/api/videos/' + vid + '/diagrams', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                diagramsList.push(_serverRowToLocal(d));
+                activeDiagramIdx = diagramsList.length - 1;
+                renderSidebar();
+                loadDiagram(activeDiagramIdx);
+                setStudioStatus('Saved', '#4caf50');
+            })
+            .catch(function(err) { setStudioStatus('Create failed: ' + err, '#e07070'); });
     }
     function deleteDiagram(idx) {
         if (idx < 0 || idx >= diagramsList.length) return;
-        if (diagramsList.length === 1) {
-            // reset rather than remove the last one
-            diagramsList[0] = {
-                id: diagramsList[0].id, name: 'Diagram 1',
-                imageSrc: '', boxes: [], audioFile: null, audioDataUrl: '',
-                audioName: '', audioDuration: '', script: '', scriptStatus: ''
-            };
-            activeDiagramIdx = 0;
-            renderSidebar();
-            loadDiagram(0);
-            return;
-        }
-        diagramsList.splice(idx, 1);
-        if (activeDiagramIdx >= diagramsList.length) activeDiagramIdx = diagramsList.length - 1;
-        // renumber default names
-        diagramsList.forEach(function(d, i) {
-            if (/^Diagram \d+$/.test(d.name)) d.name = 'Diagram ' + (i + 1);
-        });
-        renderSidebar();
-        loadDiagram(activeDiagramIdx);
+        var d = diagramsList[idx];
+        setStudioStatus('Deleting…', '#f5b942');
+        fetch('/api/diagrams/' + d.id, { method: 'DELETE' })
+            .then(function(r) { return r.json(); })
+            .then(function() {
+                diagramsList.splice(idx, 1);
+                if (diagramsList.length === 0) {
+                    // recreate one empty
+                    return fetch('/api/videos/' + _getStudioVideoId() + '/diagrams', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+                        .then(function(r) { return r.json(); })
+                        .then(function(nd) {
+                            diagramsList.push(_serverRowToLocal(nd));
+                            activeDiagramIdx = 0;
+                        });
+                }
+                if (activeDiagramIdx >= diagramsList.length) activeDiagramIdx = diagramsList.length - 1;
+            })
+            .then(function() {
+                renderSidebar();
+                loadDiagram(activeDiagramIdx);
+                setStudioStatus('Saved', '#4caf50');
+            })
+            .catch(function(err) { setStudioStatus('Delete failed: ' + err, '#e07070'); });
     }
     function renderSidebar() {
         var c = document.getElementById('diagramsSidebarList');
@@ -4887,7 +4964,15 @@
             item.style.cssText = 'padding:9px 10px; background:' + (active ? '#15151f' : 'transparent') + '; border:1px solid ' + (active ? '#f5b942' : '#1f1f30') + '; border-radius:4px; margin-bottom:6px; cursor:pointer; display:flex; align-items:center; gap:9px;';
             item.onclick = function() {
                 if (i === activeDiagramIdx) return;
-                saveActiveDiagramState();
+                // flush pending save for the diagram we're leaving
+                if (_patchTimer) { clearTimeout(_patchTimer); _patchTimer = null; }
+                var leaving = diagramsList[activeDiagramIdx];
+                if (leaving) {
+                    _apiPatch(leaving.id, { boxes: diagramBoxes, script: document.getElementById('diagramsScript').value })
+                        .catch(function() {});
+                    leaving.boxes = diagramBoxes.slice();
+                    leaving.script = document.getElementById('diagramsScript').value;
+                }
                 activeDiagramIdx = i;
                 renderSidebar();
                 loadDiagram(i);
@@ -4909,13 +4994,13 @@
             nm.style.cssText = 'font-size:12px; color:' + (active ? '#ddd' : '#aaa') + '; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
             info.appendChild(nm);
             var bits = [];
-            // for the active diagram, read current UI state for meta (live)
-            var liveBoxes = active ? diagramBoxes.length : d.boxes.length;
-            var liveImage = active ? !!document.getElementById('diagramsImage').src : !!d.imageSrc;
-            var liveAudio = active ? !!diagramsAudioFile : !!d.audioFile;
+            var liveBoxes = active ? diagramBoxes.length : (d.boxes ? d.boxes.length : 0);
+            var liveImage = active ? !!document.getElementById('diagramsImage').src : !!d.imageUrl;
+            var liveAudio = active ? !!document.getElementById('diagramsAudioPlayer').src : !!d.audioUrl;
             if (liveImage) bits.push('img');
             if (liveBoxes) bits.push(liveBoxes + ' box' + (liveBoxes === 1 ? '' : 'es'));
             if (liveAudio) bits.push('audio');
+            if (d.resultUrl) bits.push('rendered');
             var meta = document.createElement('div');
             meta.textContent = bits.length ? bits.join(' · ') : 'empty';
             meta.style.cssText = 'font-size:10px; color:' + (bits.length ? '#666' : '#444') + '; margin-top:2px;';
@@ -4924,35 +5009,14 @@
             c.appendChild(item);
         });
     }
-    function saveActiveDiagramState() {
-        if (activeDiagramIdx < 0 || activeDiagramIdx >= diagramsList.length) return;
-        var d = diagramsList[activeDiagramIdx];
-        var imgEl = document.getElementById('diagramsImage');
-        d.imageSrc = imgEl ? (imgEl.src || '') : '';
-        d.boxes = diagramBoxes.slice();
-        var ta = document.getElementById('diagramsScript');
-        d.script = ta ? ta.value : '';
-        var st = document.getElementById('diagramsScriptStatus');
-        d.scriptStatus = st ? st.textContent : '';
-        if (diagramsAudioFile) {
-            d.audioFile = diagramsAudioFile;
-            d.audioName = document.getElementById('diagramsAudioName').textContent;
-            d.audioDuration = document.getElementById('diagramsAudioDuration').textContent;
-            d.audioDataUrl = document.getElementById('diagramsAudioPlayer').src;
-        } else {
-            d.audioFile = null;
-            d.audioDataUrl = '';
-            d.audioName = '';
-            d.audioDuration = '';
-        }
-    }
+
     function loadDiagram(idx) {
         if (idx < 0 || idx >= diagramsList.length) return;
         var d = diagramsList[idx];
 
         // image + boxes
-        if (d.imageSrc) {
-            document.getElementById('diagramsImage').src = d.imageSrc;
+        if (d.imageUrl) {
+            document.getElementById('diagramsImage').src = d.imageUrl + '?t=' + Date.now();
             document.getElementById('diagramsPreview').style.display = 'block';
             document.getElementById('diagramsDropZone').style.display = 'none';
         } else {
@@ -4960,34 +5024,33 @@
             document.getElementById('diagramsPreview').style.display = 'none';
             document.getElementById('diagramsDropZone').style.display = 'block';
         }
-        diagramBoxes = d.boxes.slice();
+        diagramBoxes = (d.boxes || []).slice();
         renderBoxes();
 
         // audio
-        if (d.audioFile) {
-            diagramsAudioFile = d.audioFile;
+        if (d.audioUrl) {
             document.getElementById('diagramsAudioName').textContent = d.audioName || '';
             document.getElementById('diagramsAudioDuration').textContent = d.audioDuration || '';
-            document.getElementById('diagramsAudioPlayer').src = d.audioDataUrl || '';
+            document.getElementById('diagramsAudioPlayer').src = d.audioUrl;
             document.getElementById('diagramsAudioPreview').style.display = 'block';
             document.getElementById('diagramsAudioDropZone').style.display = 'none';
         } else {
-            diagramsAudioFile = null;
             document.getElementById('diagramsAudioPlayer').src = '';
             document.getElementById('diagramsAudioPreview').style.display = 'none';
             document.getElementById('diagramsAudioDropZone').style.display = 'block';
         }
+        diagramsAudioFile = null;  // unused when audio comes from server
 
         // script
         document.getElementById('diagramsScript').value = d.script || '';
         var st = document.getElementById('diagramsScriptStatus');
-        st.textContent = d.scriptStatus || '';
+        st.textContent = '';
         st.style.color = '#555';
 
         // result video (if previously rendered)
         document.getElementById('diagramsRenderStatus').textContent = '';
-        if (d.resultUrl && d.resultMeta) {
-            showDiagramResult(d.resultMeta);
+        if (d.resultUrl) {
+            showDiagramResult(d.resultMeta || { url: d.resultUrl, duration: 0, boxes: 0, reveal_times: [], size: [0,0], alignment: '' });
         } else {
             hideDiagramResult();
         }
@@ -5009,6 +5072,9 @@
     }
     function handleDiagramsFile(file) {
         if (!file || !file.type || !file.type.startsWith('image/')) return;
+        var d = diagramsList[activeDiagramIdx];
+        if (!d) return;
+        // optimistic local preview
         var reader = new FileReader();
         reader.onload = function(e) {
             document.getElementById('diagramsImage').src = e.target.result;
@@ -5018,13 +5084,34 @@
             renderSidebar();
         };
         reader.readAsDataURL(file);
+
+        // upload to server
+        setStudioStatus('Uploading image…', '#f5b942');
+        var fd = new FormData();
+        fd.append('image', file, file.name);
+        fetch('/api/diagrams/' + d.id + '/image', { method: 'POST', body: fd })
+            .then(function(r) { return r.json().then(function(j) { return {ok: r.ok, body: j}; }); })
+            .then(function(res) {
+                if (!res.ok) { setStudioStatus('Upload failed: ' + (res.body.error||''), '#e07070'); return; }
+                d.imageUrl = res.body.image_path_url;
+                // boxes were cleared client-side; persist that too
+                d.boxes = [];
+                _apiPatch(d.id, { boxes: [] }).catch(function(){});
+                // swap to server URL (cache-busted)
+                document.getElementById('diagramsImage').src = res.body.image_path_url + '?t=' + Date.now();
+                setStudioStatus('Saved', '#4caf50');
+                renderSidebar();
+            })
+            .catch(function(err) { setStudioStatus('Upload error: ' + err, '#e07070'); });
     }
     function resetDiagramsImage() {
+        var d = diagramsList[activeDiagramIdx];
         document.getElementById('diagramsImage').src = '';
         document.getElementById('diagramsPreview').style.display = 'none';
         document.getElementById('diagramsDropZone').style.display = 'block';
         document.getElementById('diagramsFileInput').value = '';
         clearBoxes();
+        if (d) { d.imageUrl = ''; d.boxes = []; _apiPatch(d.id, { boxes: [] }).catch(function(){}); }
         renderSidebar();
     }
 
@@ -5075,6 +5162,7 @@
         if (w > 8 && h > 8) {
             diagramBoxes.push({ x: x / r.width, y: y / r.height, w: w / r.width, h: h / r.height });
             renderBoxes();
+            if (typeof schedulePatch === 'function') schedulePatch();
         }
     }
     function renderBoxes() {
@@ -5113,11 +5201,13 @@
         if (idx < 0 || idx >= diagramBoxes.length) return;
         diagramBoxes.splice(idx, 1);
         renderBoxes();
+        if (typeof schedulePatch === 'function') schedulePatch();
     }
     function undoLastBox() {
         if (diagramBoxes.length === 0) return;
         diagramBoxes.pop();
         renderBoxes();
+        if (typeof schedulePatch === 'function') schedulePatch();
     }
     function clearBoxes() {
         diagramBoxes = [];
@@ -5125,30 +5215,55 @@
         if (layer) Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.remove(); });
         var counter = document.getElementById('diagramsBoxCount');
         if (counter) counter.textContent = '0 boxes';
+        if (typeof schedulePatch === 'function') schedulePatch();
     }
 
     // ---- audio upload + auto-transcribe ----
-    var diagramsAudioFile = null;
+    var diagramsAudioFile = null;  // (legacy — only set during inline preview before upload completes)
     function handleDiagramsAudio(file) {
         if (!file || !file.type || !file.type.startsWith('audio/')) {
             alert('Pick an audio file (.mp3 / .wav / .m4a).');
             return;
         }
+        var d = diagramsList[activeDiagramIdx];
+        if (!d) return;
         diagramsAudioFile = file;
+        var capturedDuration = '';
         var reader = new FileReader();
         reader.onload = function(e) {
             var player = document.getElementById('diagramsAudioPlayer');
             player.src = e.target.result;
             player.onloadedmetadata = function() {
-                var d = player.duration;
-                document.getElementById('diagramsAudioDuration').textContent = d.toFixed(1) + 's';
+                capturedDuration = player.duration.toFixed(1) + 's';
+                document.getElementById('diagramsAudioDuration').textContent = capturedDuration;
+                d.audioDuration = capturedDuration;
             };
             document.getElementById('diagramsAudioName').textContent = file.name;
             document.getElementById('diagramsAudioPreview').style.display = 'block';
             document.getElementById('diagramsAudioDropZone').style.display = 'none';
+            d.audioName = file.name;
             renderSidebar();
         };
         reader.readAsDataURL(file);
+
+        // upload to server (parallel with transcribe)
+        setStudioStatus('Uploading audio…', '#f5b942');
+        var doUpload = function() {
+            var fd = new FormData();
+            fd.append('audio', file, file.name);
+            fd.append('duration', capturedDuration || '');
+            return fetch('/api/diagrams/' + d.id + '/audio', { method: 'POST', body: fd })
+                .then(function(r) { return r.json().then(function(j) { return {ok: r.ok, body: j}; }); })
+                .then(function(res) {
+                    if (!res.ok) { setStudioStatus('Upload failed: ' + (res.body.error||''), '#e07070'); return; }
+                    d.audioUrl = res.body.audio_path_url;
+                    setStudioStatus('Saved', '#4caf50');
+                    renderSidebar();
+                });
+        };
+        // small delay so the FileReader has a chance to capture duration
+        setTimeout(doUpload, 250);
+
         transcribeDiagramsAudio(file);
     }
     function transcribeDiagramsAudio(file) {
@@ -5184,11 +5299,13 @@
             });
     }
     function resetDiagramsAudio() {
+        var d = diagramsList[activeDiagramIdx];
         diagramsAudioFile = null;
         document.getElementById('diagramsAudioPlayer').src = '';
         document.getElementById('diagramsAudioPreview').style.display = 'none';
         document.getElementById('diagramsAudioDropZone').style.display = 'block';
         document.getElementById('diagramsAudioInput').value = '';
+        if (d) { d.audioUrl = ''; d.audioName = ''; d.audioDuration = ''; }
         renderSidebar();
     }
 
@@ -5202,37 +5319,39 @@
     }
 
     function renderDiagram() {
-        var src = document.getElementById('diagramsImage').src || '';
-        var hasImage = src && src.indexOf('data:image') === 0;
-        var script = document.getElementById('diagramsScript').value.trim();
-        if (!hasImage) { alert('Upload an image first.'); return; }
+        var d = diagramsList[activeDiagramIdx];
+        if (!d) return;
+        if (!d.imageUrl && !document.getElementById('diagramsImage').src) { alert('Upload an image first.'); return; }
         if (diagramBoxes.length === 0) { alert('Draw at least one box on the image (click & drag).'); return; }
-        if (!diagramsAudioFile) { alert('Upload the audio clip.'); return; }
-        // script is optional for v1 — reveals are time-distributed, not phrase-aligned yet
+        if (!d.audioUrl) { alert('Wait for audio upload to finish, or upload an audio clip.'); return; }
         return _renderActiveDiagram();
     }
 
     function _renderActiveDiagram() {
+        var d = diagramsList[activeDiagramIdx];
+        if (!d) return Promise.resolve(null);
         var btn = document.getElementById('diagramsRenderBtn');
         var btnAll = document.getElementById('diagramsRenderAllBtn');
         var status = document.getElementById('diagramsRenderStatus');
-        var src = document.getElementById('diagramsImage').src;
-        var imageBlob = dataUrlToBlob(src);
-        var ext = ((src.match(/data:image\/(\w+)/) || [])[1] || 'png').toLowerCase();
-        if (ext === 'jpeg') ext = 'jpg';
-        var fd = new FormData();
-        fd.append('image', imageBlob, 'image.' + ext);
-        fd.append('audio', diagramsAudioFile, diagramsAudioFile.name);
-        fd.append('boxes', JSON.stringify(diagramBoxes));
-        fd.append('script', document.getElementById('diagramsScript').value);
 
         btn.disabled = true; btnAll.disabled = true;
         btn.style.opacity = '0.5'; btnAll.style.opacity = '0.5';
         status.style.color = '#f5b942';
-        status.textContent = 'Rendering…';
-        var t0 = Date.now();
+        status.textContent = 'Saving…';
 
-        return fetch('/api/diagrams/render', { method: 'POST', body: fd })
+        // 1) Flush boxes + script to server, then 2) render against diagram_id
+        if (_patchTimer) { clearTimeout(_patchTimer); _patchTimer = null; }
+        var save = _apiPatch(d.id, { boxes: diagramBoxes, script: document.getElementById('diagramsScript').value });
+        var t0 = Date.now();
+        return save
+            .then(function() {
+                d.boxes = diagramBoxes.slice();
+                d.script = document.getElementById('diagramsScript').value;
+                status.textContent = 'Rendering…';
+                var fd = new FormData();
+                fd.append('diagram_id', d.id);
+                return fetch('/api/diagrams/render', { method: 'POST', body: fd });
+            })
             .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, body: j }; }); })
             .then(function(res) {
                 if (!res.ok) {
@@ -5244,13 +5363,10 @@
                 var dt = ((Date.now() - t0) / 1000).toFixed(1);
                 status.style.color = '#4caf50';
                 status.textContent = 'Rendered in ' + dt + 's';
+                d.resultUrl = res.body.url;
+                d.resultMeta = res.body;
                 showDiagramResult(res.body);
-                // persist on active diagram
-                if (activeDiagramIdx >= 0 && activeDiagramIdx < diagramsList.length) {
-                    diagramsList[activeDiagramIdx].resultUrl = res.body.url;
-                    diagramsList[activeDiagramIdx].resultMeta = res.body;
-                    renderSidebar();
-                }
+                renderSidebar();
                 return res.body;
             })
             .catch(function(err) {
@@ -5286,10 +5402,10 @@
     }
 
     function renderAllDiagrams() {
-        saveActiveDiagramState();
         var ready = [];
         diagramsList.forEach(function(d, i) {
-            if (d.imageSrc && d.boxes.length > 0 && d.audioFile) ready.push(i);
+            var liveBoxes = (i === activeDiagramIdx) ? diagramBoxes.length : (d.boxes ? d.boxes.length : 0);
+            if (d.imageUrl && liveBoxes > 0 && d.audioUrl) ready.push(i);
         });
         if (ready.length === 0) {
             alert('No diagrams are fully set up. Each needs: image + ≥1 box + audio.');
