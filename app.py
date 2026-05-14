@@ -2243,6 +2243,164 @@ def twitter_feed():
     return jsonify([dict(r) for r in rows])
 
 
+@app.route("/api/diagrams/render", methods=["POST"])
+def diagrams_render():
+    """Render image + boxes + audio -> MP4 with timed fade-in reveals."""
+    import tempfile, subprocess, shutil
+    from PIL import Image, ImageDraw
+
+    image_file = request.files.get("image")
+    audio_file = request.files.get("audio")
+    boxes_json = request.form.get("boxes", "[]")
+    if not image_file or not audio_file:
+        return jsonify({"error": "image and audio required"}), 400
+    try:
+        boxes = json.loads(boxes_json)
+    except Exception:
+        return jsonify({"error": "invalid boxes JSON"}), 400
+    if not boxes:
+        return jsonify({"error": "at least one box required"}), 400
+
+    job_id = uuid.uuid4().hex[:12]
+    work_dir = Path(tempfile.mkdtemp(prefix=f"diagrams_{job_id}_"))
+    try:
+        # Save + normalize image
+        raw_image_path = work_dir / "raw_input"
+        image_file.save(str(raw_image_path))
+        img = Image.open(raw_image_path).convert("RGB")
+        W, H = img.size
+        W = W - (W % 2)
+        H = H - (H % 2)
+        if W < 64 or H < 64:
+            return jsonify({"error": "image too small (min 64x64)"}), 400
+        img = img.resize((W, H))
+        image_path = work_dir / "input.png"
+        img.save(image_path)
+
+        # Save audio
+        a_name = (image_file.filename or "audio").lower()
+        a_ext = (audio_file.filename.rsplit(".", 1)[-1] if audio_file.filename and "." in audio_file.filename else "mp3").lower()
+        if a_ext not in ("mp3", "wav", "m4a", "aac", "ogg", "flac"):
+            a_ext = "mp3"
+        audio_path = work_dir / f"audio.{a_ext}"
+        audio_file.save(str(audio_path))
+
+        # Probe audio duration
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        try:
+            duration = float(probe.stdout.strip())
+        except ValueError:
+            return jsonify({"error": "ffprobe could not read audio duration"}), 500
+        if duration <= 0.1 or duration > 600:
+            return jsonify({"error": f"audio duration out of range ({duration:.1f}s, max 600s)"}), 400
+
+        # Compute box rects in image pixels (even-aligned, clamped)
+        box_rects = []
+        for b in boxes:
+            try:
+                bx = float(b["x"]); by = float(b["y"]); bw = float(b["w"]); bh = float(b["h"])
+            except (KeyError, TypeError, ValueError):
+                return jsonify({"error": "box missing x/y/w/h"}), 400
+            x = int(bx * W); y = int(by * H)
+            w = int(bw * W); h = int(bh * H)
+            x = max(0, min(W - 4, x)); y = max(0, min(H - 4, y))
+            w = max(4, min(W - x, w)); h = max(4, min(H - y, h))
+            x -= (x % 2); y -= (y % 2)
+            w -= (w % 2); h -= (h % 2)
+            if w < 2 or h < 2:
+                continue
+            box_rects.append((x, y, w, h))
+        if not box_rects:
+            return jsonify({"error": "no valid boxes after normalization"}), 400
+
+        N = len(box_rects)
+
+        # Background = image with each box filled with near-black (so reveals "appear")
+        bg = img.copy()
+        draw = ImageDraw.Draw(bg)
+        for (x, y, w, h) in box_rects:
+            draw.rectangle([x, y, x + w - 1, y + h - 1], fill=(8, 8, 18))
+        bg_path = work_dir / "bg.png"
+        bg.save(bg_path)
+
+        # Crop each box
+        crop_paths = []
+        for i, (x, y, w, h) in enumerate(box_rects):
+            crop = img.crop((x, y, x + w, y + h))
+            cp = work_dir / f"crop_{i:02d}.png"
+            crop.save(cp)
+            crop_paths.append(cp)
+
+        # Reveal times: first box ~0.5s, last box ~75% of duration, evenly between
+        first_t = min(0.5, max(0.1, duration * 0.05))
+        last_t = max(first_t + 0.5, duration * 0.75)
+        if N == 1:
+            times = [first_t]
+        else:
+            step = (last_t - first_t) / (N - 1)
+            times = [first_t + i * step for i in range(N)]
+        fade_dur = 0.35
+
+        # Build ffmpeg command
+        inputs = ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(bg_path)]
+        for cp in crop_paths:
+            inputs += ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(cp)]
+        inputs += ["-i", str(audio_path)]
+
+        filter_parts = []
+        last_label = "[0:v]"
+        for i, ((x, y, w, h), t) in enumerate(zip(box_rects, times)):
+            faded = f"[f{i}]"
+            filter_parts.append(
+                f"[{i+1}:v]format=rgba,fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1{faded}"
+            )
+            out_label = "[vout]" if i == N - 1 else f"[v{i}]"
+            filter_parts.append(
+                f"{last_label}{faded}overlay={x}:{y}:enable='gte(t,{t:.3f})'{out_label}"
+            )
+            last_label = out_label
+
+        filter_complex = ";".join(filter_parts)
+
+        out_path = work_dir / "out.mp4"
+        cmd = ["ffmpeg", "-y"] + inputs + [
+            "-filter_complex", filter_complex,
+            "-map", "[vout]", "-map", f"{N+1}:a",
+            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-r", "30",
+            "-shortest",
+            str(out_path),
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
+        if r.returncode != 0:
+            return jsonify({"error": "ffmpeg failed", "stderr": r.stderr[-1500:], "cmd": " ".join(cmd[:5])}), 500
+
+        out_dir = Path(app.root_path) / "static" / "uploads" / "diagrams"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        final_path = out_dir / f"{job_id}.mp4"
+        shutil.move(str(out_path), str(final_path))
+
+        return jsonify({
+            "url": f"/static/uploads/diagrams/{job_id}.mp4",
+            "duration": round(duration, 2),
+            "boxes": N,
+            "reveal_times": [round(t, 2) for t in times],
+            "size": (W, H),
+        })
+    except Exception as e:
+        return jsonify({"error": f"render exception: {type(e).__name__}: {e}"}), 500
+    finally:
+        try:
+            shutil.rmtree(work_dir)
+        except Exception:
+            pass
+
+
 @app.route("/api/diagrams/transcribe", methods=["POST"])
 def diagrams_transcribe():
     """Transcribe an uploaded audio clip via Gemini. Returns {transcript: str}."""
