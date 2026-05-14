@@ -5820,11 +5820,9 @@
         var d = diagramsList[activeDiagramIdx];
         if (!d) return Promise.resolve(null);
         var btn = document.getElementById('diagramsRenderBtn');
-        var btnAll = document.getElementById('diagramsRenderAllBtn');
         var status = document.getElementById('diagramsRenderStatus');
 
-        btn.disabled = true; btnAll.disabled = true;
-        btn.style.opacity = '0.5'; btnAll.style.opacity = '0.5';
+        if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
         status.style.color = '#f5b942';
         status.textContent = 'Saving…';
 
@@ -5864,8 +5862,7 @@
                 return null;
             })
             .finally(function() {
-                btn.disabled = false; btnAll.disabled = false;
-                btn.style.opacity = '1'; btnAll.style.opacity = '1';
+                if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
             });
     }
 
