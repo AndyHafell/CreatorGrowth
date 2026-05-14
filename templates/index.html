@@ -5348,11 +5348,19 @@
         // clear committed boxes (but keep any drag preview)
         Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.remove(); });
         diagramBoxes.forEach(function(b, i) {
+            var isHide = (b.anim === 'hide');
+            var borderClr = isHide ? '#e07070' : '#f5b942';
+            var bgClr = isHide ? 'rgba(224,112,112,0.18)' : 'rgba(245,185,66,0.10)';
             var d = document.createElement('div');
             d.className = 'diagram-box';
             d.dataset.idx = i;
-            d.title = 'Right-click or click the × to delete';
-            d.style.cssText = 'position:absolute; border:2px solid #f5b942; background:rgba(245,185,66,0.10); pointer-events:auto; box-shadow:0 0 0 1px rgba(0,0,0,0.4); cursor:context-menu;';
+            d.title = isHide
+                ? 'Hidden region — masked the whole video. Right-click to delete.'
+                : 'Right-click or click the × to delete';
+            d.style.cssText = 'position:absolute; border:2px solid ' + borderClr + '; background:' + bgClr + '; pointer-events:auto; box-shadow:0 0 0 1px rgba(0,0,0,0.4); cursor:context-menu;';
+            if (isHide) {
+                d.style.borderStyle = 'dashed';
+            }
             d.style.left = (b.x * 100) + '%';
             d.style.top = (b.y * 100) + '%';
             d.style.width = (b.w * 100) + '%';
@@ -5360,13 +5368,13 @@
             d.oncontextmenu = function(ev) { ev.preventDefault(); ev.stopPropagation(); deleteBox(parseInt(d.dataset.idx, 10)); };
             d.onmousedown = function(ev) { ev.stopPropagation(); };
             var badge = document.createElement('div');
-            badge.textContent = (i + 1);
-            badge.style.cssText = 'position:absolute; top:-10px; left:-10px; background:#f5b942; color:#000; font-weight:700; font-size:12px; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 4px rgba(0,0,0,0.5);';
+            badge.textContent = isHide ? '×' : (i + 1);
+            badge.style.cssText = 'position:absolute; top:-10px; left:-10px; background:' + borderClr + '; color:#000; font-weight:700; font-size:' + (isHide ? '14' : '12') + 'px; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 4px rgba(0,0,0,0.5);';
             d.appendChild(badge);
             var del = document.createElement('div');
             del.textContent = '×';
             del.title = 'Delete this box';
-            del.style.cssText = 'position:absolute; top:-10px; right:-10px; background:#2a2a4a; color:#f5b942; font-weight:700; font-size:14px; line-height:1; width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,0.5); border:1px solid #f5b942;';
+            del.style.cssText = 'position:absolute; top:-10px; right:-10px; background:#2a2a4a; color:' + borderClr + '; font-weight:700; font-size:14px; line-height:1; width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,0.5); border:1px solid ' + borderClr + ';';
             del.onclick = function(ev) { ev.preventDefault(); ev.stopPropagation(); deleteBox(parseInt(d.dataset.idx, 10)); };
             del.onmousedown = function(ev) { ev.stopPropagation(); };
             d.appendChild(del);
@@ -5383,11 +5391,13 @@
         ['from_left', 'Slide → (from left)'],
         ['from_above', 'Slide ↓ (from above)'],
         ['from_below', 'Slide ↑ (from below)'],
+        ['zoom_in', 'Zoom in'],
+        ['zoom_out', 'Zoom out'],
+        ['hide', 'Hide (persistent — no reveal)'],
     ];
-    // Legacy aliases — old picks fall back. Zoom is being reworked.
+    // Legacy aliases — old picks map to new.
     var LEGACY_ANIM = { from_right_fade:'from_right', from_left_fade:'from_left',
-                        from_above_fade:'from_above', from_below_fade:'from_below',
-                        zoom_in:'fade', zoom_out:'fade' };
+                        from_above_fade:'from_above', from_below_fade:'from_below' };
     function renderBoxAnimList() {
         var c = document.getElementById('diagramsBoxList');
         if (!c) return;
@@ -5403,16 +5413,18 @@
         var d = diagramsList[activeDiagramIdx];
         var descs = (d && d.resultMeta && d.resultMeta.descriptions) || [];
         diagramBoxes.forEach(function(b, i) {
+            var isHide = (b.anim === 'hide');
+            var accent = isHide ? '#e07070' : '#f5b942';
             var row = document.createElement('div');
-            row.style.cssText = 'margin-bottom:8px; padding:8px 10px; background:#15151f; border:1px solid #1f1f30; border-radius:4px;';
+            row.style.cssText = 'margin-bottom:8px; padding:8px 10px; background:#15151f; border:1px solid ' + (isHide ? '#3a2020' : '#1f1f30') + '; border-radius:4px;';
             var head = document.createElement('div');
             head.style.cssText = 'display:flex; align-items:center; gap:8px;';
             var num = document.createElement('div');
-            num.textContent = (i + 1);
-            num.style.cssText = 'background:#f5b942; color:#000; width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:11px; flex-shrink:0;';
+            num.textContent = isHide ? '×' : (i + 1);
+            num.style.cssText = 'background:' + accent + '; color:#000; width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:' + (isHide ? '13' : '11') + 'px; flex-shrink:0;';
             head.appendChild(num);
             var sel = document.createElement('select');
-            sel.style.cssText = 'flex:1; min-width:0; background:#0d0d1a; color:#ddd; border:1px solid #2a2a4a; border-radius:4px; padding:4px 6px; font-size:11px;';
+            sel.style.cssText = 'flex:1; min-width:0; background:#0d0d1a; color:' + (isHide ? '#e07070' : '#ddd') + '; border:1px solid #2a2a4a; border-radius:4px; padding:4px 6px; font-size:11px;';
             var curAnim = LEGACY_ANIM[b.anim] || b.anim || 'fade';
             ANIM_OPTIONS.forEach(function(o) {
                 var opt = document.createElement('option');
@@ -5423,10 +5435,16 @@
             sel.onchange = function() {
                 b.anim = sel.value;
                 if (typeof schedulePatch === 'function') schedulePatch();
+                renderBoxes();  // box visual changes (gold↔red) — re-render
             };
             head.appendChild(sel);
             row.appendChild(head);
-            if (descs[i]) {
+            if (isHide) {
+                var note = document.createElement('div');
+                note.textContent = 'Masked the entire video — no reveal.';
+                note.style.cssText = 'color:#e07070; font-size:10px; margin-top:6px; padding-left:28px;';
+                row.appendChild(note);
+            } else if (descs[i]) {
                 var desc = document.createElement('div');
                 desc.textContent = descs[i];
                 desc.style.cssText = 'color:#666; font-size:10px; margin-top:6px; padding-left:28px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
