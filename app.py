@@ -3613,10 +3613,26 @@ def chapter_from_doc(vid):
         text = p.read_text(encoding="utf-8", errors="ignore")
     except OSError as e:
         return jsonify({"error": f"could not read content doc: {e}"}), 500
-    # Match `### Step N - <title>` (also tolerates "Step N -", em dash, optional trailing ✅/✓/check)
-    step_re = re.compile(r"^\s*#{2,4}\s*Step\s+\d+\s*[-–—]\s*(.+?)(?:\s*[✅✓☑])?\s*$", re.MULTILINE | re.IGNORECASE)
+    # Match step headings in either content-doc style (`### Step N - Title`) or
+    # show-doc style (`STEP N — TITLE`). Line must START with optional `###` + Step,
+    # so narration like "And now let's get into Step 1..." doesn't match.
+    step_re = re.compile(
+        r"^\s*(?:#{2,4}\s+)?Step\s+\d+\s*[-–—:]\s*(.+?)(?:\s*[✅✓☑])?\s*$",
+        re.MULTILINE | re.IGNORECASE,
+    )
     matches = step_re.findall(text)
-    items = [m.strip() for m in matches if m.strip()]
+    # Dedupe consecutive identical titles (case-insensitive), preserving order
+    items = []
+    seen = set()
+    for m in matches:
+        t = m.strip()
+        if not t:
+            continue
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(t)
     return jsonify({"items": items, "source": str(p)})
 
 
