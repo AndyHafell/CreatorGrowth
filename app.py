@@ -3218,6 +3218,13 @@ def diagrams_render():
                     )
                     zoom_frame_dirs[i] = fdir
                     zoom_frame_counts[i] = nf
+                elif anim_for_box == "write_on":
+                    fdir, nf = _render_write_on_frames(
+                        work_dir / f"writeon_{i:02d}", crop.convert("RGBA"),
+                        w, h, reveal_dur=0.8, fps=FPS,
+                    )
+                    zoom_frame_dirs[i] = fdir
+                    zoom_frame_counts[i] = nf
             else:
                 # SLIDESHOW: the box content becomes a full 16:9 slide.
                 box_crop = img.crop((x, y, x + w, y + h))
@@ -3243,6 +3250,13 @@ def diagrams_render():
                     fdir, nf = _render_zoom_frames(
                         work_dir / f"zoom_{i:02d}", slide, canvas_w, canvas_h, anim_for_box,
                         zoom_dur=0.45, fade_dur=0.35, fps=FPS,
+                    )
+                    zoom_frame_dirs[i] = fdir
+                    zoom_frame_counts[i] = nf
+                elif anim_for_box == "write_on":
+                    fdir, nf = _render_write_on_frames(
+                        work_dir / f"writeon_{i:02d}", slide.convert("RGBA"),
+                        canvas_w, canvas_h, reveal_dur=0.8, fps=FPS,
                     )
                     zoom_frame_dirs[i] = fdir
                     zoom_frame_counts[i] = nf
@@ -4080,6 +4094,13 @@ def chapters_render():
                     )
                     zoom_frame_dirs[i] = fdir
                     zoom_frame_counts[i] = nf
+                elif anim_for_box == "write_on":
+                    fdir, nf = _render_write_on_frames(
+                        work_dir / f"writeon_{i:02d}", crop.convert("RGBA"),
+                        w, h, reveal_dur=0.8, fps=FPS,
+                    )
+                    zoom_frame_dirs[i] = fdir
+                    zoom_frame_counts[i] = nf
             else:
                 # SLIDESHOW: the box content becomes a full 16:9 slide.
                 box_crop = img.crop((x, y, x + w, y + h))
@@ -4105,6 +4126,13 @@ def chapters_render():
                     fdir, nf = _render_zoom_frames(
                         work_dir / f"zoom_{i:02d}", slide, canvas_w, canvas_h, anim_for_box,
                         zoom_dur=0.45, fade_dur=0.35, fps=FPS,
+                    )
+                    zoom_frame_dirs[i] = fdir
+                    zoom_frame_counts[i] = nf
+                elif anim_for_box == "write_on":
+                    fdir, nf = _render_write_on_frames(
+                        work_dir / f"writeon_{i:02d}", slide.convert("RGBA"),
+                        canvas_w, canvas_h, reveal_dur=0.8, fps=FPS,
                     )
                     zoom_frame_dirs[i] = fdir
                     zoom_frame_counts[i] = nf
