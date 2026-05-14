@@ -2306,6 +2306,123 @@ def _corner_bg_color(img, patch=40):
     return (rs[m], gs[m], bs[m])
 
 
+def _replicate_whisper_words(audio_bytes, audio_mime):
+    """Word-level timestamps via vaibhavs10/incredibly-fast-whisper on Replicate.
+    Returns list of {word, start, end}. None on any failure."""
+    import base64, time
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    token = os.environ.get("REPLICATE_API_TOKEN", "")
+    if not token:
+        return None
+    audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+    data_uri = f"data:{audio_mime or 'audio/wav'};base64,{audio_b64}"
+    create_url = "https://api.replicate.com/v1/models/vaibhavs10/incredibly-fast-whisper/predictions"
+    body = {"input": {
+        "audio": data_uri,
+        "task": "transcribe",
+        "timestamp": "word",
+        "batch_size": 24,
+    }}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Prefer": "wait=60",
+    }
+    req = Request(create_url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (HTTPError, URLError) as e:
+        return None
+
+    # If still running after Prefer:wait, poll
+    poll_url = (data.get("urls") or {}).get("get")
+    deadline = time.time() + 90
+    while data.get("status") not in ("succeeded", "failed", "canceled") and poll_url and time.time() < deadline:
+        time.sleep(1)
+        try:
+            r2 = Request(poll_url, headers={"Authorization": f"Bearer {token}"})
+            with urlopen(r2, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (HTTPError, URLError):
+            return None
+
+    if data.get("status") != "succeeded":
+        return None
+    output = data.get("output") or {}
+    chunks = output.get("chunks") or []
+    words = []
+    for c in chunks:
+        ts = c.get("timestamp") or []
+        text = (c.get("text") or "").strip()
+        if not text or len(ts) < 2 or ts[0] is None:
+            continue
+        start = float(ts[0])
+        end = float(ts[1]) if ts[1] is not None else start + 0.3
+        words.append({"word": text, "start": start, "end": end})
+    return words if words else None
+
+
+def _gemini_match_boxes_to_words(image_with_boxes_bytes, words, n_boxes):
+    """Ask Gemini which word-index in `words` each numbered box's phrase begins at.
+    Returns {times: [float|None], descs: [str|None]} indexed by box."""
+    import base64
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return None
+    img_b64 = base64.b64encode(image_with_boxes_bytes).decode("ascii")
+    # Compact numbered transcript: [idx]word
+    numbered_words = " ".join(f"[{i}]{w['word']}" for i, w in enumerate(words))
+    prompt = (
+        f"You are aligning visual reveals to a narrated transcript with word-level timing.\n\n"
+        f"The image has {n_boxes} gold-outlined boxes numbered 1..{n_boxes}. Each covers a visual element.\n\n"
+        f"Below is the transcript with each word prefixed by its position [N]:\n{numbered_words}\n\n"
+        f"For each numbered box (in order 1..{n_boxes}):\n"
+        f"  1. Identify the visual element it covers (text or icon).\n"
+        f"  2. Find the SINGLE word position [N] where the most-related phrase BEGINS in the transcript. "
+        f"Prefer the first word of a directly-matching phrase. If the element is not directly mentioned, "
+        f"pick the word position where it becomes thematically relevant.\n"
+        f"  3. Box order should match transcript order (box 1 first, box N last). If two boxes match the same word, "
+        f"the lower-numbered box uses that word and later boxes use the next-closest word.\n\n"
+        f"Return ONLY valid JSON, no markdown:\n"
+        f'{{"boxes":[{{"box":1,"describes":"<short>","start_word":3}},'
+        f'{{"box":2,"describes":"...","start_word":12}}]}}'
+    )
+    body = {
+        "contents": [{"parts": [
+            {"text": prompt},
+            {"inline_data": {"mime_type": "image/png", "data": img_b64}},
+        ]}],
+        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.2},
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(url, data=json.dumps(body).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        parsed = json.loads(text)
+        entries = parsed.get("boxes", []) if isinstance(parsed, dict) else []
+    except (HTTPError, URLError, KeyError, IndexError, ValueError, TypeError):
+        return None
+    times = [None] * n_boxes
+    descs = [None] * n_boxes
+    for e in entries:
+        try:
+            i = int(e.get("box", 0)) - 1
+            widx = int(e.get("start_word", -1))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= i < n_boxes and 0 <= widx < len(words):
+            times[i] = float(words[widx]["start"])
+            descs[i] = (e.get("describes") or "")[:80]
+    return {"times": times, "descs": descs}
+
+
 def _gemini_align_boxes(image_with_boxes_bytes, audio_bytes, audio_mime, transcript, n_boxes, duration):
     """Ask Gemini 2.5 Flash to assign a reveal time (s) to each numbered box,
     based on the image, audio, and transcript. Returns list[float|None] of length n_boxes."""
@@ -2757,14 +2874,32 @@ def diagrams_render():
                        "aac": "audio/aac", "ogg": "audio/ogg", "flac": "audio/flac"}
         audio_mime = audio_mime_hint or mime_by_ext.get(a_ext, "audio/mpeg")
         audio_bytes = Path(audio_path).read_bytes()
-        ai_result = _gemini_align_boxes(align_bytes, audio_bytes, audio_mime, script, N, duration) if N <= 12 and duration <= 120 else None
+
+        # Preferred path: Whisper word timestamps + Gemini phrase matching
+        ai_result = None
+        if N <= 12 and duration <= 180:
+            words = _replicate_whisper_words(audio_bytes, audio_mime)
+            if words:
+                match = _gemini_match_boxes_to_words(align_bytes, words, N)
+                if match and any(t is not None for t in match["times"]):
+                    ai_result = match
+                    alignment_mode = "whisper_aligned"
+            # Fallback: audio-reasoning-only Gemini (no word timestamps)
+            if ai_result is None:
+                fallback = _gemini_align_boxes(align_bytes, audio_bytes, audio_mime, script, N, duration)
+                if fallback and any(t is not None for t in fallback["times"]):
+                    ai_result = fallback
+                    alignment_mode = "gemini_audio"
 
         if ai_result and any(t is not None for t in ai_result["times"]):
-            # Merge AI times with fallback for any None, then enforce monotonic + bounds
             ai_times = ai_result["times"][:]
             for i in range(N):
                 if ai_times[i] is None:
                     ai_times[i] = even_times[i]
+            # Apply 0.15s lead time (reveal slightly before the word) when whisper-aligned
+            lead = 0.15 if alignment_mode == "whisper_aligned" else 0.0
+            for i in range(N):
+                ai_times[i] = max(0.3, float(ai_times[i]) - lead)
             # Clamp + enforce strictly increasing (min step 0.25s)
             min_step = 0.25
             for i in range(N):
@@ -2775,7 +2910,6 @@ def diagrams_render():
                     t = duration - 0.05
                 ai_times[i] = t
             times = ai_times
-            alignment_mode = "ai_aligned"
             alignment_descs = ai_result["descs"]
         else:
             times = even_times
