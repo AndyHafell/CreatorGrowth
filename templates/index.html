@@ -2088,17 +2088,22 @@
 
             <!-- RIGHT: preview panel -->
             <div style="flex:1; padding:24px 32px; overflow:auto; display:flex; flex-direction:column; align-items:center; gap:14px;">
-                <div style="color:#666; font-size:10px; letter-spacing:2px; align-self:flex-start;">LIVE PREVIEW (final frame)</div>
+                <div style="align-self:stretch; display:flex; justify-content:space-between; align-items:baseline;">
+                    <span style="color:#666; font-size:10px; letter-spacing:2px;">LIVE PREVIEW</span>
+                    <span id="csPreviewModeLabel" style="color:#888; font-size:11px; letter-spacing:0.3px;">Final frame</span>
+                </div>
                 <div id="csPreviewWrap" style="position:relative; width:100%; max-width:1280px;">
                     <!-- Outer 16:9 frame, scaled-down version of the real 1920x1080 capture target -->
                     <div id="csPreviewScale" style="position:relative; width:100%; padding-top:56.25%; background:transparent;">
-                        <div id="csPreview" class="cs-style-blue-glass" style="position:absolute; top:0; left:0; width:1920px; height:1080px; transform-origin:top left;">
+                        <div id="csPreview" class="cs-style-blue-glass cs-animated" style="position:absolute; top:0; left:0; width:1920px; height:1080px; transform-origin:top left;">
                             <div class="cs-card">
                                 <ul class="cs-items" id="csPreviewItems"></ul>
                             </div>
                         </div>
                     </div>
                 </div>
+                <!-- Clip preview selector strip -->
+                <div id="csClipStrip" style="align-self:stretch; display:flex; gap:6px; flex-wrap:wrap;"></div>
                 <div style="color:#444; font-size:11px; letter-spacing:0.3px; align-self:flex-start;">
                     Each clip = 4.5s hold · 1s blur fade-in · 4.5s hold &nbsp;=&nbsp; 10s total
                 </div>
@@ -2209,6 +2214,10 @@
         .cs-style-blue-glass .cs-items > li .cs-dot { margin-top: 0.32em; }
         .cs-style-blue-glass .cs-items > li.cs-blur {
             filter: blur(14px);
+        }
+        /* Animation: applied to preview only, never to capture target */
+        .cs-style-blue-glass.cs-animated .cs-items > li {
+            transition: filter 1s ease-out;
         }
         .cs-style-blue-glass .cs-dot {
             width: 28px;
@@ -6236,6 +6245,8 @@
         items: [], style: 'blue_glass', numbering: 'none',
         box_size: 'auto', text_size: 'auto', wrap_mode: 'off',
     };
+    var _csPreviewClip = 0;        // 0 = final frame; 1..N = animate clip K
+    var _csPreviewTimers = [];      // pending setTimeout ids for the loop
 
     function csPrefix(i) {
         // i is 0-indexed item position
@@ -6363,9 +6374,71 @@
     }
 
     function closeChaptersStudio() {
+        csStopPreviewAnimation();
         document.getElementById('chaptersStudio').style.display = 'none';
         window.removeEventListener('resize', csRescalePreview);
         try { localStorage.removeItem('cg_chapter_open'); } catch (e) {}
+    }
+
+    function csStopPreviewAnimation() {
+        _csPreviewTimers.forEach(function(id) { clearTimeout(id); });
+        _csPreviewTimers = [];
+    }
+
+    function _csApplyBlurState(crispCount) {
+        var lis = document.querySelectorAll('#csPreviewItems > li');
+        lis.forEach(function(li, i) {
+            if (i < crispCount) li.classList.remove('cs-blur');
+            else li.classList.add('cs-blur');
+        });
+    }
+
+    function csSetPreviewClip(k) {
+        // k = 0 → final frame (all crisp). k = 1..N → animate clip k.
+        csStopPreviewAnimation();
+        _csPreviewClip = k;
+        csRenderClipStrip();
+        var lbl = document.getElementById('csPreviewModeLabel');
+        var visible = csState.items.filter(function(x) { return x.trim(); });
+        var N = visible.length;
+        if (k === 0 || N === 0) {
+            lbl.textContent = 'Final frame';
+            _csApplyBlurState(N);
+            return;
+        }
+        lbl.textContent = 'Clip ' + k + ' of ' + N + ' — looping';
+        // Loop: before state for 4.5s → flip class (CSS transitions over 1s) → after state for 4.5s → repeat
+        function runOnce() {
+            _csApplyBlurState(k - 1); // before: items 1..k-1 crisp
+            _csPreviewTimers.push(setTimeout(function() {
+                _csApplyBlurState(k); // after: items 1..k crisp (item k unblurs with CSS transition)
+            }, 4500));
+            _csPreviewTimers.push(setTimeout(runOnce, 10000));
+        }
+        runOnce();
+    }
+
+    function csRenderClipStrip() {
+        var strip = document.getElementById('csClipStrip');
+        if (!strip) return;
+        strip.innerHTML = '';
+        var visible = csState.items.filter(function(x) { return x.trim(); });
+        var N = visible.length;
+        function mkBtn(label, k, isFinal) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.textContent = label;
+            var active = (_csPreviewClip === k);
+            b.style.cssText =
+                'background:' + (active ? '#5b9bd5' : 'transparent') + ';' +
+                'color:' + (active ? '#000' : '#888') + ';' +
+                'border:1px solid ' + (active ? '#5b9bd5' : '#2a2a4a') + ';' +
+                'padding:6px 11px; border-radius:4px; font-size:11px; letter-spacing:0.5px; cursor:pointer; font-weight:' + (active ? '700' : '400') + ';';
+            b.onclick = function() { csSetPreviewClip(k); };
+            strip.appendChild(b);
+        }
+        mkBtn('FINAL FRAME', 0, true);
+        for (var k = 1; k <= N; k++) mkBtn('▶ CLIP ' + k, k, false);
     }
 
     function csRescalePreview() {
@@ -6489,26 +6562,50 @@
 
     function csRenderPreview() {
         var ul = document.getElementById('csPreviewItems');
-        ul.innerHTML = '';
-        // Filter empty items for the visual preview, but keep array indices for the renderer
         var visible = csState.items.filter(function(x) { return x.trim(); });
-        visible.forEach(function(txt, idx) {
-            var li = document.createElement('li');
-            var dot = document.createElement('span');
-            dot.className = 'cs-dot';
-            var t = document.createElement('span');
-            t.className = 'cs-text';
-            t.textContent = csPrefix(idx) + txt;
-            li.appendChild(dot);
-            li.appendChild(t);
-            ul.appendChild(li);
-        });
+
+        // In-place reconcile: keep existing li class state if count is unchanged
+        var existing = ul.querySelectorAll(':scope > li');
+        var countChanged = (existing.length !== visible.length);
+        if (countChanged) {
+            ul.innerHTML = '';
+            visible.forEach(function(txt, idx) {
+                var li = document.createElement('li');
+                var dot = document.createElement('span');
+                dot.className = 'cs-dot';
+                var t = document.createElement('span');
+                t.className = 'cs-text';
+                t.textContent = csPrefix(idx) + txt;
+                li.appendChild(dot);
+                li.appendChild(t);
+                ul.appendChild(li);
+            });
+        } else {
+            // Just update text in place — preserves cs-blur class so the running animation survives
+            visible.forEach(function(txt, idx) {
+                var li = existing[idx];
+                var t = li.querySelector('.cs-text');
+                var newText = csPrefix(idx) + txt;
+                if (t.textContent !== newText) t.textContent = newText;
+            });
+        }
         // Auto-fit font + gap (or use manual override)
         var fit = csComputeFit(visible);
         var preview = document.getElementById('csPreview');
         preview.style.setProperty('--cs-fontsize', fit.fontPx + 'px');
         preview.style.setProperty('--cs-gap', fit.gapPx + 'px');
         csApplyLayout(preview);
+        // Refresh clip-selector strip
+        csRenderClipStrip();
+        var N = visible.length;
+        // Clamp clip selection if items shrank
+        if (_csPreviewClip > N) _csPreviewClip = 0;
+        // Apply blur state only if we rebuilt the DOM (otherwise the running animation
+        // owns the class state and we shouldn't stomp on it).
+        if (countChanged) {
+            if (_csPreviewClip === 0) _csApplyBlurState(N);
+            else csSetPreviewClip(_csPreviewClip);  // restart loop for new item count
+        }
     }
 
     function csAddRow() {
