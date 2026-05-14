@@ -2033,6 +2033,15 @@
                     </select>
                 </div>
 
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                    <div style="color:#666; font-size:10px; letter-spacing:2px;">NUMBERING</div>
+                    <select id="csNumbering" onchange="csOnNumberingChange()" style="background:#0a0a14; border:1px solid #2a2a4a; color:#ddd; padding:8px; border-radius:4px; font-size:12px;">
+                        <option value="none">No numbering</option>
+                        <option value="number">1 - Title</option>
+                        <option value="step">STEP 1 - Title</option>
+                    </select>
+                </div>
+
                 <div style="border-top:1px solid #1f1f30; padding-top:14px;">
                     <button id="csRenderBtn" onclick="csRenderClips()" style="background:#5b9bd5; color:#000; border:none; border-radius:6px; padding:12px 18px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer; width:100%;">RENDER <span id="csRenderCount">0</span> CLIPS</button>
                     <div id="csRenderStatus" style="color:#555; font-size:11px; margin-top:8px;"></div>
@@ -6163,7 +6172,14 @@
 
 
     // ─── CHAPTER STUDIO: list-driven preview + render ────────────────────────
-    var csState = { items: [], style: 'blue_glass' };
+    var csState = { items: [], style: 'blue_glass', numbering: 'none' };
+
+    function csPrefix(i) {
+        // i is 0-indexed item position
+        if (csState.numbering === 'number') return (i + 1) + ' - ';
+        if (csState.numbering === 'step')   return 'STEP ' + (i + 1) + ' - ';
+        return '';
+    }
     var _csSaveTimer = null;
     var _csVid = null;
 
@@ -6194,12 +6210,15 @@
             var d = await r.json();
             csState.items = Array.isArray(d.items) ? d.items.slice() : [];
             csState.style = d.style || 'blue_glass';
+            csState.numbering = d.numbering || 'none';
         } catch (e) {
             csState.items = [];
             csState.style = 'blue_glass';
+            csState.numbering = 'none';
         }
         if (csState.items.length === 0) csState.items = ['', ''];
         document.getElementById('csStyle').value = csState.style;
+        document.getElementById('csNumbering').value = csState.numbering;
         csRenderList();
         csRenderPreview();
         csSetStatus('', '#555');
@@ -6339,13 +6358,13 @@
         ul.innerHTML = '';
         // Filter empty items for the visual preview, but keep array indices for the renderer
         var visible = csState.items.filter(function(x) { return x.trim(); });
-        visible.forEach(function(txt) {
+        visible.forEach(function(txt, idx) {
             var li = document.createElement('li');
             var dot = document.createElement('span');
             dot.className = 'cs-dot';
             var t = document.createElement('span');
             t.className = 'cs-text';
-            t.textContent = txt;
+            t.textContent = csPrefix(idx) + txt;
             li.appendChild(dot);
             li.appendChild(t);
             ul.appendChild(li);
@@ -6374,6 +6393,11 @@
         csState.style = document.getElementById('csStyle').value || 'blue_glass';
         csScheduleSave();
     }
+    function csOnNumberingChange() {
+        csState.numbering = document.getElementById('csNumbering').value || 'none';
+        csRenderPreview();
+        csScheduleSave();
+    }
 
     function csScheduleSave() {
         if (_csSaveTimer) clearTimeout(_csSaveTimer);
@@ -6387,7 +6411,7 @@
             await fetch('/api/videos/' + _csVid + '/chapter', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ items: csState.items, style: csState.style }),
+                body: JSON.stringify({ items: csState.items, style: csState.style, numbering: csState.numbering }),
             });
             csSetStatus('Saved', '#4caf50');
             setTimeout(function() { csSetStatus('', '#555'); }, 1200);
@@ -6449,10 +6473,11 @@
         var capUl = document.getElementById('csCaptureItems');
         capUl.innerHTML = '';
         var capLis = [];
-        items.forEach(function(txt) {
+        items.forEach(function(txt, idx) {
             var li = document.createElement('li');
             var dot = document.createElement('span'); dot.className = 'cs-dot';
-            var t = document.createElement('span'); t.className = 'cs-text'; t.textContent = txt;
+            var t = document.createElement('span'); t.className = 'cs-text';
+            t.textContent = csPrefix(idx) + txt;
             li.appendChild(dot); li.appendChild(t);
             capUl.appendChild(li);
             capLis.push(li);
