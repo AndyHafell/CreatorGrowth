@@ -250,6 +250,16 @@ def init_db():
             conn.execute(f"ALTER TABLE chapters ADD COLUMN {col} TEXT NOT NULL DEFAULT '{default}'")
         except sqlite3.OperationalError:
             pass
+    # Migration: card padding (T/R/B/L in px) + reveal style
+    for col, default in [("pad_top", 60), ("pad_right", 80), ("pad_bottom", 60), ("pad_left", 80)]:
+        try:
+            conn.execute(f"ALTER TABLE chapters ADD COLUMN {col} INTEGER NOT NULL DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass
+    try:
+        conn.execute("ALTER TABLE chapters ADD COLUMN reveal_style TEXT NOT NULL DEFAULT 'blur_fade'")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -3546,6 +3556,18 @@ def _chapter_row_to_dict(row):
 
 _CS_WRAP_VALUES = {"off", "on"}
 
+# Reveal style → ffmpeg xfade transition name.
+_CS_REVEAL_TO_XFADE = {
+    "blur_fade":   "fade",
+    "dissolve":    "dissolve",
+    "wipe_lr":     "wiperight",
+    "wipe_rl":     "wipeleft",
+    "slide_left":  "slideright",   # item enters from left side
+    "slide_right": "slideleft",    # item enters from right side
+    "circle_open": "circleopen",
+    "pixelize":    "pixelize",
+}
+
 
 def _cs_clamp_size(val, lo, hi, default="auto"):
     """Accept 'auto' or an integer string in [lo, hi]. Returns the canonical string."""
@@ -3559,6 +3581,14 @@ def _cs_clamp_size(val, lo, hi, default="auto"):
     return str(n)
 
 
+def _cs_clamp_int(val, lo, hi, default):
+    try:
+        n = int(val)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
+
+
 @app.route("/api/videos/<int:vid>/chapter", methods=["GET"])
 def chapter_get(vid):
     conn = get_db()
@@ -3569,6 +3599,8 @@ def chapter_get(vid):
         return jsonify({
             "video_id": vid, "items": [], "style": "blue_glass", "numbering": "none",
             "box_size": "auto", "text_size": "auto", "wrap_mode": "off",
+            "pad_top": 60, "pad_right": 80, "pad_bottom": 60, "pad_left": 80,
+            "reveal_style": "blur_fade",
             "result_zip_url": None,
         })
     return jsonify(_chapter_row_to_dict(row))
@@ -3591,11 +3623,19 @@ def chapter_put(vid):
     text_size = _cs_clamp_size(payload.get("text_size"), 24, 120)
     wrap_mode = (payload.get("wrap_mode") or "off")
     if wrap_mode not in _CS_WRAP_VALUES: wrap_mode = "off"
+    pad_top    = _cs_clamp_int(payload.get("pad_top"),    0, 300, 60)
+    pad_right  = _cs_clamp_int(payload.get("pad_right"),  0, 300, 80)
+    pad_bottom = _cs_clamp_int(payload.get("pad_bottom"), 0, 300, 60)
+    pad_left   = _cs_clamp_int(payload.get("pad_left"),   0, 300, 80)
+    reveal_style = (payload.get("reveal_style") or "blur_fade")
+    if reveal_style not in _CS_REVEAL_TO_XFADE: reveal_style = "blur_fade"
     now = datetime.now(timezone.utc).isoformat()
     conn = get_db()
     conn.execute(
-        """INSERT INTO chapters (video_id, items_json, style, numbering, box_size, text_size, wrap_mode, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """INSERT INTO chapters
+             (video_id, items_json, style, numbering, box_size, text_size, wrap_mode,
+              pad_top, pad_right, pad_bottom, pad_left, reveal_style, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(video_id) DO UPDATE SET
              items_json=excluded.items_json,
              style=excluded.style,
@@ -3603,8 +3643,14 @@ def chapter_put(vid):
              box_size=excluded.box_size,
              text_size=excluded.text_size,
              wrap_mode=excluded.wrap_mode,
+             pad_top=excluded.pad_top,
+             pad_right=excluded.pad_right,
+             pad_bottom=excluded.pad_bottom,
+             pad_left=excluded.pad_left,
+             reveal_style=excluded.reveal_style,
              updated_at=excluded.updated_at""",
-        (vid, json.dumps(items), style, numbering, box_size, text_size, wrap_mode, now, now)
+        (vid, json.dumps(items), style, numbering, box_size, text_size, wrap_mode,
+         pad_top, pad_right, pad_bottom, pad_left, reveal_style, now, now)
     )
     conn.commit()
     conn.row_factory = sqlite3.Row
@@ -3694,6 +3740,14 @@ def chapter_render(vid):
     if n < 1 or n > 20:
         return jsonify({"error": "count must be between 1 and 20"}), 400
 
+    # Pull the saved reveal_style for this video; default to crossfade.
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    crow = conn.execute("SELECT reveal_style FROM chapters WHERE video_id=?", (vid,)).fetchone()
+    conn.close()
+    reveal_style = (crow["reveal_style"] if crow and "reveal_style" in crow.keys() else "blur_fade")
+    xfade_name = _CS_REVEAL_TO_XFADE.get(reveal_style, "fade")
+
     work = Path(tempfile.mkdtemp(prefix=f"chapter_render_{vid}_"))
     try:
         # Save uploads, validate
@@ -3726,7 +3780,7 @@ def chapter_render(vid):
                 "-filter_complex",
                 "[0:v]scale=1920:1080,format=yuv420p,fps=30,setsar=1[v0];"
                 "[1:v]scale=1920:1080,format=yuv420p,fps=30,setsar=1[v1];"
-                "[v0][v1]xfade=transition=fade:duration=1:offset=4.5,format=yuv420p[v]",
+                f"[v0][v1]xfade=transition={xfade_name}:duration=1:offset=4.5,format=yuv420p[v]",
                 "-map", "[v]",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart",
