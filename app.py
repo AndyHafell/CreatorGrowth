@@ -2243,6 +2243,52 @@ def twitter_feed():
     return jsonify([dict(r) for r in rows])
 
 
+@app.route("/api/diagrams/transcribe", methods=["POST"])
+def diagrams_transcribe():
+    """Transcribe an uploaded audio clip via Gemini. Returns {transcript: str}."""
+    import base64
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+
+    f = request.files.get("audio")
+    if not f:
+        return jsonify({"error": "no audio file"}), 400
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+
+    audio_bytes = f.read()
+    if len(audio_bytes) > 18 * 1024 * 1024:
+        return jsonify({"error": "audio too large (max 18MB inline)"}), 413
+    mime = f.mimetype or "audio/mpeg"
+    b64 = base64.b64encode(audio_bytes).decode("ascii")
+
+    body = {
+        "contents": [{
+            "parts": [
+                {"text": "Transcribe this audio verbatim. Return only the transcript text — no preamble, no quotes, no markdown, no labels."},
+                {"inline_data": {"mime_type": mime, "data": b64}}
+            ]
+        }]
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(url, data=json.dumps(body).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        return jsonify({"error": f"gemini http {e.code}", "detail": e.read().decode("utf-8", "ignore")[:500]}), 502
+    except URLError as e:
+        return jsonify({"error": f"gemini network: {e.reason}"}), 502
+
+    try:
+        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError, TypeError):
+        return jsonify({"error": "gemini response malformed", "raw": data}), 502
+    return jsonify({"transcript": text})
+
+
 if __name__ == "__main__":
     import webbrowser, threading
     threading.Timer(1.0, lambda: webbrowser.open("http://127.0.0.1:5050")).start()
