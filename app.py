@@ -2306,6 +2306,8 @@ def _corner_bg_color(img, patch=40):
     return (rs[m], gs[m], bs[m])
 
 
+REPLICATE_FAST_WHISPER_VERSION = "3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c"
+
 def _replicate_whisper_words(audio_bytes, audio_mime):
     """Word-level timestamps via vaibhavs10/incredibly-fast-whisper on Replicate.
     Returns list of {word, start, end}. None on any failure."""
@@ -2314,29 +2316,36 @@ def _replicate_whisper_words(audio_bytes, audio_mime):
     from urllib.error import HTTPError, URLError
     token = os.environ.get("REPLICATE_API_TOKEN", "")
     if not token:
+        app.logger.warning("diagrams: REPLICATE_API_TOKEN not set")
         return None
     audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
     data_uri = f"data:{audio_mime or 'audio/wav'};base64,{audio_b64}"
-    create_url = "https://api.replicate.com/v1/models/vaibhavs10/incredibly-fast-whisper/predictions"
-    body = {"input": {
-        "audio": data_uri,
-        "task": "transcribe",
-        "timestamp": "word",
-        "batch_size": 24,
-    }}
+    body = {
+        "version": REPLICATE_FAST_WHISPER_VERSION,
+        "input": {
+            "audio": data_uri,
+            "task": "transcribe",
+            "timestamp": "word",
+            "batch_size": 24,
+        },
+    }
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}",
         "Prefer": "wait=60",
     }
-    req = Request(create_url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    req = Request("https://api.replicate.com/v1/predictions",
+                  data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
     try:
         with urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-    except (HTTPError, URLError) as e:
+    except HTTPError as e:
+        app.logger.warning(f"diagrams: replicate http {e.code}: {e.read().decode('utf-8','ignore')[:300]}")
+        return None
+    except URLError as e:
+        app.logger.warning(f"diagrams: replicate network: {e.reason}")
         return None
 
-    # If still running after Prefer:wait, poll
     poll_url = (data.get("urls") or {}).get("get")
     deadline = time.time() + 90
     while data.get("status") not in ("succeeded", "failed", "canceled") and poll_url and time.time() < deadline:
@@ -2349,6 +2358,7 @@ def _replicate_whisper_words(audio_bytes, audio_mime):
             return None
 
     if data.get("status") != "succeeded":
+        app.logger.warning(f"diagrams: replicate final status {data.get('status')}: {str(data.get('error'))[:200]}")
         return None
     output = data.get("output") or {}
     chunks = output.get("chunks") or []
