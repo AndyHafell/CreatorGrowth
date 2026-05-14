@@ -2925,10 +2925,11 @@ def diagrams_render():
             for i in range(N):
                 if ai_times[i] is None:
                     ai_times[i] = even_times[i]
-            # Reveal at the exact word start (no lead) — the 0.35s fade-in naturally
-            # finishes ~as the descriptor word completes, which feels right.
+            # Small 0.08s lead — the visual just barely beats the word, feels natural.
+            # Bigger leads pre-empt the audio (felt early); zero lead lags slightly.
+            lead = 0.08 if alignment_mode == "whisper_aligned" else 0.0
             for i in range(N):
-                ai_times[i] = max(0.3, float(ai_times[i]))
+                ai_times[i] = max(0.3, float(ai_times[i]) - lead)
             # Clamp + enforce strictly increasing (min step 0.25s)
             min_step = 0.25
             for i in range(N):
@@ -2951,17 +2952,67 @@ def diagrams_render():
             inputs += ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(cp)]
         inputs += ["-i", str(audio_path)]
 
+        # Per-box animation builder
+        slide_dur = 0.45
+        zoom_dur = 0.40
+        FADE_ANIMS = {"fade", "from_right_fade", "from_left_fade",
+                      "from_above_fade", "from_below_fade", "zoom_in", "zoom_out"}
+
+        def _box_filter_segs(prev_lbl, in_idx, out_lbl, bx, by, bw, bh, t, anim):
+            """Return list of filter-graph segments for one box's entrance animation."""
+            src = f"[s{in_idx}]"
+            segs = []
+            if anim in ("zoom_in", "zoom_out"):
+                start_s = 0.5 if anim == "zoom_in" else 1.3
+                end_s = 1.0
+                # linear interpolation 0..1 over zoom_dur, then hold at end
+                progress = f"min(1,max(0,(t-{t:.3f})/{zoom_dur:.3f}))"
+                scale_expr = f"({start_s}+({end_s}-{start_s})*{progress})"
+                segs.append(
+                    f"[{in_idx}:v]format=rgba,"
+                    f"scale=w='{bw}*{scale_expr}':h='{bh}*{scale_expr}':eval=frame,"
+                    f"fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1{src}"
+                )
+                # center the scaled crop on the original box's center
+                x_expr = f"{bx}+({bw}-w)/2"
+                y_expr = f"{by}+({bh}-h)/2"
+            elif anim == "fade":
+                segs.append(f"[{in_idx}:v]format=rgba,fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1{src}")
+                x_expr, y_expr = str(bx), str(by)
+            else:
+                # slide variants (with or without fade)
+                if anim in FADE_ANIMS:
+                    segs.append(f"[{in_idx}:v]format=rgba,fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1{src}")
+                else:
+                    segs.append(f"[{in_idx}:v]format=rgba{src}")
+                rem = f"max(0,1-(t-{t:.3f})/{slide_dur:.3f})"
+                if anim in ("from_right", "from_right_fade"):
+                    x_expr = f"{bx}+{bw}*{rem}"; y_expr = str(by)
+                elif anim in ("from_left", "from_left_fade"):
+                    x_expr = f"{bx}-{bw}*{rem}"; y_expr = str(by)
+                elif anim in ("from_below", "from_below_fade"):
+                    x_expr = str(bx); y_expr = f"{by}+{bh}*{rem}"
+                elif anim in ("from_above", "from_above_fade"):
+                    x_expr = str(bx); y_expr = f"{by}-{bh}*{rem}"
+                else:
+                    x_expr, y_expr = str(bx), str(by)
+            segs.append(
+                f"{prev_lbl}{src}overlay=x='{x_expr}':y='{y_expr}':"
+                f"enable='gte(t,{t:.3f})'{out_lbl}"
+            )
+            return segs
+
+        # Build filter chain
+        valid_anims = {"fade", "from_right", "from_left", "from_above", "from_below",
+                       "from_right_fade", "from_left_fade", "from_above_fade", "from_below_fade",
+                       "zoom_in", "zoom_out"}
         filter_parts = []
         last_label = "[0:v]"
-        for i, ((x, y, w, h), t) in enumerate(zip(box_rects, times)):
-            faded = f"[f{i}]"
-            filter_parts.append(
-                f"[{i+1}:v]format=rgba,fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1{faded}"
-            )
+        for i, ((bx, by, bw, bh), t) in enumerate(zip(box_rects, times)):
+            anim = (boxes[i].get("anim") if i < len(boxes) and isinstance(boxes[i], dict) else None) or "fade"
+            anim = anim if anim in valid_anims else "fade"
             out_label = "[vout]" if i == N - 1 else f"[v{i}]"
-            filter_parts.append(
-                f"{last_label}{faded}overlay={x}:{y}:enable='gte(t,{t:.3f})'{out_label}"
-            )
+            filter_parts.extend(_box_filter_segs(last_label, i + 1, out_label, bx, by, bw, bh, t, anim))
             last_label = out_label
 
         filter_complex = ";".join(filter_parts)
