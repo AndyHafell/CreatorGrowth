@@ -220,27 +220,24 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # Chapter Studio: one list of chapter items per video, rendered to N MP4 clips.
+    # One-shot migration: the cloned-from-diagrams schema had `boxes_json`. If that
+    # column exists, drop the table and recreate with the new list-driven shape.
+    existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(chapters)").fetchall()]
+    if "boxes_json" in existing_cols:
+        conn.execute("DROP TABLE chapters")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS chapters (
-            id TEXT PRIMARY KEY,
-            video_id INTEGER NOT NULL,
-            name TEXT,
-            image_path TEXT,
-            audio_path TEXT,
-            audio_name TEXT,
-            audio_duration TEXT,
-            boxes_json TEXT NOT NULL DEFAULT '[]',
-            script TEXT DEFAULT '',
-            result_url TEXT,
-            result_meta_json TEXT,
-            position INTEGER DEFAULT 0,
-            mode TEXT DEFAULT 'reveal',
+            video_id INTEGER PRIMARY KEY,
+            items_json TEXT NOT NULL DEFAULT '[]',
+            style TEXT NOT NULL DEFAULT 'blue_glass',
+            result_zip_path TEXT,
+            last_rendered_at TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
         )
     """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_chapters_video ON chapters(video_id, position)")
     conn.commit()
     conn.close()
 
@@ -3508,7 +3505,7 @@ def diagrams_transcribe():
 
 
 
-# ── Chapters: persistence ────────────────────────────────────────────────
+# ── Chapter Studio: list-driven chapter clip renderer ───────────────────
 
 def _chapters_dir():
     d = Path(app.root_path) / "static" / "uploads" / "chapters"
@@ -3516,8 +3513,8 @@ def _chapters_dir():
     return d
 
 
-def _chapter_dir(video_id, chapter_id):
-    d = _chapters_dir() / str(video_id) / chapter_id
+def _chapter_video_dir(video_id):
+    d = _chapters_dir() / str(video_id)
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -3527,858 +3524,189 @@ def _chapter_row_to_dict(row):
         return None
     d = dict(row)
     try:
-        d["boxes"] = json.loads(d.pop("boxes_json") or "[]")
-    except Exception:
-        d["boxes"] = []
-    rm = d.pop("result_meta_json", None)
-    try:
-        d["result_meta"] = json.loads(rm) if rm else None
-    except Exception:
-        d["result_meta"] = None
-    # expose URLs (paths are stored relative to /app, e.g. "static/uploads/chapters/..")
-    for k in ("image_path", "audio_path"):
-        v = d.get(k)
-        if v and not v.startswith("/"):
-            d[k + "_url"] = "/" + v
-        else:
-            d[k + "_url"] = v
+        d["items"] = json.loads(d.pop("items_json") or "[]")
+    except (TypeError, ValueError):
+        d["items"] = []
+    rz = d.get("result_zip_path")
+    d["result_zip_url"] = ("/" + rz) if rz and not rz.startswith("/") else rz
     return d
 
 
-@app.route("/api/videos/<int:vid>/chapters", methods=["GET"])
-def chapters_list(vid):
+@app.route("/api/videos/<int:vid>/chapter", methods=["GET"])
+def chapter_get(vid):
     conn = get_db()
     conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM chapters WHERE video_id=? ORDER BY position, created_at",
-        (vid,)
-    ).fetchall()
+    row = conn.execute("SELECT * FROM chapters WHERE video_id=?", (vid,)).fetchone()
     conn.close()
-    return jsonify([_chapter_row_to_dict(r) for r in rows])
+    if not row:
+        return jsonify({"video_id": vid, "items": [], "style": "blue_glass", "result_zip_url": None})
+    return jsonify(_chapter_row_to_dict(row))
 
 
-@app.route("/api/videos/<int:vid>/chapters", methods=["POST"])
-def chapters_create(vid):
-    chapter_id = "c" + uuid.uuid4().hex[:14]
-    name = (request.json or {}).get("name") if request.is_json else None
-    conn = get_db()
-    pos_row = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM chapters WHERE video_id=?", (vid,)).fetchone()
-    pos = pos_row[0] if pos_row else 0
-    if not name:
-        name = f"Chapter {pos + 1}"
+@app.route("/api/videos/<int:vid>/chapter", methods=["PUT"])
+def chapter_put(vid):
+    payload = request.get_json(force=True, silent=True) or {}
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        return jsonify({"error": "items must be a list"}), 400
+    items = [str(x or "")[:500] for x in items]
+    style = (payload.get("style") or "blue_glass")
+    if style not in ("blue_glass",):
+        style = "blue_glass"
     now = datetime.now(timezone.utc).isoformat()
+    conn = get_db()
     conn.execute(
-        "INSERT INTO chapters (id, video_id, name, boxes_json, position, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-        (chapter_id, vid, name, "[]", pos, now, now)
+        """INSERT INTO chapters (video_id, items_json, style, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(video_id) DO UPDATE SET
+             items_json=excluded.items_json,
+             style=excluded.style,
+             updated_at=excluded.updated_at""",
+        (vid, json.dumps(items), style, now, now)
     )
     conn.commit()
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM chapters WHERE id=?", (chapter_id,)).fetchone()
+    row = conn.execute("SELECT * FROM chapters WHERE video_id=?", (vid,)).fetchone()
     conn.close()
     return jsonify(_chapter_row_to_dict(row))
 
 
-@app.route("/api/chapters/<chapter_id>", methods=["GET"])
-def chapters_get(chapter_id):
+@app.route("/api/videos/<int:vid>/chapter/from-doc", methods=["POST"])
+def chapter_from_doc(vid):
+    """Pull chapter titles from the linked content doc.
+
+    Looks at video_details.custom_fields for "Content Doc" path,
+    reads the markdown, and extracts `### Step N - <title>` lines."""
     conn = get_db()
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM chapters WHERE id=?", (chapter_id,)).fetchone()
+    row = conn.execute("SELECT custom_fields FROM video_details WHERE video_id=?", (vid,)).fetchone()
     conn.close()
     if not row:
-        return jsonify({"error": "not found"}), 404
-    return jsonify(_chapter_row_to_dict(row))
-
-
-@app.route("/api/chapters/<chapter_id>", methods=["PATCH"])
-def chapters_patch(chapter_id):
-    payload = request.get_json(force=True, silent=True) or {}
-    fields = []
-    values = []
-    if "name" in payload:
-        fields.append("name=?"); values.append(payload["name"])
-    if "boxes" in payload:
-        fields.append("boxes_json=?"); values.append(json.dumps(payload["boxes"]))
-    if "script" in payload:
-        fields.append("script=?"); values.append(payload["script"])
-    if "mode" in payload:
-        mode_v = (payload.get("mode") or "reveal").lower()
-        if mode_v not in ("reveal", "slideshow"):
-            mode_v = "reveal"
-        fields.append("mode=?"); values.append(mode_v)
-    if not fields:
-        return jsonify({"error": "no fields to update"}), 400
-    fields.append("updated_at=?")
-    values.append(datetime.now(timezone.utc).isoformat())
-    values.append(chapter_id)
-    conn = get_db()
-    conn.execute(f"UPDATE chapters SET {', '.join(fields)} WHERE id=?", values)
-    conn.commit()
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM chapters WHERE id=?", (chapter_id,)).fetchone()
-    conn.close()
-    if not row:
-        return jsonify({"error": "not found"}), 404
-    return jsonify(_chapter_row_to_dict(row))
-
-
-@app.route("/api/chapters/<chapter_id>", methods=["DELETE"])
-def chapters_delete(chapter_id):
-    import shutil
-    conn = get_db()
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT video_id FROM chapters WHERE id=?", (chapter_id,)).fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"error": "not found"}), 404
-    vid = row["video_id"]
-    conn.execute("DELETE FROM chapters WHERE id=?", (chapter_id,))
-    conn.commit()
-    conn.close()
-    asset_dir = _chapters_dir() / str(vid) / chapter_id
+        return jsonify({"error": "no video_details for this video"}), 404
     try:
-        if asset_dir.exists():
-            shutil.rmtree(asset_dir)
-    except Exception:
-        pass
-    return jsonify({"ok": True})
-
-
-@app.route("/api/chapters/<chapter_id>/image", methods=["POST"])
-def chapters_upload_image(chapter_id):
-    f = request.files.get("image")
-    if not f:
-        return jsonify({"error": "no image file"}), 400
-    conn = get_db()
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT video_id, image_path FROM chapters WHERE id=?", (chapter_id,)).fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"error": "not found"}), 404
-    vid = row["video_id"]
-    # remove old image
-    if row["image_path"]:
-        old = Path(app.root_path) / row["image_path"]
-        try:
-            if old.exists(): old.unlink()
-        except Exception: pass
-    ext = (f.filename.rsplit(".", 1)[-1] if f.filename and "." in f.filename else "png").lower()
-    if ext not in ("png", "jpg", "jpeg", "webp", "gif", "bmp"):
-        ext = "png"
-    target = _chapter_dir(vid, chapter_id) / f"image.{ext}"
-    f.save(str(target))
-    rel = str(target.relative_to(Path(app.root_path)))
-    conn.execute("UPDATE chapters SET image_path=?, updated_at=? WHERE id=?",
-                 (rel, datetime.now(timezone.utc).isoformat(), chapter_id))
-    conn.commit()
-    conn.close()
-    return jsonify({"image_path": rel, "image_path_url": "/" + rel})
-
-
-@app.route("/api/chapters/<chapter_id>/audio", methods=["POST"])
-def chapters_upload_audio(chapter_id):
-    f = request.files.get("audio")
-    if not f:
-        return jsonify({"error": "no audio file"}), 400
-    duration = request.form.get("duration", "")
-    conn = get_db()
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT video_id, audio_path FROM chapters WHERE id=?", (chapter_id,)).fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"error": "not found"}), 404
-    vid = row["video_id"]
-    if row["audio_path"]:
-        old = Path(app.root_path) / row["audio_path"]
-        try:
-            if old.exists(): old.unlink()
-        except Exception: pass
-    ext = (f.filename.rsplit(".", 1)[-1] if f.filename and "." in f.filename else "mp3").lower()
-    if ext not in ("mp3", "wav", "m4a", "aac", "ogg", "flac"):
-        ext = "mp3"
-    target = _chapter_dir(vid, chapter_id) / f"audio.{ext}"
-    f.save(str(target))
-    rel = str(target.relative_to(Path(app.root_path)))
-    conn.execute("UPDATE chapters SET audio_path=?, audio_name=?, audio_duration=?, updated_at=? WHERE id=?",
-                 (rel, f.filename or "audio", duration, datetime.now(timezone.utc).isoformat(), chapter_id))
-    conn.commit()
-    conn.close()
-    return jsonify({"audio_path": rel, "audio_path_url": "/" + rel, "audio_name": f.filename, "audio_duration": duration})
-
-
-
-@app.route("/api/chapters/render", methods=["POST"])
-def chapters_render():
-    """Render image + boxes + audio -> MP4 with timed fade-in reveals.
-    Box `anim` field controls each box's entrance: fade, slide directions, zoom_in/out,
-    or `hide` (the box stays masked permanently — no reveal).
-    Accepts either:
-      - form field `chapter_id` (uses persisted image+audio+boxes+script), or
-      - inline files (legacy): image, audio, boxes JSON, script."""
-    import tempfile, subprocess, shutil
-    from io import BytesIO
-    from PIL import Image, ImageDraw, ImageFont
-
-    chapter_id = request.form.get("chapter_id", "").strip()
-    script_input = request.form.get("script", "")
-    job_id = uuid.uuid4().hex[:12]
-    work_dir = Path(tempfile.mkdtemp(prefix=f"chapters_{job_id}_"))
-
-    # Resolve inputs from either persisted chapter or inline files
-    chapter_row = None
-    if chapter_id:
-        conn = get_db()
-        conn.row_factory = sqlite3.Row
-        chapter_row = conn.execute("SELECT * FROM chapters WHERE id=?", (chapter_id,)).fetchone()
-        conn.close()
-        if not chapter_row:
-            return jsonify({"error": "chapter not found"}), 404
-
-    if chapter_row:
-        # Pull from persisted chapter
-        if not chapter_row["image_path"] or not chapter_row["audio_path"]:
-            return jsonify({"error": "chapter is missing image or audio"}), 400
-        src_image = Path(app.root_path) / chapter_row["image_path"]
-        src_audio = Path(app.root_path) / chapter_row["audio_path"]
-        if not src_image.exists() or not src_audio.exists():
-            return jsonify({"error": "stored image/audio file missing on disk"}), 500
-        try:
-            boxes = json.loads(chapter_row["boxes_json"] or "[]")
-        except Exception:
-            boxes = []
-        if not boxes:
-            return jsonify({"error": "chapter has no boxes drawn"}), 400
-        if not script_input:
-            script_input = chapter_row["script"] or ""
-        audio_mime_hint = None  # ffprobe will figure it out
-    else:
-        # Legacy inline upload
-        image_file = request.files.get("image")
-        audio_file = request.files.get("audio")
-        boxes_json = request.form.get("boxes", "[]")
-        if not image_file or not audio_file:
-            return jsonify({"error": "image and audio required (or pass chapter_id)"}), 400
-        try:
-            boxes = json.loads(boxes_json)
-        except Exception:
-            return jsonify({"error": "invalid boxes JSON"}), 400
-        if not boxes:
-            return jsonify({"error": "at least one box required"}), 400
-        src_image = work_dir / "_inline_image"
-        image_file.save(str(src_image))
-        a_ext_inline = (audio_file.filename.rsplit(".", 1)[-1] if audio_file.filename and "." in audio_file.filename else "mp3").lower()
-        if a_ext_inline not in ("mp3", "wav", "m4a", "aac", "ogg", "flac"):
-            a_ext_inline = "mp3"
-        src_audio = work_dir / f"_inline_audio.{a_ext_inline}"
-        audio_file.save(str(src_audio))
-        audio_mime_hint = audio_file.mimetype
-
+        fields = json.loads(row["custom_fields"] or "[]")
+    except (TypeError, ValueError):
+        fields = []
+    doc_path = ""
+    for f in fields:
+        if (f.get("key") or "").strip().lower() == "content doc":
+            doc_path = (f.get("value") or "").strip()
+            break
+    if not doc_path:
+        return jsonify({"error": "no Content Doc field set on this video"}), 404
+    # Path may be relative ("content_docs/foo.md") or absolute
+    p = Path(doc_path)
+    if not p.is_absolute():
+        p = CONTENT_DIR / doc_path if not str(doc_path).startswith("content_docs/") else CONTENT_DIR.parent / doc_path
+    if not p.exists():
+        # Try one more fallback — content docs sometimes live in CONTENT_DIR directly
+        alt = CONTENT_DIR / Path(doc_path).name
+        if alt.exists():
+            p = alt
+        else:
+            return jsonify({"error": f"content doc not found at {p}"}), 404
     try:
-        # Save + normalize image
-        img = Image.open(src_image).convert("RGB")
-        W, H = img.size
-        W = W - (W % 2)
-        H = H - (H % 2)
-        if W < 64 or H < 64:
-            return jsonify({"error": "image too small (min 64x64)"}), 400
-        img = img.resize((W, H))
-        image_path = work_dir / "input.png"
-        img.save(image_path)
+        text = p.read_text(encoding="utf-8", errors="ignore")
+    except OSError as e:
+        return jsonify({"error": f"could not read content doc: {e}"}), 500
+    # Match `### Step N - <title>` (also tolerates "Step N -", em dash, optional trailing ✅/✓/check)
+    step_re = re.compile(r"^\s*#{2,4}\s*Step\s+\d+\s*[-–—]\s*(.+?)(?:\s*[✅✓☑])?\s*$", re.MULTILINE | re.IGNORECASE)
+    matches = step_re.findall(text)
+    items = [m.strip() for m in matches if m.strip()]
+    return jsonify({"items": items, "source": str(p)})
 
-        # Copy audio into work dir
-        a_ext = src_audio.suffix.lstrip(".").lower() or "mp3"
-        if a_ext not in ("mp3", "wav", "m4a", "aac", "ogg", "flac"):
-            a_ext = "mp3"
-        audio_path = work_dir / f"audio.{a_ext}"
-        shutil.copy(str(src_audio), str(audio_path))
 
-        # Probe audio duration
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
-            capture_output=True, text=True, timeout=30,
-        )
-        try:
-            duration = float(probe.stdout.strip())
-        except ValueError:
-            return jsonify({"error": "ffprobe could not read audio duration"}), 500
-        if duration <= 0.1 or duration > 600:
-            return jsonify({"error": f"audio duration out of range ({duration:.1f}s, max 600s)"}), 400
+@app.route("/api/videos/<int:vid>/chapter/render", methods=["POST"])
+def chapter_render(vid):
+    """Accept 2N PNGs (before/after for each clip) and assemble N MP4 clips.
 
-        # Compute box rects + kind (reveal vs hide) + anim style + time_override
-        all_box_records = []   # each: (x, y, w, h, anim, original_box_dict)
-        reveal_indices = []
-        for b in boxes:
-            try:
-                bx = float(b["x"]); by = float(b["y"]); bw = float(b["w"]); bh = float(b["h"])
-            except (KeyError, TypeError, ValueError):
-                return jsonify({"error": "box missing x/y/w/h"}), 400
-            x = int(bx * W); y = int(by * H)
-            w = int(bw * W); h = int(bh * H)
-            x = max(0, min(W - 4, x)); y = max(0, min(H - 4, y))
-            w = max(4, min(W - x, w)); h = max(4, min(H - y, h))
-            x -= (x % 2); y -= (y % 2)
-            w -= (w % 2); h -= (h % 2)
-            if w < 2 or h < 2:
-                continue
-            anim_val = (b.get("anim") or "fade").lower() if isinstance(b, dict) else "fade"
-            all_box_records.append((x, y, w, h, anim_val, b if isinstance(b, dict) else {}))
-            if anim_val != "hide":
-                reveal_indices.append(len(all_box_records) - 1)
-        if not all_box_records:
-            return jsonify({"error": "no valid boxes after normalization"}), 400
+    Form fields:
+      count: int N
+      clip_K_before, clip_K_after: PNG files for K in 1..N
+    Each clip: 4.5s hold before → 1s xfade → 4.5s hold after = 10s @ 30fps."""
+    import tempfile, subprocess, shutil, zipfile
+    try:
+        n = int(request.form.get("count", "0"))
+    except ValueError:
+        return jsonify({"error": "invalid count"}), 400
+    if n < 1 or n > 20:
+        return jsonify({"error": "count must be between 1 and 20"}), 400
 
-        # Reveal boxes are the ones that animate in. Hide boxes only mask the bg permanently.
-        box_rects = [(r[0], r[1], r[2], r[3]) for i, r in enumerate(all_box_records) if i in reveal_indices]
-        box_anims = [all_box_records[i][4] for i in reveal_indices]
-        hide_rects = [(r[0], r[1], r[2], r[3]) for i, r in enumerate(all_box_records) if i not in reveal_indices]
-        # Manual time overrides per reveal box (None if not set)
-        box_overrides = []
-        for idx in reveal_indices:
-            bd = all_box_records[idx][5]
-            ov = bd.get("time_override")
-            try:
-                box_overrides.append(float(ov) if ov is not None else None)
-            except (TypeError, ValueError):
-                box_overrides.append(None)
+    work = Path(tempfile.mkdtemp(prefix=f"chapter_render_{vid}_"))
+    try:
+        # Save uploads, validate
+        for k in range(1, n + 1):
+            for phase in ("before", "after"):
+                f = request.files.get(f"clip_{k}_{phase}")
+                if not f:
+                    return jsonify({"error": f"missing clip_{k}_{phase}"}), 400
+                f.save(str(work / f"clip_{k}_{phase}.png"))
 
-        if not box_rects and not hide_rects:
-            return jsonify({"error": "no boxes after kind split"}), 400
+        # Output dir under static
+        out_dir = _chapter_video_dir(vid) / "clips"
+        # Clean prior renders for this video
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-        N = len(box_rects)
-
-        # Determine mode early — bg + crops differ between reveal and slideshow.
-        mode = "reveal"
-        if chapter_row:
-            try:
-                mode = (chapter_row["mode"] or "reveal").lower()
-            except (KeyError, IndexError):
-                mode = "reveal"
-            if mode not in ("reveal", "slideshow"):
-                mode = "reveal"
-
-        # Pre-sample bg-fill color per box rect — used for reveal-mode masking.
-        fill_for_rect = {}
-        for (x, y, w, h, _anim, _bd) in all_box_records:
-            fill_for_rect[(x, y, w, h)] = _ring_median_color(img, x, y, w, h, pad=8, ring=24)
-
-        if mode == "reveal":
-            # Reveal mode: bg = image with every box filled with its local bg color.
-            bg = img.copy()
-            draw = ImageDraw.Draw(bg)
-            for (x, y, w, h, _anim, _bd) in all_box_records:
-                fill = fill_for_rect[(x, y, w, h)]
-                draw.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
-        else:
-            # Slideshow mode: bg = flat corner-sampled color (slides cover it).
-            bg = Image.new("RGB", (W, H), (8, 8, 18))  # placeholder, replaced below
-
-        def _rect_contains(outer, inner, slack=2):
-            """outer / inner are (x,y,w,h). True if inner is (mostly) inside outer."""
-            ox, oy, ow, oh = outer
-            ix, iy, iw, ih = inner
-            return (ix >= ox - slack and iy >= oy - slack and
-                    (ix + iw) <= (ox + ow) + slack and (iy + ih) <= (oy + oh) + slack)
-
-        # Pad the bottom so the HTML5 video player's control gradient sits over empty bg
-        bottom_pad = int(min(120, max(60, H * 0.10)))
-        bottom_pad -= bottom_pad % 2
-        canvas_bg_color = _corner_bg_color(img, patch=40)
-        bg_path = work_dir / "bg.png"
-        if mode == "reveal":
-            bg_padded = Image.new("RGB", (W, H + bottom_pad), canvas_bg_color)
-            bg_padded.paste(bg, (0, 0))
-            bg_padded.save(bg_path)
-        else:
-            # Slideshow bg = flat corner color (the slides cover the whole frame).
-            Image.new("RGB", (W, H + bottom_pad), canvas_bg_color).save(bg_path)
-
-        # If no reveal boxes (only hide boxes), short-circuit to a trivial render:
-        # just bg.png + audio, no filter graph.
-        if N == 0:
-            out_path = work_dir / "out.mp4"
-            simple_cmd = [
+        clips = []
+        for k in range(1, n + 1):
+            before = work / f"clip_{k}_before.png"
+            after = work / f"clip_{k}_after.png"
+            out = out_dir / f"chapter_{k:02d}.mp4"
+            # 4.5s hold before, 1s xfade, 4.5s hold after = 10s. Offset of xfade = 4.5.
+            # `xfade` requires both inputs as video streams of equal duration parts; we use
+            # -loop on the still images and -t to clip them.
+            cmd = [
                 "ffmpeg", "-y",
-                "-loop", "1", "-t", f"{duration:.3f}", "-i", str(bg_path),
-                "-i", str(audio_path),
-                "-map", "0:v", "-map", "1:a",
-                "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "192k",
-                "-r", "30", "-shortest",
-                str(out_path),
+                "-loop", "1", "-t", "5.5", "-i", str(before),
+                "-loop", "1", "-t", "5.5", "-i", str(after),
+                "-filter_complex",
+                "[0:v]scale=1920:1080,format=yuv420p,fps=30,setsar=1[v0];"
+                "[1:v]scale=1920:1080,format=yuv420p,fps=30,setsar=1[v1];"
+                "[v0][v1]xfade=transition=fade:duration=1:offset=4.5,format=yuv420p[v]",
+                "-map", "[v]",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                str(out),
             ]
-            r = subprocess.run(simple_cmd, capture_output=True, text=True, timeout=240)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if r.returncode != 0:
-                return jsonify({"error": "ffmpeg failed (hide-only)", "stderr": r.stderr[-1500:]}), 500
-            # Persist + return
-            if chapter_row:
-                vid = chapter_row["video_id"]
-                out_dir = _chapter_dir(vid, chapter_id)
-                final_path = out_dir / "result.mp4"
-                shutil.move(str(out_path), str(final_path))
-                rel = str(final_path.relative_to(Path(app.root_path)))
-                result_url = "/" + rel
-            else:
-                out_dir = Path(app.root_path) / "static" / "uploads" / "chapters"
-                out_dir.mkdir(parents=True, exist_ok=True)
-                final_path = out_dir / f"{job_id}.mp4"
-                shutil.move(str(out_path), str(final_path))
-                result_url = f"/static/uploads/chapters/{job_id}.mp4"
-            payload = {
-                "url": result_url, "duration": round(duration, 2),
-                "boxes": 0, "hidden_boxes": len(hide_rects),
-                "reveal_times": [], "alignment": "hide_only",
-                "descriptions": [], "size": (W, H + bottom_pad),
-                "content_size": (W, H), "bottom_pad": bottom_pad,
-            }
-            if chapter_row:
-                conn = get_db()
-                conn.execute("UPDATE chapters SET result_url=?, result_meta_json=?, updated_at=? WHERE id=?",
-                             (result_url, json.dumps(payload), datetime.now(timezone.utc).isoformat(), chapter_id))
-                conn.commit()
-                conn.close()
-            return jsonify(payload)
+                return jsonify({
+                    "error": f"ffmpeg failed for clip {k}",
+                    "stderr": r.stderr[-1500:],
+                }), 500
+            rel = str(out.relative_to(Path(app.root_path)))
+            clips.append({"k": k, "name": out.name, "url": "/" + rel})
 
-        # Crop preparation is deferred until AFTER the times are computed below,
-        # so that nested inner boxes can be masked inside their outer crops.
-        FPS = 30
-        crop_paths = [None] * N
-        zoom_frame_dirs = [None] * N
-        zoom_frame_counts = [0] * N
+        # Zip all clips
+        zip_path = out_dir / f"chapters_video_{vid}.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
+            for c in clips:
+                zf.write(out_dir / c["name"], arcname=c["name"])
+        rel_zip = str(zip_path.relative_to(Path(app.root_path)))
 
-        # ---- Reveal times: AI-aligned if possible, else evenly distributed ----
-        first_t = min(0.5, max(0.3, duration * 0.05))
-        last_t = max(first_t + 0.5, duration * 0.75)
-        if N == 1:
-            even_times = [first_t]
-        else:
-            step = (last_t - first_t) / (N - 1)
-            even_times = [first_t + i * step for i in range(N)]
+        now = datetime.now(timezone.utc).isoformat()
+        conn = get_db()
+        conn.execute(
+            "UPDATE chapters SET result_zip_path=?, last_rendered_at=?, updated_at=? WHERE video_id=?",
+            (rel_zip, now, now, vid)
+        )
+        conn.commit()
+        conn.close()
 
-        alignment_mode = "evenly_distributed"
-        alignment_descs = [None] * N
-
-        # Build a Gemini-friendly image with numbered boxes drawn on top
-        align_img = img.copy()
-        d2 = ImageDraw.Draw(align_img)
-        # font for badge numbers (try common paths, fall back to default)
-        font = None
-        badge_radius = max(14, min(28, int(min(W, H) * 0.025)))
-        font_size = int(badge_radius * 1.3)
-        for fp in (
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
-        ):
-            try:
-                font = ImageFont.truetype(fp, font_size)
-                break
-            except OSError:
-                continue
-        if font is None:
-            font = ImageFont.load_default()
-        for i, (x, y, w, h) in enumerate(box_rects):
-            d2.rectangle([x, y, x + w - 1, y + h - 1], outline=(245, 185, 66), width=4)
-            cx, cy = x + badge_radius + 4, y + badge_radius + 4
-            d2.ellipse([cx - badge_radius, cy - badge_radius, cx + badge_radius, cy + badge_radius], fill=(245, 185, 66))
-            label = str(i + 1)
-            bbox_ascent = 0
-            try:
-                bb = d2.textbbox((0, 0), label, font=font)
-                tw, th = bb[2] - bb[0], bb[3] - bb[1]
-                bbox_ascent = bb[1]
-            except AttributeError:
-                if hasattr(font, "getsize"):
-                    tw, th = font.getsize(label)
-                else:
-                    tw, th = 10, 12
-            d2.text((cx - tw / 2, cy - th / 2 - bbox_ascent), label, fill=(0, 0, 0), font=font)
-
-        buf = BytesIO()
-        align_img.save(buf, format="PNG")
-        align_bytes = buf.getvalue()
-
-        script = (script_input or "").strip()
-        mime_by_ext = {"mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4",
-                       "aac": "audio/aac", "ogg": "audio/ogg", "flac": "audio/flac"}
-        audio_mime = audio_mime_hint or mime_by_ext.get(a_ext, "audio/mpeg")
-        audio_bytes = Path(audio_path).read_bytes()
-
-        # Preferred path: Whisper word timestamps + Gemini phrase matching
-        ai_result = None
-        if N <= 12 and duration <= 180:
-            words = _replicate_whisper_words(audio_bytes, audio_mime)
-            if words:
-                match = _gemini_match_boxes_to_words(align_bytes, words, N)
-                if match and any(t is not None for t in match["times"]):
-                    ai_result = match
-                    alignment_mode = "whisper_aligned"
-            # Fallback: audio-reasoning-only Gemini (no word timestamps)
-            if ai_result is None:
-                fallback = _gemini_align_boxes(align_bytes, audio_bytes, audio_mime, script, N, duration)
-                if fallback and any(t is not None for t in fallback["times"]):
-                    ai_result = fallback
-                    alignment_mode = "gemini_audio"
-
-        if ai_result and any(t is not None for t in ai_result["times"]):
-            ai_times = ai_result["times"][:]
-            for i in range(N):
-                if ai_times[i] is None:
-                    ai_times[i] = even_times[i]
-            # 0.18s lead — with eased slide motion the perceived arrival lags the
-            # motion onset by ~half the slide duration, so we lean a touch earlier.
-            lead = 0.18 if alignment_mode == "whisper_aligned" else 0.0
-            for i in range(N):
-                ai_times[i] = max(0.3, float(ai_times[i]) - lead)
-            # Clamp + enforce strictly increasing (min step 0.25s)
-            min_step = 0.25
-            for i in range(N):
-                t = max(0.3, min(duration - 0.1, float(ai_times[i])))
-                if i > 0 and t < ai_times[i - 1] + min_step:
-                    t = ai_times[i - 1] + min_step
-                if t > duration - 0.05:
-                    t = duration - 0.05
-                ai_times[i] = t
-            times = ai_times
-            alignment_descs = ai_result["descs"]
-        else:
-            times = even_times
-
-        # Apply manual time overrides (per box) AFTER AI alignment, BEFORE monotonic clamp.
-        # Manual times are absolute — no lead time applied.
-        manual_count = 0
-        for i in range(N):
-            if box_overrides[i] is not None:
-                times[i] = max(0.3, min(duration - 0.05, box_overrides[i]))
-                manual_count += 1
-        # Re-enforce monotonic if overrides scrambled order (overrides win; AI shifts around them)
-        if manual_count > 0:
-            min_step = 0.25
-            for i in range(N):
-                t = max(0.3, min(duration - 0.05, float(times[i])))
-                if i > 0 and t < times[i - 1] + min_step:
-                    t = times[i - 1] + min_step
-                if t > duration - 0.05:
-                    t = duration - 0.05
-                times[i] = t
-            if alignment_mode in ("whisper_aligned", "gemini_audio", "evenly_distributed"):
-                alignment_mode = alignment_mode + "_with_manual"
-
-        # Generate the per-box overlay source. Reveal mode = cropped + inner-masked
-        # rectangle to overlay at the box's original position. Slideshow mode = the
-        # box content scaled up centered on a full 16:9 canvas (the slide IS the frame).
-        canvas_w = W
-        canvas_h = H + bottom_pad
-        for i, ((x, y, w, h), anim_for_box) in enumerate(zip(box_rects, box_anims)):
-            if mode == "reveal":
-                crop = img.crop((x, y, x + w, y + h))
-                dc = ImageDraw.Draw(crop)
-                for j in range(i + 1, N):
-                    jx, jy, jw, jh = box_rects[j]
-                    if _rect_contains((x, y, w, h), (jx, jy, jw, jh)):
-                        lx, ly = jx - x, jy - y
-                        fill = fill_for_rect.get(box_rects[j], (8, 8, 18))
-                        dc.rectangle([lx, ly, lx + jw - 1, ly + jh - 1], fill=fill)
-                for hr in hide_rects:
-                    if _rect_contains((x, y, w, h), hr):
-                        hx, hy, hw, hh = hr
-                        lx, ly = hx - x, hy - y
-                        fill = fill_for_rect.get(hr, (8, 8, 18))
-                        dc.rectangle([lx, ly, lx + hw - 1, ly + hh - 1], fill=fill)
-                cp = work_dir / f"crop_{i:02d}.png"
-                crop.save(cp)
-                crop_paths[i] = cp
-                if anim_for_box in ("zoom_in", "zoom_out"):
-                    fdir, nf = _render_zoom_frames(
-                        work_dir / f"zoom_{i:02d}", crop, w, h, anim_for_box,
-                        zoom_dur=0.45, fade_dur=0.35, fps=FPS,
-                    )
-                    zoom_frame_dirs[i] = fdir
-                    zoom_frame_counts[i] = nf
-                elif anim_for_box == "write_on":
-                    fdir, nf = _render_write_on_frames(
-                        work_dir / f"writeon_{i:02d}", crop.convert("RGBA"),
-                        w, h, reveal_dur=0.8, fps=FPS,
-                    )
-                    zoom_frame_dirs[i] = fdir
-                    zoom_frame_counts[i] = nf
-            else:
-                # SLIDESHOW: the box content becomes a full 16:9 slide.
-                box_crop = img.crop((x, y, x + w, y + h))
-                # Remove isolated bright pixels (stars) before upscaling — otherwise
-                # a 1-2px star becomes a 5-10px dot in the slide.
-                box_crop = _despeckle_stars(box_crop, canvas_bg_color)
-                margin = 0.85   # leave 15% breathing room
-                sx_ = (canvas_w * margin) / w
-                sy_ = (H * margin) / h   # vertical center within the content area (top H of canvas)
-                s = min(sx_, sy_)
-                nw = max(2, int(w * s)); nh = max(2, int(h * s))
-                nw -= nw % 2; nh -= nh % 2
-                scaled = box_crop.resize((nw, nh), Image.LANCZOS)
-                slide = Image.new("RGB", (canvas_w, canvas_h), canvas_bg_color)
-                ox = (canvas_w - nw) // 2
-                oy = (H - nh) // 2   # vertical center within top H, leaves bottom_pad clear
-                slide.paste(scaled, (ox, oy))
-                sp = work_dir / f"slide_{i:02d}.png"
-                slide.save(sp)
-                crop_paths[i] = sp
-                # Zoom in slideshow = "Ken Burns" feel on the full slide
-                if anim_for_box in ("zoom_in", "zoom_out"):
-                    fdir, nf = _render_zoom_frames(
-                        work_dir / f"zoom_{i:02d}", slide, canvas_w, canvas_h, anim_for_box,
-                        zoom_dur=0.45, fade_dur=0.35, fps=FPS,
-                    )
-                    zoom_frame_dirs[i] = fdir
-                    zoom_frame_counts[i] = nf
-                elif anim_for_box == "write_on":
-                    fdir, nf = _render_write_on_frames(
-                        work_dir / f"writeon_{i:02d}", slide.convert("RGBA"),
-                        canvas_w, canvas_h, reveal_dur=0.8, fps=FPS,
-                    )
-                    zoom_frame_dirs[i] = fdir
-                    zoom_frame_counts[i] = nf
-
-        fade_dur = 0.35           # entrance fade duration
-        exit_fade_dur = 0.55      # exit fade — longer so fade-only exits don't feel abrupt
-        slide_dur = 0.50
-        zoom_dur = 0.45
-        slide_dist = int(min(60, max(22, (H + bottom_pad) * 0.04)))
-
-        # Legacy alias map. Zoom is now working again via pre-rendered frames.
-        LEGACY_ANIM_MAP = {
-            "from_right_fade": "from_right",
-            "from_left_fade": "from_left",
-            "from_above_fade": "from_above",
-            "from_below_fade": "from_below",
-        }
-        valid_anims = {"fade", "from_right", "from_left", "from_above", "from_below",
-                       "zoom_in", "zoom_out", "write_on"}
-
-        # Resolve each reveal box's effective anim
-        resolved_anims = []
-        for i in range(N):
-            raw = (box_anims[i] or "fade").lower()
-            a = LEGACY_ANIM_MAP.get(raw, raw)
-            resolved_anims.append(a if a in valid_anims else "fade")
-
-        # Build ffmpeg inputs
-        inputs = ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(bg_path)]
-        for i in range(N):
-            if resolved_anims[i] in ("zoom_in", "zoom_out", "write_on"):
-                # image sequence input (fade is baked into the PNG frames)
-                inputs += ["-framerate", f"{FPS}",
-                           "-i", str(zoom_frame_dirs[i] / "f%04d.png")]
-            else:
-                inputs += ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(crop_paths[i])]
-        inputs += ["-i", str(audio_path)]
-
-        # mode was determined at the top of the render (slideshow vs reveal)
-        # Slide-distance: bigger in slideshow (slides cover the whole frame)
-        if mode == "slideshow":
-            slide_dist = int(min(220, max(60, (H + bottom_pad) * 0.10)))
-
-        def _box_filter_segs(prev_lbl, in_idx, out_lbl, bx, by, bw, bh, t, anim,
-                             n_zoom_frames, t_exit=None):
-            """Return filter-graph segments for one box's entrance (+ optional exit fade).
-            When t_exit is set, an alpha fade-out is added starting at t_exit, and the
-            overlay's enable gate becomes 'between(t, t, t_exit + exit_fade_dur)'."""
-            src = f"[s{in_idx}]"
-            segs = []
-            exit_filter = (f",fade=t=out:st={t_exit:.3f}:d={exit_fade_dur:.3f}:alpha=1"
-                           if t_exit is not None else "")
-            if anim in ("zoom_in", "zoom_out", "write_on"):
-                zoom_clip_len = n_zoom_frames / FPS
-                stop_extra = max(0.0, duration - t - zoom_clip_len)
-                segs.append(
-                    f"[{in_idx}:v]format=rgba,"
-                    f"setpts=PTS+{t:.3f}/TB,"
-                    f"tpad=stop_mode=clone:stop_duration={stop_extra:.3f}"
-                    f"{exit_filter}{src}"
-                )
-                x_expr, y_expr = str(bx), str(by)
-            elif anim == "fade":
-                segs.append(
-                    f"[{in_idx}:v]format=rgba,"
-                    f"fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1"
-                    f"{exit_filter}{src}"
-                )
-                x_expr, y_expr = str(bx), str(by)
-            else:
-                # Slide variants — eased entrance, optionally eased exit in the same
-                # direction (only when t_exit is set, i.e. slideshow inter-slide transitions).
-                p_in = f"min(1,max(0,(t-{t:.3f})/{slide_dur:.3f}))"
-                ease_in = f"({p_in}*{p_in}*(3-2*{p_in}))"
-                remaining_in = f"(1-{ease_in})"
-                if t_exit is not None:
-                    p_out = f"min(1,max(0,(t-{t_exit:.3f})/{slide_dur:.3f}))"
-                    ease_out = f"({p_out}*{p_out}*(3-2*{p_out}))"
-                    exit_offset = f"({slide_dist}*{ease_out})"
-                else:
-                    exit_offset = "0"
-                segs.append(
-                    f"[{in_idx}:v]format=rgba,"
-                    f"fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1"
-                    f"{exit_filter}{src}"
-                )
-                if anim == "from_right":
-                    # enters from right (x = bx + slide_dist), moves left; exit continues left.
-                    x_expr = f"{bx}+{slide_dist}*{remaining_in}-{exit_offset}"
-                    y_expr = str(by)
-                elif anim == "from_left":
-                    # enters from left, moves right; exit continues right.
-                    x_expr = f"{bx}-{slide_dist}*{remaining_in}+{exit_offset}"
-                    y_expr = str(by)
-                elif anim == "from_below":
-                    # enters from below, moves up; exit continues up.
-                    x_expr = str(bx)
-                    y_expr = f"{by}+{slide_dist}*{remaining_in}-{exit_offset}"
-                elif anim == "from_above":
-                    # enters from above, moves down; exit continues down.
-                    x_expr = str(bx)
-                    y_expr = f"{by}-{slide_dist}*{remaining_in}+{exit_offset}"
-                else:
-                    x_expr, y_expr = str(bx), str(by)
-            if t_exit is not None:
-                # The overlay is enabled from reveal through fade-out completion.
-                enable_expr = f"between(t,{t:.3f},{(t_exit + exit_fade_dur):.3f})"
-            else:
-                enable_expr = f"gte(t,{t:.3f})"
-            segs.append(
-                f"{prev_lbl}{src}overlay=x='{x_expr}':y='{y_expr}':"
-                f"enable='{enable_expr}'{out_lbl}"
-            )
-            return segs
-
-        filter_parts = []
-        last_label = "[0:v]"
-        for i, ((bx, by, bw, bh), t) in enumerate(zip(box_rects, times)):
-            anim = resolved_anims[i]
-            out_label = "[vout]" if i == N - 1 else f"[v{i}]"
-            t_exit = None
-            if mode == "slideshow" and i + 1 < N:
-                t_exit = times[i + 1]
-            # In slideshow mode the overlay is the full 16:9 canvas, positioned at (0,0).
-            if mode == "slideshow":
-                ovx, ovy = 0, 0
-                ovw, ovh = canvas_w, canvas_h
-            else:
-                ovx, ovy, ovw, ovh = bx, by, bw, bh
-            filter_parts.extend(_box_filter_segs(
-                last_label, i + 1, out_label,
-                ovx, ovy, ovw, ovh, t, anim,
-                zoom_frame_counts[i], t_exit=t_exit,
-            ))
-            last_label = out_label
-
-        filter_complex = ";".join(filter_parts)
-
-        out_path = work_dir / "out.mp4"
-        cmd = ["ffmpeg", "-y"] + inputs + [
-            "-filter_complex", filter_complex,
-            "-map", "[vout]", "-map", f"{N+1}:a",
-            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k",
-            "-r", "30",
-            "-shortest",
-            str(out_path),
-        ]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
-        if r.returncode != 0:
-            return jsonify({"error": "ffmpeg failed", "stderr": r.stderr[-1500:], "cmd": " ".join(cmd[:5])}), 500
-
-        # Store result: under the chapter's folder if persisted, else flat
-        if chapter_row:
-            vid = chapter_row["video_id"]
-            out_dir = _chapter_dir(vid, chapter_id)
-            final_path = out_dir / "result.mp4"
-            shutil.move(str(out_path), str(final_path))
-            rel = str(final_path.relative_to(Path(app.root_path)))
-            result_url = "/" + rel
-        else:
-            out_dir = Path(app.root_path) / "static" / "uploads" / "chapters"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            final_path = out_dir / f"{job_id}.mp4"
-            shutil.move(str(out_path), str(final_path))
-            result_url = f"/static/uploads/chapters/{job_id}.mp4"
-
-        result_payload = {
-            "url": result_url,
-            "duration": round(duration, 2),
-            "boxes": N,
-            "hidden_boxes": len(hide_rects),
-            "reveal_times": [round(t, 2) for t in times],
-            "manual_flags": [box_overrides[i] is not None for i in range(N)],
-            "alignment": alignment_mode,
-            "descriptions": alignment_descs,
-            "size": (W, H + bottom_pad),
-            "content_size": (W, H),
-            "bottom_pad": bottom_pad,
-            "anims": resolved_anims,
-            "mode": mode,
-        }
-
-        if chapter_row:
-            conn = get_db()
-            conn.execute("UPDATE chapters SET result_url=?, result_meta_json=?, updated_at=? WHERE id=?",
-                         (result_url, json.dumps(result_payload), datetime.now(timezone.utc).isoformat(), chapter_id))
-            conn.commit()
-            conn.close()
-
-        return jsonify(result_payload)
-    except Exception as e:
-        return jsonify({"error": f"render exception: {type(e).__name__}: {e}"}), 500
+        return jsonify({
+            "ok": True,
+            "count": n,
+            "clips": clips,
+            "zip_url": "/" + rel_zip,
+            "rendered_at": now,
+        })
     finally:
         try:
-            shutil.rmtree(work_dir)
-        except Exception:
+            shutil.rmtree(work)
+        except OSError:
             pass
-
-
-@app.route("/api/chapters/transcribe", methods=["POST"])
-def chapters_transcribe():
-    """Transcribe an uploaded audio clip via Gemini. Returns {transcript: str}."""
-    import base64
-    from urllib.request import urlopen, Request
-    from urllib.error import HTTPError, URLError
-
-    f = request.files.get("audio")
-    if not f:
-        return jsonify({"error": "no audio file"}), 400
-    api_key = os.environ.get("GEMINI_API_KEY", "")
-    if not api_key:
-        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
-
-    audio_bytes = f.read()
-    if len(audio_bytes) > 18 * 1024 * 1024:
-        return jsonify({"error": "audio too large (max 18MB inline)"}), 413
-    mime = f.mimetype or "audio/mpeg"
-    b64 = base64.b64encode(audio_bytes).decode("ascii")
-
-    body = {
-        "contents": [{
-            "parts": [
-                {"text": "Transcribe this audio verbatim. Return only the transcript text — no preamble, no quotes, no markdown, no labels."},
-                {"inline_data": {"mime_type": mime, "data": b64}}
-            ]
-        }]
-    }
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-    req = Request(url, data=json.dumps(body).encode("utf-8"),
-                  headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except HTTPError as e:
-        return jsonify({"error": f"gemini http {e.code}", "detail": e.read().decode("utf-8", "ignore")[:500]}), 502
-    except URLError as e:
-        return jsonify({"error": f"gemini network: {e.reason}"}), 502
-
-    try:
-        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except (KeyError, IndexError, TypeError):
-        return jsonify({"error": "gemini response malformed", "raw": data}), 502
-    return jsonify({"transcript": text})
-
-
 
 
 if __name__ == "__main__":
