@@ -43,8 +43,17 @@ CONTENT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def get_db():
-    conn = sqlite3.connect(str(DB_PATH))
+    # 30s busy timeout — wait instead of erroring when another connection holds the lock
+    conn = sqlite3.connect(str(DB_PATH), timeout=30.0)
     conn.row_factory = sqlite3.Row
+    # WAL mode lets readers + writers proceed concurrently. PRAGMA is sticky on the db file
+    # but we re-issue it cheaply per connection — it's a no-op once already enabled.
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
@@ -185,6 +194,27 @@ def init_db():
         conn.execute("ALTER TABLE thumb_queue ADD COLUMN clicked_by_email TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS diagrams (
+            id TEXT PRIMARY KEY,
+            video_id INTEGER NOT NULL,
+            name TEXT,
+            image_path TEXT,
+            audio_path TEXT,
+            audio_name TEXT,
+            audio_duration TEXT,
+            boxes_json TEXT NOT NULL DEFAULT '[]',
+            script TEXT DEFAULT '',
+            result_url TEXT,
+            result_meta_json TEXT,
+            position INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_diagrams_video ON diagrams(video_id, position)")
     conn.commit()
     conn.close()
 
@@ -2241,6 +2271,1032 @@ def twitter_feed():
     ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
+
+
+def _ring_median_color(img, x, y, w, h, pad=8, ring=24):
+    """Median RGB of pixels in an annulus around the box (pad outside, ring wide).
+    Median resists outliers like the bright text/borders adjacent to box edges that
+    would otherwise pull a mean toward foreground colors."""
+    px = img.load()
+    W, H = img.size
+    ox1 = max(0, x - pad - ring); oy1 = max(0, y - pad - ring)
+    ox2 = min(W, x + w + pad + ring); oy2 = min(H, y + h + pad + ring)
+    ix1 = max(0, x - pad); iy1 = max(0, y - pad)
+    ix2 = min(W, x + w + pad); iy2 = min(H, y + h + pad)
+    rs = []; gs = []; bs = []
+    for yy in range(oy1, oy2):
+        in_inner_y = iy1 <= yy < iy2
+        for xx in range(ox1, ox2):
+            if in_inner_y and ix1 <= xx < ix2:
+                continue
+            p = px[xx, yy]
+            rs.append(p[0]); gs.append(p[1]); bs.append(p[2])
+    if not rs:
+        return (8, 8, 18)
+    rs.sort(); gs.sort(); bs.sort()
+    m = len(rs) // 2
+    return (rs[m], gs[m], bs[m])
+
+
+def _corner_bg_color(img, patch=40):
+    """Median RGB sampled from the 4 corner patches — global background guess."""
+    px = img.load()
+    W, H = img.size
+    rs = []; gs = []; bs = []
+    for (cx, cy) in ((0, 0), (W - patch, 0), (0, H - patch), (W - patch, H - patch)):
+        for yy in range(max(0, cy), min(H, cy + patch)):
+            for xx in range(max(0, cx), min(W, cx + patch)):
+                p = px[xx, yy]
+                rs.append(p[0]); gs.append(p[1]); bs.append(p[2])
+    if not rs:
+        return (8, 8, 18)
+    rs.sort(); gs.sort(); bs.sort()
+    m = len(rs) // 2
+    return (rs[m], gs[m], bs[m])
+
+
+REPLICATE_FAST_WHISPER_VERSION = "3ab86df6c8f54c11309d4d1f930ac292bad43ace52d10c80d87eb258b3c9f79c"
+
+def _replicate_whisper_words(audio_bytes, audio_mime):
+    """Word-level timestamps via vaibhavs10/incredibly-fast-whisper on Replicate.
+    Returns list of {word, start, end}. None on any failure."""
+    import base64, time
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    token = os.environ.get("REPLICATE_API_TOKEN", "")
+    if not token:
+        app.logger.warning("diagrams: REPLICATE_API_TOKEN not set")
+        return None
+    audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+    data_uri = f"data:{audio_mime or 'audio/wav'};base64,{audio_b64}"
+    body = {
+        "version": REPLICATE_FAST_WHISPER_VERSION,
+        "input": {
+            "audio": data_uri,
+            "task": "transcribe",
+            "timestamp": "word",
+            "batch_size": 24,
+        },
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Prefer": "wait=60",
+    }
+    req = Request("https://api.replicate.com/v1/predictions",
+                  data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        app.logger.warning(f"diagrams: replicate http {e.code}: {e.read().decode('utf-8','ignore')[:300]}")
+        return None
+    except URLError as e:
+        app.logger.warning(f"diagrams: replicate network: {e.reason}")
+        return None
+
+    poll_url = (data.get("urls") or {}).get("get")
+    deadline = time.time() + 90
+    while data.get("status") not in ("succeeded", "failed", "canceled") and poll_url and time.time() < deadline:
+        time.sleep(1)
+        try:
+            r2 = Request(poll_url, headers={"Authorization": f"Bearer {token}"})
+            with urlopen(r2, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (HTTPError, URLError):
+            return None
+
+    if data.get("status") != "succeeded":
+        app.logger.warning(f"diagrams: replicate final status {data.get('status')}: {str(data.get('error'))[:200]}")
+        return None
+    output = data.get("output") or {}
+    chunks = output.get("chunks") or []
+    words = []
+    for c in chunks:
+        ts = c.get("timestamp") or []
+        text = (c.get("text") or "").strip()
+        if not text or len(ts) < 2 or ts[0] is None:
+            continue
+        start = float(ts[0])
+        end = float(ts[1]) if ts[1] is not None else start + 0.3
+        words.append({"word": text, "start": start, "end": end})
+    return words if words else None
+
+
+def _gemini_match_boxes_to_words(image_with_boxes_bytes, words, n_boxes):
+    """Ask Gemini which word-index in `words` each numbered box's phrase begins at.
+    Returns {times: [float|None], descs: [str|None]} indexed by box."""
+    import base64
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return None
+    img_b64 = base64.b64encode(image_with_boxes_bytes).decode("ascii")
+    # Compact numbered transcript: [idx]word
+    numbered_words = " ".join(f"[{i}]{w['word']}" for i, w in enumerate(words))
+    prompt = (
+        f"You are aligning visual reveals to a narrated transcript with word-level timing. "
+        f"This drives a video where each numbered box appears the instant its KEY descriptive word is spoken.\n\n"
+        f"The image has {n_boxes} gold-outlined boxes numbered 1..{n_boxes}. Each covers a visual element.\n\n"
+        f"Below is the transcript with each word prefixed by its position [N]:\n{numbered_words}\n\n"
+        f"For each numbered box (in order 1..{n_boxes}):\n"
+        f"  1. Read the visible TEXT inside the box (use OCR — the boxes contain pixel-art text like "
+        f"'COLD OPEN', 'CHAPTER CUT', 'BACKGROUND', subtitles like 'full 6 seconds', 'trimmed to 3 seconds', "
+        f"'slowed down in post', etc.). Also note any icon or shape.\n"
+        f"  2. Pick the SINGLE word position [N] of the EARLIEST descriptive verb/adjective in the transcript "
+        f"that directly describes the box's content. Prefer ACTION VERBS and DISTINCTIVE adjectives over "
+        f"the literal noun. Examples:\n"
+        f"     - Box about 'CHAPTER CUT — trimmed to 3 seconds' → pick 'trimmed' (verb), NOT 'chapter' (noun later).\n"
+        f"     - Box about 'BACKGROUND — slowed down in post' → pick 'slowed' (verb), NOT 'background' (noun later).\n"
+        f"     - Box about 'COLD OPEN — full 6 seconds' → pick 'cold' (adjective opening the phrase).\n"
+        f"     - Box about 'THE GENERATED CLIP — 6 seconds' → pick 'six' or 'loop' (the descriptor used in audio).\n"
+        f"     - Boxes containing a title/heading that's NOT spoken in audio → pick the first word of the audio "
+        f"(position 0) for the opening title, or the final phrase for a concluding tagline.\n"
+        f"  3. NEVER pick filler words: 'as', 'a', 'the', 'in', 'of', 'and', 'or', 'to', 'for'. Skip these.\n"
+        f"  4. Box order must be strictly increasing (box 1's word_index < box 2's < ...). If your picks "
+        f"violate this, adjust later boxes forward.\n\n"
+        f"Return ONLY valid JSON, no markdown:\n"
+        f'{{"boxes":[{{"box":1,"describes":"<short>","key_word":"<the word you picked>","start_word":3}},'
+        f'{{"box":2,"describes":"...","key_word":"...","start_word":12}}]}}'
+    )
+    body = {
+        "contents": [{"parts": [
+            {"text": prompt},
+            {"inline_data": {"mime_type": "image/png", "data": img_b64}},
+        ]}],
+        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.2},
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(url, data=json.dumps(body).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        parsed = json.loads(text)
+        entries = parsed.get("boxes", []) if isinstance(parsed, dict) else []
+    except (HTTPError, URLError, KeyError, IndexError, ValueError, TypeError):
+        return None
+    times = [None] * n_boxes
+    descs = [None] * n_boxes
+    for e in entries:
+        try:
+            i = int(e.get("box", 0)) - 1
+            widx = int(e.get("start_word", -1))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= i < n_boxes and 0 <= widx < len(words):
+            times[i] = float(words[widx]["start"])
+            descs[i] = (e.get("describes") or "")[:80]
+    return {"times": times, "descs": descs}
+
+
+def _gemini_align_boxes(image_with_boxes_bytes, audio_bytes, audio_mime, transcript, n_boxes, duration):
+    """Ask Gemini 2.5 Flash to assign a reveal time (s) to each numbered box,
+    based on the image, audio, and transcript. Returns list[float|None] of length n_boxes."""
+    import base64
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return None
+    img_b64 = base64.b64encode(image_with_boxes_bytes).decode("ascii")
+    aud_b64 = base64.b64encode(audio_bytes).decode("ascii")
+    prompt = (
+        "You are aligning visual reveals to spoken audio for a diagram animation.\n\n"
+        f"The image shows a diagram with {n_boxes} gold-outlined boxes, each labeled with a number 1..{n_boxes} on a gold circle. "
+        "Each box covers a distinct visual element (a title, a card, a label, etc.).\n\n"
+        f"The audio is the narration that plays over the diagram. Total duration: {duration:.2f} seconds.\n\n"
+        f"Transcript (may have minor errors): {transcript or '(no transcript provided)'}\n\n"
+        f"For each numbered box (in order 1..{n_boxes}), identify which visual element it covers, "
+        "then determine the moment in seconds when that element is verbally referenced or becomes thematically relevant in the audio. "
+        "Constraints: every time must be >= 0.3 and <= duration; times must be strictly increasing in box order "
+        "(box 1 first, box N last); if an element is not directly mentioned, place it at a natural pause near a related phrase.\n\n"
+        "Return ONLY a single valid JSON object — no markdown fences, no preamble — in this exact shape:\n"
+        '{"boxes":[{"box":1,"describes":"<short element description>","time":0.5},'
+        '{"box":2,"describes":"...","time":2.1}]}'
+    )
+    body = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": "image/png", "data": img_b64}},
+                {"inline_data": {"mime_type": audio_mime, "data": aud_b64}},
+            ]
+        }],
+        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.2}
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(url, data=json.dumps(body).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=90) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        parsed = json.loads(text)
+        entries = parsed.get("boxes", []) if isinstance(parsed, dict) else []
+        out = [None] * n_boxes
+        descs = [None] * n_boxes
+        for e in entries:
+            try:
+                idx = int(e.get("box", 0)) - 1
+                t = float(e.get("time", 0))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < n_boxes and 0.0 < t <= duration:
+                out[idx] = t
+                descs[idx] = (e.get("describes") or "")[:80]
+        return {"times": out, "descs": descs}
+    except (HTTPError, URLError, KeyError, IndexError, ValueError, TypeError):
+        return None
+
+
+# ── Diagrams: persistence ────────────────────────────────────────────────
+
+def _diagrams_dir():
+    d = Path(app.root_path) / "static" / "uploads" / "diagrams"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _diagram_dir(video_id, diagram_id):
+    d = _diagrams_dir() / str(video_id) / diagram_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _diagram_row_to_dict(row):
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["boxes"] = json.loads(d.pop("boxes_json") or "[]")
+    except Exception:
+        d["boxes"] = []
+    rm = d.pop("result_meta_json", None)
+    try:
+        d["result_meta"] = json.loads(rm) if rm else None
+    except Exception:
+        d["result_meta"] = None
+    # expose URLs (paths are stored relative to /app, e.g. "static/uploads/diagrams/..")
+    for k in ("image_path", "audio_path"):
+        v = d.get(k)
+        if v and not v.startswith("/"):
+            d[k + "_url"] = "/" + v
+        else:
+            d[k + "_url"] = v
+    return d
+
+
+@app.route("/api/videos/<int:vid>/diagrams", methods=["GET"])
+def diagrams_list(vid):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM diagrams WHERE video_id=? ORDER BY position, created_at",
+        (vid,)
+    ).fetchall()
+    conn.close()
+    return jsonify([_diagram_row_to_dict(r) for r in rows])
+
+
+@app.route("/api/videos/<int:vid>/diagrams", methods=["POST"])
+def diagrams_create(vid):
+    diagram_id = "d" + uuid.uuid4().hex[:14]
+    name = (request.json or {}).get("name") if request.is_json else None
+    conn = get_db()
+    pos_row = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM diagrams WHERE video_id=?", (vid,)).fetchone()
+    pos = pos_row[0] if pos_row else 0
+    if not name:
+        name = f"Diagram {pos + 1}"
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO diagrams (id, video_id, name, boxes_json, position, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+        (diagram_id, vid, name, "[]", pos, now, now)
+    )
+    conn.commit()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    conn.close()
+    return jsonify(_diagram_row_to_dict(row))
+
+
+@app.route("/api/diagrams/<diagram_id>", methods=["GET"])
+def diagrams_get(diagram_id):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(_diagram_row_to_dict(row))
+
+
+@app.route("/api/diagrams/<diagram_id>", methods=["PATCH"])
+def diagrams_patch(diagram_id):
+    payload = request.get_json(force=True, silent=True) or {}
+    fields = []
+    values = []
+    if "name" in payload:
+        fields.append("name=?"); values.append(payload["name"])
+    if "boxes" in payload:
+        fields.append("boxes_json=?"); values.append(json.dumps(payload["boxes"]))
+    if "script" in payload:
+        fields.append("script=?"); values.append(payload["script"])
+    if not fields:
+        return jsonify({"error": "no fields to update"}), 400
+    fields.append("updated_at=?")
+    values.append(datetime.now(timezone.utc).isoformat())
+    values.append(diagram_id)
+    conn = get_db()
+    conn.execute(f"UPDATE diagrams SET {', '.join(fields)} WHERE id=?", values)
+    conn.commit()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(_diagram_row_to_dict(row))
+
+
+@app.route("/api/diagrams/<diagram_id>", methods=["DELETE"])
+def diagrams_delete(diagram_id):
+    import shutil
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT video_id FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "not found"}), 404
+    vid = row["video_id"]
+    conn.execute("DELETE FROM diagrams WHERE id=?", (diagram_id,))
+    conn.commit()
+    conn.close()
+    asset_dir = _diagrams_dir() / str(vid) / diagram_id
+    try:
+        if asset_dir.exists():
+            shutil.rmtree(asset_dir)
+    except Exception:
+        pass
+    return jsonify({"ok": True})
+
+
+@app.route("/api/diagrams/<diagram_id>/image", methods=["POST"])
+def diagrams_upload_image(diagram_id):
+    f = request.files.get("image")
+    if not f:
+        return jsonify({"error": "no image file"}), 400
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT video_id, image_path FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "not found"}), 404
+    vid = row["video_id"]
+    # remove old image
+    if row["image_path"]:
+        old = Path(app.root_path) / row["image_path"]
+        try:
+            if old.exists(): old.unlink()
+        except Exception: pass
+    ext = (f.filename.rsplit(".", 1)[-1] if f.filename and "." in f.filename else "png").lower()
+    if ext not in ("png", "jpg", "jpeg", "webp", "gif", "bmp"):
+        ext = "png"
+    target = _diagram_dir(vid, diagram_id) / f"image.{ext}"
+    f.save(str(target))
+    rel = str(target.relative_to(Path(app.root_path)))
+    conn.execute("UPDATE diagrams SET image_path=?, updated_at=? WHERE id=?",
+                 (rel, datetime.now(timezone.utc).isoformat(), diagram_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"image_path": rel, "image_path_url": "/" + rel})
+
+
+@app.route("/api/diagrams/<diagram_id>/audio", methods=["POST"])
+def diagrams_upload_audio(diagram_id):
+    f = request.files.get("audio")
+    if not f:
+        return jsonify({"error": "no audio file"}), 400
+    duration = request.form.get("duration", "")
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT video_id, audio_path FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "not found"}), 404
+    vid = row["video_id"]
+    if row["audio_path"]:
+        old = Path(app.root_path) / row["audio_path"]
+        try:
+            if old.exists(): old.unlink()
+        except Exception: pass
+    ext = (f.filename.rsplit(".", 1)[-1] if f.filename and "." in f.filename else "mp3").lower()
+    if ext not in ("mp3", "wav", "m4a", "aac", "ogg", "flac"):
+        ext = "mp3"
+    target = _diagram_dir(vid, diagram_id) / f"audio.{ext}"
+    f.save(str(target))
+    rel = str(target.relative_to(Path(app.root_path)))
+    conn.execute("UPDATE diagrams SET audio_path=?, audio_name=?, audio_duration=?, updated_at=? WHERE id=?",
+                 (rel, f.filename or "audio", duration, datetime.now(timezone.utc).isoformat(), diagram_id))
+    conn.commit()
+    conn.close()
+    return jsonify({"audio_path": rel, "audio_path_url": "/" + rel, "audio_name": f.filename, "audio_duration": duration})
+
+
+def _render_zoom_frames(frames_dir, crop_img, bw, bh, anim, zoom_dur, fade_dur, fps=30):
+    """Pre-render PNG frames for a zoom intro animation. Each frame is a (bw, bh)
+    RGBA canvas with the box content scaled per smoothstep ease + alpha fade baked in.
+    Returns (frames_dir, n_frames). ffmpeg consumes via image2 input."""
+    from PIL import Image as _Image
+    start_s = 0.5 if anim == "zoom_in" else 1.3
+    end_s = 1.0
+    n_frames = max(2, int(round(zoom_dur * fps)))
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    base = crop_img.convert("RGBA")
+    for i in range(n_frames):
+        p = i / max(1, n_frames - 1)
+        ease = p * p * (3 - 2 * p)
+        s = start_s + (end_s - start_s) * ease
+        nw = max(1, int(round(bw * s)))
+        nh = max(1, int(round(bh * s)))
+        scaled = base.resize((nw, nh), _Image.LANCZOS)
+        canvas = _Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+        canvas.paste(scaled, ((bw - nw) // 2, (bh - nh) // 2), scaled)
+        # Bake the alpha fade-in into the frame
+        frame_t = i / fps
+        a = min(1.0, frame_t / fade_dur) if fade_dur > 0 else 1.0
+        if a < 1.0:
+            alpha = canvas.split()[3].point(lambda v, mult=a: int(v * mult))
+            canvas.putalpha(alpha)
+        canvas.save(frames_dir / f"f{i:04d}.png")
+    return frames_dir, n_frames
+
+
+@app.route("/api/diagrams/render", methods=["POST"])
+def diagrams_render():
+    """Render image + boxes + audio -> MP4 with timed fade-in reveals.
+    Box `anim` field controls each box's entrance: fade, slide directions, zoom_in/out,
+    or `hide` (the box stays masked permanently — no reveal).
+    Accepts either:
+      - form field `diagram_id` (uses persisted image+audio+boxes+script), or
+      - inline files (legacy): image, audio, boxes JSON, script."""
+    import tempfile, subprocess, shutil
+    from io import BytesIO
+    from PIL import Image, ImageDraw, ImageFont
+
+    diagram_id = request.form.get("diagram_id", "").strip()
+    script_input = request.form.get("script", "")
+    job_id = uuid.uuid4().hex[:12]
+    work_dir = Path(tempfile.mkdtemp(prefix=f"diagrams_{job_id}_"))
+
+    # Resolve inputs from either persisted diagram or inline files
+    diagram_row = None
+    if diagram_id:
+        conn = get_db()
+        conn.row_factory = sqlite3.Row
+        diagram_row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+        conn.close()
+        if not diagram_row:
+            return jsonify({"error": "diagram not found"}), 404
+
+    if diagram_row:
+        # Pull from persisted diagram
+        if not diagram_row["image_path"] or not diagram_row["audio_path"]:
+            return jsonify({"error": "diagram is missing image or audio"}), 400
+        src_image = Path(app.root_path) / diagram_row["image_path"]
+        src_audio = Path(app.root_path) / diagram_row["audio_path"]
+        if not src_image.exists() or not src_audio.exists():
+            return jsonify({"error": "stored image/audio file missing on disk"}), 500
+        try:
+            boxes = json.loads(diagram_row["boxes_json"] or "[]")
+        except Exception:
+            boxes = []
+        if not boxes:
+            return jsonify({"error": "diagram has no boxes drawn"}), 400
+        if not script_input:
+            script_input = diagram_row["script"] or ""
+        audio_mime_hint = None  # ffprobe will figure it out
+    else:
+        # Legacy inline upload
+        image_file = request.files.get("image")
+        audio_file = request.files.get("audio")
+        boxes_json = request.form.get("boxes", "[]")
+        if not image_file or not audio_file:
+            return jsonify({"error": "image and audio required (or pass diagram_id)"}), 400
+        try:
+            boxes = json.loads(boxes_json)
+        except Exception:
+            return jsonify({"error": "invalid boxes JSON"}), 400
+        if not boxes:
+            return jsonify({"error": "at least one box required"}), 400
+        src_image = work_dir / "_inline_image"
+        image_file.save(str(src_image))
+        a_ext_inline = (audio_file.filename.rsplit(".", 1)[-1] if audio_file.filename and "." in audio_file.filename else "mp3").lower()
+        if a_ext_inline not in ("mp3", "wav", "m4a", "aac", "ogg", "flac"):
+            a_ext_inline = "mp3"
+        src_audio = work_dir / f"_inline_audio.{a_ext_inline}"
+        audio_file.save(str(src_audio))
+        audio_mime_hint = audio_file.mimetype
+
+    try:
+        # Save + normalize image
+        img = Image.open(src_image).convert("RGB")
+        W, H = img.size
+        W = W - (W % 2)
+        H = H - (H % 2)
+        if W < 64 or H < 64:
+            return jsonify({"error": "image too small (min 64x64)"}), 400
+        img = img.resize((W, H))
+        image_path = work_dir / "input.png"
+        img.save(image_path)
+
+        # Copy audio into work dir
+        a_ext = src_audio.suffix.lstrip(".").lower() or "mp3"
+        if a_ext not in ("mp3", "wav", "m4a", "aac", "ogg", "flac"):
+            a_ext = "mp3"
+        audio_path = work_dir / f"audio.{a_ext}"
+        shutil.copy(str(src_audio), str(audio_path))
+
+        # Probe audio duration
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        try:
+            duration = float(probe.stdout.strip())
+        except ValueError:
+            return jsonify({"error": "ffprobe could not read audio duration"}), 500
+        if duration <= 0.1 or duration > 600:
+            return jsonify({"error": f"audio duration out of range ({duration:.1f}s, max 600s)"}), 400
+
+        # Compute box rects + kind (reveal vs hide) + anim style + time_override
+        all_box_records = []   # each: (x, y, w, h, anim, original_box_dict)
+        reveal_indices = []
+        for b in boxes:
+            try:
+                bx = float(b["x"]); by = float(b["y"]); bw = float(b["w"]); bh = float(b["h"])
+            except (KeyError, TypeError, ValueError):
+                return jsonify({"error": "box missing x/y/w/h"}), 400
+            x = int(bx * W); y = int(by * H)
+            w = int(bw * W); h = int(bh * H)
+            x = max(0, min(W - 4, x)); y = max(0, min(H - 4, y))
+            w = max(4, min(W - x, w)); h = max(4, min(H - y, h))
+            x -= (x % 2); y -= (y % 2)
+            w -= (w % 2); h -= (h % 2)
+            if w < 2 or h < 2:
+                continue
+            anim_val = (b.get("anim") or "fade").lower() if isinstance(b, dict) else "fade"
+            all_box_records.append((x, y, w, h, anim_val, b if isinstance(b, dict) else {}))
+            if anim_val != "hide":
+                reveal_indices.append(len(all_box_records) - 1)
+        if not all_box_records:
+            return jsonify({"error": "no valid boxes after normalization"}), 400
+
+        # Reveal boxes are the ones that animate in. Hide boxes only mask the bg permanently.
+        box_rects = [(r[0], r[1], r[2], r[3]) for i, r in enumerate(all_box_records) if i in reveal_indices]
+        box_anims = [all_box_records[i][4] for i in reveal_indices]
+        hide_rects = [(r[0], r[1], r[2], r[3]) for i, r in enumerate(all_box_records) if i not in reveal_indices]
+        # Manual time overrides per reveal box (None if not set)
+        box_overrides = []
+        for idx in reveal_indices:
+            bd = all_box_records[idx][5]
+            ov = bd.get("time_override")
+            try:
+                box_overrides.append(float(ov) if ov is not None else None)
+            except (TypeError, ValueError):
+                box_overrides.append(None)
+
+        if not box_rects and not hide_rects:
+            return jsonify({"error": "no boxes after kind split"}), 400
+
+        N = len(box_rects)
+
+        # Pre-sample bg-fill color per box rect — reused for both bg.png and for
+        # masking nested inner-box regions inside outer-box crops.
+        fill_for_rect = {}  # (x,y,w,h) -> (r,g,b)
+        for (x, y, w, h, _anim, _bd) in all_box_records:
+            fill_for_rect[(x, y, w, h)] = _ring_median_color(img, x, y, w, h, pad=8, ring=24)
+
+        # Background = image with EVERY box filled with the LOCAL background color.
+        # Reveal boxes get re-overlaid on top with the chosen animation; hide boxes stay masked.
+        bg = img.copy()
+        draw = ImageDraw.Draw(bg)
+        for (x, y, w, h, _anim, _bd) in all_box_records:
+            fill = fill_for_rect[(x, y, w, h)]
+            draw.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
+
+        def _rect_contains(outer, inner, slack=2):
+            """outer / inner are (x,y,w,h). True if inner is (mostly) inside outer."""
+            ox, oy, ow, oh = outer
+            ix, iy, iw, ih = inner
+            return (ix >= ox - slack and iy >= oy - slack and
+                    (ix + iw) <= (ox + ow) + slack and (iy + ih) <= (oy + oh) + slack)
+
+        # Pad the bottom so the HTML5 video player's control gradient sits over empty bg
+        bottom_pad = int(min(120, max(60, H * 0.10)))
+        bottom_pad -= bottom_pad % 2
+        canvas_bg_color = _corner_bg_color(img, patch=40)
+        bg_padded = Image.new("RGB", (W, H + bottom_pad), canvas_bg_color)
+        bg_padded.paste(bg, (0, 0))
+        bg_path = work_dir / "bg.png"
+        bg_padded.save(bg_path)
+
+        # If no reveal boxes (only hide boxes), short-circuit to a trivial render:
+        # just bg.png + audio, no filter graph.
+        if N == 0:
+            out_path = work_dir / "out.mp4"
+            simple_cmd = [
+                "ffmpeg", "-y",
+                "-loop", "1", "-t", f"{duration:.3f}", "-i", str(bg_path),
+                "-i", str(audio_path),
+                "-map", "0:v", "-map", "1:a",
+                "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k",
+                "-r", "30", "-shortest",
+                str(out_path),
+            ]
+            r = subprocess.run(simple_cmd, capture_output=True, text=True, timeout=240)
+            if r.returncode != 0:
+                return jsonify({"error": "ffmpeg failed (hide-only)", "stderr": r.stderr[-1500:]}), 500
+            # Persist + return
+            if diagram_row:
+                vid = diagram_row["video_id"]
+                out_dir = _diagram_dir(vid, diagram_id)
+                final_path = out_dir / "result.mp4"
+                shutil.move(str(out_path), str(final_path))
+                rel = str(final_path.relative_to(Path(app.root_path)))
+                result_url = "/" + rel
+            else:
+                out_dir = Path(app.root_path) / "static" / "uploads" / "diagrams"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                final_path = out_dir / f"{job_id}.mp4"
+                shutil.move(str(out_path), str(final_path))
+                result_url = f"/static/uploads/diagrams/{job_id}.mp4"
+            payload = {
+                "url": result_url, "duration": round(duration, 2),
+                "boxes": 0, "hidden_boxes": len(hide_rects),
+                "reveal_times": [], "alignment": "hide_only",
+                "descriptions": [], "size": (W, H + bottom_pad),
+                "content_size": (W, H), "bottom_pad": bottom_pad,
+            }
+            if diagram_row:
+                conn = get_db()
+                conn.execute("UPDATE diagrams SET result_url=?, result_meta_json=?, updated_at=? WHERE id=?",
+                             (result_url, json.dumps(payload), datetime.now(timezone.utc).isoformat(), diagram_id))
+                conn.commit()
+                conn.close()
+            return jsonify(payload)
+
+        # Crop preparation is deferred until AFTER the times are computed below,
+        # so that nested inner boxes can be masked inside their outer crops.
+        FPS = 30
+        crop_paths = [None] * N
+        zoom_frame_dirs = [None] * N
+        zoom_frame_counts = [0] * N
+
+        # ---- Reveal times: AI-aligned if possible, else evenly distributed ----
+        first_t = min(0.5, max(0.3, duration * 0.05))
+        last_t = max(first_t + 0.5, duration * 0.75)
+        if N == 1:
+            even_times = [first_t]
+        else:
+            step = (last_t - first_t) / (N - 1)
+            even_times = [first_t + i * step for i in range(N)]
+
+        alignment_mode = "evenly_distributed"
+        alignment_descs = [None] * N
+
+        # Build a Gemini-friendly image with numbered boxes drawn on top
+        align_img = img.copy()
+        d2 = ImageDraw.Draw(align_img)
+        # font for badge numbers (try common paths, fall back to default)
+        font = None
+        badge_radius = max(14, min(28, int(min(W, H) * 0.025)))
+        font_size = int(badge_radius * 1.3)
+        for fp in (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        ):
+            try:
+                font = ImageFont.truetype(fp, font_size)
+                break
+            except OSError:
+                continue
+        if font is None:
+            font = ImageFont.load_default()
+        for i, (x, y, w, h) in enumerate(box_rects):
+            d2.rectangle([x, y, x + w - 1, y + h - 1], outline=(245, 185, 66), width=4)
+            cx, cy = x + badge_radius + 4, y + badge_radius + 4
+            d2.ellipse([cx - badge_radius, cy - badge_radius, cx + badge_radius, cy + badge_radius], fill=(245, 185, 66))
+            label = str(i + 1)
+            bbox_ascent = 0
+            try:
+                bb = d2.textbbox((0, 0), label, font=font)
+                tw, th = bb[2] - bb[0], bb[3] - bb[1]
+                bbox_ascent = bb[1]
+            except AttributeError:
+                if hasattr(font, "getsize"):
+                    tw, th = font.getsize(label)
+                else:
+                    tw, th = 10, 12
+            d2.text((cx - tw / 2, cy - th / 2 - bbox_ascent), label, fill=(0, 0, 0), font=font)
+
+        buf = BytesIO()
+        align_img.save(buf, format="PNG")
+        align_bytes = buf.getvalue()
+
+        script = (script_input or "").strip()
+        mime_by_ext = {"mp3": "audio/mpeg", "wav": "audio/wav", "m4a": "audio/mp4",
+                       "aac": "audio/aac", "ogg": "audio/ogg", "flac": "audio/flac"}
+        audio_mime = audio_mime_hint or mime_by_ext.get(a_ext, "audio/mpeg")
+        audio_bytes = Path(audio_path).read_bytes()
+
+        # Preferred path: Whisper word timestamps + Gemini phrase matching
+        ai_result = None
+        if N <= 12 and duration <= 180:
+            words = _replicate_whisper_words(audio_bytes, audio_mime)
+            if words:
+                match = _gemini_match_boxes_to_words(align_bytes, words, N)
+                if match and any(t is not None for t in match["times"]):
+                    ai_result = match
+                    alignment_mode = "whisper_aligned"
+            # Fallback: audio-reasoning-only Gemini (no word timestamps)
+            if ai_result is None:
+                fallback = _gemini_align_boxes(align_bytes, audio_bytes, audio_mime, script, N, duration)
+                if fallback and any(t is not None for t in fallback["times"]):
+                    ai_result = fallback
+                    alignment_mode = "gemini_audio"
+
+        if ai_result and any(t is not None for t in ai_result["times"]):
+            ai_times = ai_result["times"][:]
+            for i in range(N):
+                if ai_times[i] is None:
+                    ai_times[i] = even_times[i]
+            # 0.18s lead — with eased slide motion the perceived arrival lags the
+            # motion onset by ~half the slide duration, so we lean a touch earlier.
+            lead = 0.18 if alignment_mode == "whisper_aligned" else 0.0
+            for i in range(N):
+                ai_times[i] = max(0.3, float(ai_times[i]) - lead)
+            # Clamp + enforce strictly increasing (min step 0.25s)
+            min_step = 0.25
+            for i in range(N):
+                t = max(0.3, min(duration - 0.1, float(ai_times[i])))
+                if i > 0 and t < ai_times[i - 1] + min_step:
+                    t = ai_times[i - 1] + min_step
+                if t > duration - 0.05:
+                    t = duration - 0.05
+                ai_times[i] = t
+            times = ai_times
+            alignment_descs = ai_result["descs"]
+        else:
+            times = even_times
+
+        # Apply manual time overrides (per box) AFTER AI alignment, BEFORE monotonic clamp.
+        # Manual times are absolute — no lead time applied.
+        manual_count = 0
+        for i in range(N):
+            if box_overrides[i] is not None:
+                times[i] = max(0.3, min(duration - 0.05, box_overrides[i]))
+                manual_count += 1
+        # Re-enforce monotonic if overrides scrambled order (overrides win; AI shifts around them)
+        if manual_count > 0:
+            min_step = 0.25
+            for i in range(N):
+                t = max(0.3, min(duration - 0.05, float(times[i])))
+                if i > 0 and t < times[i - 1] + min_step:
+                    t = times[i - 1] + min_step
+                if t > duration - 0.05:
+                    t = duration - 0.05
+                times[i] = t
+            if alignment_mode in ("whisper_aligned", "gemini_audio", "evenly_distributed"):
+                alignment_mode = alignment_mode + "_with_manual"
+
+        # Generate crops NOW that we know reveal-order — so each outer-box crop
+        # can mask the regions of later-revealing inner boxes (avoids the double-
+        # reveal where the outer's crop briefly shows the inner box's content
+        # before the inner box runs its own animation).
+        for i, ((x, y, w, h), anim_for_box) in enumerate(zip(box_rects, box_anims)):
+            crop = img.crop((x, y, x + w, y + h))
+            dc = ImageDraw.Draw(crop)
+            # Mask any reveal-box that is contained inside this box AND reveals later
+            for j in range(i + 1, N):
+                jx, jy, jw, jh = box_rects[j]
+                if _rect_contains((x, y, w, h), (jx, jy, jw, jh)):
+                    lx, ly = jx - x, jy - y
+                    fill = fill_for_rect.get(box_rects[j], (8, 8, 18))
+                    dc.rectangle([lx, ly, lx + jw - 1, ly + jh - 1], fill=fill)
+            # Hide boxes contained inside stay masked too
+            for hr in hide_rects:
+                if _rect_contains((x, y, w, h), hr):
+                    hx, hy, hw, hh = hr
+                    lx, ly = hx - x, hy - y
+                    fill = fill_for_rect.get(hr, (8, 8, 18))
+                    dc.rectangle([lx, ly, lx + hw - 1, ly + hh - 1], fill=fill)
+            cp = work_dir / f"crop_{i:02d}.png"
+            crop.save(cp)
+            crop_paths[i] = cp
+            if anim_for_box in ("zoom_in", "zoom_out"):
+                fdir, nf = _render_zoom_frames(
+                    work_dir / f"zoom_{i:02d}", crop, w, h, anim_for_box,
+                    zoom_dur=0.45, fade_dur=0.35, fps=FPS,
+                )
+                zoom_frame_dirs[i] = fdir
+                zoom_frame_counts[i] = nf
+
+        fade_dur = 0.35
+        slide_dur = 0.50
+        zoom_dur = 0.45
+        slide_dist = int(min(60, max(22, (H + bottom_pad) * 0.04)))
+
+        # Legacy alias map. Zoom is now working again via pre-rendered frames.
+        LEGACY_ANIM_MAP = {
+            "from_right_fade": "from_right",
+            "from_left_fade": "from_left",
+            "from_above_fade": "from_above",
+            "from_below_fade": "from_below",
+        }
+        valid_anims = {"fade", "from_right", "from_left", "from_above", "from_below",
+                       "zoom_in", "zoom_out"}
+
+        # Resolve each reveal box's effective anim
+        resolved_anims = []
+        for i in range(N):
+            raw = (box_anims[i] or "fade").lower()
+            a = LEGACY_ANIM_MAP.get(raw, raw)
+            resolved_anims.append(a if a in valid_anims else "fade")
+
+        # Build ffmpeg inputs
+        inputs = ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(bg_path)]
+        for i in range(N):
+            if resolved_anims[i] in ("zoom_in", "zoom_out"):
+                # image sequence input (fade is baked into the PNG frames)
+                inputs += ["-framerate", f"{FPS}",
+                           "-i", str(zoom_frame_dirs[i] / "f%04d.png")]
+            else:
+                inputs += ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(crop_paths[i])]
+        inputs += ["-i", str(audio_path)]
+
+        def _box_filter_segs(prev_lbl, in_idx, out_lbl, bx, by, bw, bh, t, anim, n_zoom_frames):
+            """Return list of filter-graph segments for one box's entrance animation."""
+            src = f"[s{in_idx}]"
+            segs = []
+            if anim in ("zoom_in", "zoom_out"):
+                # The image sequence has fade + scale baked in (n_zoom_frames at FPS).
+                # We need to: shift its pts to start at t, then clone the last frame
+                # for the remainder of the video.
+                zoom_clip_len = n_zoom_frames / FPS
+                stop_extra = max(0.0, duration - t - zoom_clip_len)
+                segs.append(
+                    f"[{in_idx}:v]format=rgba,"
+                    f"setpts=PTS+{t:.3f}/TB,"
+                    f"tpad=stop_mode=clone:stop_duration={stop_extra:.3f}{src}"
+                )
+                x_expr, y_expr = str(bx), str(by)
+            elif anim == "fade":
+                segs.append(f"[{in_idx}:v]format=rgba,fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1{src}")
+                x_expr, y_expr = str(bx), str(by)
+            else:
+                # slide variants — always include crossfade, eased
+                p = f"min(1,max(0,(t-{t:.3f})/{slide_dur:.3f}))"
+                ease = f"({p}*{p}*(3-2*{p}))"
+                remaining = f"(1-{ease})"
+                segs.append(
+                    f"[{in_idx}:v]format=rgba,fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1{src}"
+                )
+                if anim == "from_right":
+                    x_expr = f"{bx}+{slide_dist}*{remaining}"; y_expr = str(by)
+                elif anim == "from_left":
+                    x_expr = f"{bx}-{slide_dist}*{remaining}"; y_expr = str(by)
+                elif anim == "from_below":
+                    x_expr = str(bx); y_expr = f"{by}+{slide_dist}*{remaining}"
+                elif anim == "from_above":
+                    x_expr = str(bx); y_expr = f"{by}-{slide_dist}*{remaining}"
+                else:
+                    x_expr, y_expr = str(bx), str(by)
+            segs.append(
+                f"{prev_lbl}{src}overlay=x='{x_expr}':y='{y_expr}':"
+                f"enable='gte(t,{t:.3f})'{out_lbl}"
+            )
+            return segs
+
+        filter_parts = []
+        last_label = "[0:v]"
+        for i, ((bx, by, bw, bh), t) in enumerate(zip(box_rects, times)):
+            anim = resolved_anims[i]
+            out_label = "[vout]" if i == N - 1 else f"[v{i}]"
+            filter_parts.extend(_box_filter_segs(last_label, i + 1, out_label, bx, by, bw, bh, t, anim, zoom_frame_counts[i]))
+            last_label = out_label
+
+        filter_complex = ";".join(filter_parts)
+
+        out_path = work_dir / "out.mp4"
+        cmd = ["ffmpeg", "-y"] + inputs + [
+            "-filter_complex", filter_complex,
+            "-map", "[vout]", "-map", f"{N+1}:a",
+            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-r", "30",
+            "-shortest",
+            str(out_path),
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
+        if r.returncode != 0:
+            return jsonify({"error": "ffmpeg failed", "stderr": r.stderr[-1500:], "cmd": " ".join(cmd[:5])}), 500
+
+        # Store result: under the diagram's folder if persisted, else flat
+        if diagram_row:
+            vid = diagram_row["video_id"]
+            out_dir = _diagram_dir(vid, diagram_id)
+            final_path = out_dir / "result.mp4"
+            shutil.move(str(out_path), str(final_path))
+            rel = str(final_path.relative_to(Path(app.root_path)))
+            result_url = "/" + rel
+        else:
+            out_dir = Path(app.root_path) / "static" / "uploads" / "diagrams"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            final_path = out_dir / f"{job_id}.mp4"
+            shutil.move(str(out_path), str(final_path))
+            result_url = f"/static/uploads/diagrams/{job_id}.mp4"
+
+        result_payload = {
+            "url": result_url,
+            "duration": round(duration, 2),
+            "boxes": N,
+            "hidden_boxes": len(hide_rects),
+            "reveal_times": [round(t, 2) for t in times],
+            "manual_flags": [box_overrides[i] is not None for i in range(N)],
+            "alignment": alignment_mode,
+            "descriptions": alignment_descs,
+            "size": (W, H + bottom_pad),
+            "content_size": (W, H),
+            "bottom_pad": bottom_pad,
+            "anims": resolved_anims,
+        }
+
+        if diagram_row:
+            conn = get_db()
+            conn.execute("UPDATE diagrams SET result_url=?, result_meta_json=?, updated_at=? WHERE id=?",
+                         (result_url, json.dumps(result_payload), datetime.now(timezone.utc).isoformat(), diagram_id))
+            conn.commit()
+            conn.close()
+
+        return jsonify(result_payload)
+    except Exception as e:
+        return jsonify({"error": f"render exception: {type(e).__name__}: {e}"}), 500
+    finally:
+        try:
+            shutil.rmtree(work_dir)
+        except Exception:
+            pass
+
+
+@app.route("/api/diagrams/transcribe", methods=["POST"])
+def diagrams_transcribe():
+    """Transcribe an uploaded audio clip via Gemini. Returns {transcript: str}."""
+    import base64
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+
+    f = request.files.get("audio")
+    if not f:
+        return jsonify({"error": "no audio file"}), 400
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+
+    audio_bytes = f.read()
+    if len(audio_bytes) > 18 * 1024 * 1024:
+        return jsonify({"error": "audio too large (max 18MB inline)"}), 413
+    mime = f.mimetype or "audio/mpeg"
+    b64 = base64.b64encode(audio_bytes).decode("ascii")
+
+    body = {
+        "contents": [{
+            "parts": [
+                {"text": "Transcribe this audio verbatim. Return only the transcript text — no preamble, no quotes, no markdown, no labels."},
+                {"inline_data": {"mime_type": mime, "data": b64}}
+            ]
+        }]
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(url, data=json.dumps(body).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        return jsonify({"error": f"gemini http {e.code}", "detail": e.read().decode("utf-8", "ignore")[:500]}), 502
+    except URLError as e:
+        return jsonify({"error": f"gemini network: {e.reason}"}), 502
+
+    try:
+        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError, TypeError):
+        return jsonify({"error": "gemini response malformed", "raw": data}), 502
+    return jsonify({"transcript": text})
 
 
 if __name__ == "__main__":

@@ -1853,6 +1853,7 @@
                     <button onclick="openTeleprompter()" title="Teleprompter mode" style="font-size:11px; letter-spacing:0.5px;">TELEPROMPTER</button>
                     <button onclick="openAllImages()" title="Open all images in new tabs" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">OPEN IMAGES</button>
                     <button onclick="openAllLinks()" title="Open all links in new tabs" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">OPEN LINKS</button>
+                    <button onclick="openDiagrams()" title="Animate diagrams + images from script" style="font-size:11px; letter-spacing:0.5px; color:#f5b942;">DIAGRAMS</button>
                 </div>
                 <div id="modalDocEditor" class="modal-doc-editor" contenteditable="true" spellcheck="true" oninput="modalDocChanged()" style="min-height:400px; max-height:80vh; overflow-y:auto; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px; padding:16px; color:#ddd; font-size:14px; line-height:1.7; outline:none;"></div>
             </div>
@@ -1860,6 +1861,136 @@
             <div class="modal-save-bar">
                 <span class="modal-saved-indicator" id="savedIndicator">Saved</span>
                 <button class="modal-save-btn" id="modalSaveBtn" onclick="saveModalData()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="diagramsStudio" style="display:none; position:fixed; inset:0; background:#0a0a14; z-index:600; color:#ddd;">
+        <!-- Header bar -->
+        <div style="display:flex; align-items:center; gap:14px; padding:12px 22px; border-bottom:1px solid #1f1f30; background:#0d0d1a;">
+            <div style="font-weight:700; letter-spacing:2px; color:#f5b942; font-size:12px;">DIAGRAMS STUDIO</div>
+            <div id="diagramsStudioTitle" style="color:#666; font-size:12px; border-left:1px solid #2a2a4a; padding-left:14px;"></div>
+            <div style="flex:1;"></div>
+            <span id="diagramsStudioStatus" style="color:#555; font-size:11px;"></span>
+            <button onclick="closeDiagramsStudio()" style="background:none; border:1px solid #2a2a4a; color:#888; padding:6px 14px; border-radius:4px; font-size:11px; letter-spacing:0.5px; cursor:pointer;">CLOSE</button>
+        </div>
+
+        <!-- Body: sidebar + canvas -->
+        <div style="display:flex; height:calc(100vh - 49px);">
+            <!-- Sidebar -->
+            <div style="width:230px; background:#0d0d1a; border-right:1px solid #1f1f30; padding:14px 12px; overflow-y:auto; display:flex; flex-direction:column;">
+                <button onclick="addNewDiagram()" style="background:#f5b942; color:#000; border:none; border-radius:4px; padding:9px; font-size:11px; font-weight:700; letter-spacing:1px; cursor:pointer; margin-bottom:14px;">+ NEW DIAGRAM</button>
+                <div style="color:#444; font-size:10px; letter-spacing:1.5px; padding:0 4px 6px;">DIAGRAMS IN THIS VIDEO</div>
+                <div id="diagramsSidebarList" style="flex:1;"></div>
+                <div style="color:#333; font-size:10px; padding:8px 4px 0; border-top:1px solid #1f1f30; margin-top:8px; letter-spacing:0.3px;">right-click to delete</div>
+            </div>
+
+            <!-- Main canvas -->
+            <div id="diagramsMainCanvas" style="flex:1; overflow-y:auto; padding:24px 32px 80px;">
+                <!-- IMAGE SECTION -->
+                <div style="margin-bottom:28px;">
+                    <div style="color:#666; font-size:10px; letter-spacing:2px; margin-bottom:10px;">IMAGE &amp; BOXES</div>
+                    <div id="diagramsDropZone" style="padding:48px; border:2px dashed #2a2a4a; border-radius:6px; text-align:center; cursor:pointer; background:transparent; transition:all 0.15s;"
+                         onclick="document.getElementById('diagramsFileInput').click()"
+                         ondragover="event.preventDefault(); this.style.borderColor='#f5b942';"
+                         ondragleave="this.style.borderColor='#2a2a4a';"
+                         ondrop="event.preventDefault(); this.style.borderColor='#2a2a4a'; handleDiagramsFile(event.dataTransfer.files[0]);">
+                        <div style="color:#666; font-size:13px;">Drag &amp; drop an image, or click to choose</div>
+                    </div>
+                    <input type="file" id="diagramsFileInput" accept="image/*" style="display:none;" onchange="handleDiagramsFile(this.files[0])">
+
+                    <div id="diagramsPreview" style="display:none;">
+                        <div id="diagramsImageWrap" style="position:relative; display:inline-block; max-width:100%; user-select:none;">
+                            <img id="diagramsImage" style="max-width:100%; max-height:82vh; display:block; pointer-events:none;">
+                            <div id="diagramsBoxLayer" style="position:absolute; inset:0; cursor:crosshair;"
+                                 onmousedown="boxLayerDown(event)"
+                                 onmousemove="boxLayerMove(event)"
+                                 onmouseup="boxLayerUp(event)"></div>
+                            <div id="diagramsCropOverlay" style="display:none; position:absolute; inset:0; pointer-events:none;">
+                                <div id="diagramsCropDimT"></div>
+                                <div id="diagramsCropDimB"></div>
+                                <div id="diagramsCropDimL"></div>
+                                <div id="diagramsCropDimR"></div>
+                                <div id="diagramsCropSel"></div>
+                            </div>
+                        </div>
+                        <div id="diagramsBoxToolbar" style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                            <button onclick="resetDiagramsImage()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Replace image</button>
+                            <button onclick="enterCropMode()" style="background:none; border:1px solid #2a2a4a; color:#f5b942; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Crop region</button>
+                            <button onclick="undoLastBox()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Undo last box</button>
+                            <button onclick="clearBoxes()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Clear boxes</button>
+                            <span id="diagramsBoxCount" style="color:#f5b942; font-size:11px; letter-spacing:0.5px;">0 boxes</span>
+                            <span style="color:#444; font-size:11px;">&middot; drag to draw &middot; right-click box to delete</span>
+                        </div>
+                        <div id="diagramsCropToolbar" style="display:none; margin-top:10px; gap:10px; align-items:center; flex-wrap:wrap;">
+                            <button onclick="applyCrop()" style="background:#f5b942; color:#000; border:none; border-radius:4px; padding:6px 14px; font-size:11px; font-weight:700; letter-spacing:0.5px; cursor:pointer;">Apply crop</button>
+                            <button onclick="exitCropMode()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Cancel</button>
+                            <span style="color:#888; font-size:11px;">Drag any region &middot; output is 16:9 with bg color padding &middot; boxes will be cleared</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AUDIO SECTION -->
+                <div style="margin-bottom:28px;">
+                    <div style="color:#666; font-size:10px; letter-spacing:2px; margin-bottom:10px;">AUDIO</div>
+                    <div id="diagramsAudioDropZone" style="padding:20px; border:2px dashed #2a2a4a; border-radius:6px; text-align:center; cursor:pointer; background:transparent; transition:all 0.15s;"
+                         onclick="document.getElementById('diagramsAudioInput').click()"
+                         ondragover="event.preventDefault(); this.style.borderColor='#f5b942';"
+                         ondragleave="this.style.borderColor='#2a2a4a';"
+                         ondrop="event.preventDefault(); this.style.borderColor='#2a2a4a'; handleDiagramsAudio(event.dataTransfer.files[0]);">
+                        <div style="color:#666; font-size:13px;">Drag &amp; drop audio (.mp3 / .wav / .m4a), or click to choose</div>
+                    </div>
+                    <input type="file" id="diagramsAudioInput" accept="audio/*" style="display:none;" onchange="handleDiagramsAudio(this.files[0])">
+                    <div id="diagramsAudioPreview" style="display:none;">
+                        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 0;">
+                            <span style="color:#f5b942; font-size:14px;">&#9835;</span>
+                            <span id="diagramsAudioName" style="color:#ddd; font-size:12px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
+                            <span id="diagramsAudioDuration" style="color:#888; font-size:11px;"></span>
+                            <button onclick="resetDiagramsAudio()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:3px 9px; font-size:11px; cursor:pointer;">Replace</button>
+                        </div>
+                        <audio id="diagramsAudioPlayer" controls style="width:100%; height:36px;"></audio>
+                    </div>
+                </div>
+
+                <!-- SCRIPT SECTION -->
+                <div style="margin-bottom:28px;">
+                    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px;">
+                        <span style="color:#666; font-size:10px; letter-spacing:2px;">SCRIPT</span>
+                        <span id="diagramsScriptStatus" style="color:#555; font-size:11px;"></span>
+                    </div>
+                    <textarea id="diagramsScript" oninput="schedulePatch()" style="width:100%; min-height:120px; background:transparent; border:1px solid #2a2a4a; border-radius:6px; padding:12px; color:#ddd; font-size:13px; line-height:1.6; resize:vertical; font-family:inherit; box-sizing:border-box;" placeholder="Auto-fills when you upload audio. Or paste here."></textarea>
+                </div>
+
+                <!-- RENDER -->
+                <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                    <button id="diagramsRenderBtn" onclick="renderDiagram()" style="background:#f5b942; color:#000; border:none; border-radius:6px; padding:11px 26px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer;">RENDER THIS DIAGRAM</button>
+                    <button id="diagramsRenderAllBtn" onclick="renderAllDiagrams()" style="background:transparent; border:1px solid #f5b942; color:#f5b942; border-radius:6px; padding:11px 22px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer;">RENDER ALL</button>
+                    <span id="diagramsRenderStatus" style="color:#555; font-size:11px;"></span>
+                </div>
+
+                <!-- RESULT -->
+                <div id="diagramsResult" style="display:none; margin-top:28px; padding-top:24px; border-top:1px solid #1f1f30;">
+                    <div style="color:#666; font-size:10px; letter-spacing:2px; margin-bottom:10px;">RESULT</div>
+                    <video id="diagramsResultVideo" controls style="width:100%; max-height:60vh; background:#000; border-radius:6px;"></video>
+                    <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                        <a id="diagramsResultDownload" href="#" download style="background:none; border:1px solid #2a2a4a; color:#f5b942; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer; text-decoration:none; letter-spacing:0.5px;">DOWNLOAD MP4</a>
+                        <span id="diagramsResultMeta" style="color:#666; font-size:11px;"></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right panel: per-box animation pickers -->
+            <div id="diagramsRightPanel" style="width:270px; background:#0d0d1a; border-left:1px solid #1f1f30; padding:14px 12px; overflow-y:auto;">
+                <div style="color:#444; font-size:10px; letter-spacing:1.5px; padding:0 4px 8px;">BOX ANIMATIONS</div>
+                <div id="diagramsBoxList"></div>
+                <div style="color:#333; font-size:10px; padding:10px 4px 2px; border-top:1px solid #1f1f30; margin-top:8px; letter-spacing:0.3px; line-height:1.5;">
+                    click row to select, then press:<br>
+                    <span style="color:#666;">W/A/S/D</span> &nbsp;slide directions<br>
+                    <span style="color:#666;">Q/E</span> &nbsp;zoom in / out<br>
+                    <span style="color:#666;">C</span> &nbsp;crossfade &middot; <span style="color:#666;">H</span> &nbsp;hide<br>
+                    <span style="color:#666;">1-9</span> &nbsp;jump to box &middot; <span style="color:#666;">↑↓</span> &nbsp;nav<br>
+                    drag rows to reorder reveal order
+                </div>
             </div>
         </div>
     </div>
@@ -4704,6 +4835,1018 @@
         if (opened < hrefs.length) {
             alert('Browser blocked ' + (hrefs.length - opened) + ' of ' + hrefs.length + ' popups.\nAllow popups for this site, then click OPEN LINKS again.');
         }
+    }
+
+    // ---- studio shell + multi-diagram state (server-backed) ----
+    var diagramsList = [];   // local mirror; each entry has {id, name, imageUrl, boxes, audioUrl, audioName, audioDuration, script, resultUrl, resultMeta}
+    var activeDiagramIdx = -1;
+    var _patchTimer = null;
+
+    function _getStudioVideoId() {
+        return (typeof modalVideoId !== 'undefined' && modalVideoId) ? modalVideoId : null;
+    }
+    function setStudioStatus(text, color) {
+        var el = document.getElementById('diagramsStudioStatus');
+        if (!el) return;
+        el.textContent = text || '';
+        el.style.color = color || '#555';
+    }
+    function _serverRowToLocal(row) {
+        return {
+            id: row.id,
+            name: row.name || 'Diagram',
+            imageUrl: row.image_path_url || '',
+            boxes: row.boxes || [],
+            audioUrl: row.audio_path_url || '',
+            audioName: row.audio_name || '',
+            audioDuration: row.audio_duration || '',
+            script: row.script || '',
+            scriptStatus: '',
+            resultUrl: row.result_url || '',
+            resultMeta: row.result_meta || null
+        };
+    }
+    function _apiPatch(id, body) {
+        return fetch('/api/diagrams/' + id, {
+            method: 'PATCH',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body)
+        }).then(function(r) { return r.json(); });
+    }
+    function schedulePatch() {
+        if (_patchTimer) clearTimeout(_patchTimer);
+        _patchTimer = setTimeout(function() {
+            var d = diagramsList[activeDiagramIdx];
+            if (!d) return;
+            setStudioStatus('Saving…', '#f5b942');
+            var payload = {
+                boxes: diagramBoxes,
+                script: document.getElementById('diagramsScript').value
+            };
+            _apiPatch(d.id, payload).then(function(res) {
+                d.boxes = payload.boxes.slice();
+                d.script = payload.script;
+                setStudioStatus('Saved', '#4caf50');
+            }).catch(function(err) {
+                setStudioStatus('Save failed: ' + err, '#e07070');
+            });
+        }, 700);
+    }
+
+    function openDiagrams() {
+        var vid = _getStudioVideoId();
+        if (!vid) { alert('Open a video first.'); return; }
+        var studio = document.getElementById('diagramsStudio');
+        studio.style.display = 'block';
+        var t = document.getElementById('modalTitle');
+        document.getElementById('diagramsStudioTitle').textContent = (t && t.textContent.trim()) || 'untitled';
+
+        setStudioStatus('Loading…', '#f5b942');
+        fetch('/api/videos/' + vid + '/diagrams')
+            .then(function(r) { return r.json(); })
+            .then(function(rows) {
+                diagramsList = (rows || []).map(_serverRowToLocal);
+                if (diagramsList.length === 0) {
+                    return fetch('/api/videos/' + vid + '/diagrams', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+                        .then(function(r) { return r.json(); })
+                        .then(function(d) { diagramsList.push(_serverRowToLocal(d)); });
+                }
+            })
+            .then(function() {
+                activeDiagramIdx = 0;
+                renderSidebar();
+                loadDiagram(0);
+                setStudioStatus('Saved', '#4caf50');
+            })
+            .catch(function(err) { setStudioStatus('Load failed: ' + err, '#e07070'); });
+    }
+    function closeDiagramsStudio() {
+        // flush any pending debounced save synchronously by triggering it now
+        if (_patchTimer) { clearTimeout(_patchTimer); _patchTimer = null; }
+        var d = diagramsList[activeDiagramIdx];
+        if (d) {
+            _apiPatch(d.id, { boxes: diagramBoxes, script: document.getElementById('diagramsScript').value })
+                .catch(function() {});
+        }
+        document.getElementById('diagramsStudio').style.display = 'none';
+    }
+    function addNewDiagram() {
+        var vid = _getStudioVideoId();
+        if (!vid) return;
+        // flush current pending save
+        if (_patchTimer) { clearTimeout(_patchTimer); _patchTimer = null; }
+        var prev = diagramsList[activeDiagramIdx];
+        var prevPromise = prev
+            ? _apiPatch(prev.id, { boxes: diagramBoxes, script: document.getElementById('diagramsScript').value })
+            : Promise.resolve();
+        setStudioStatus('Saving…', '#f5b942');
+        prevPromise
+            .then(function() {
+                return fetch('/api/videos/' + vid + '/diagrams', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                diagramsList.push(_serverRowToLocal(d));
+                activeDiagramIdx = diagramsList.length - 1;
+                renderSidebar();
+                loadDiagram(activeDiagramIdx);
+                setStudioStatus('Saved', '#4caf50');
+            })
+            .catch(function(err) { setStudioStatus('Create failed: ' + err, '#e07070'); });
+    }
+    function deleteDiagram(idx) {
+        if (idx < 0 || idx >= diagramsList.length) return;
+        var d = diagramsList[idx];
+        setStudioStatus('Deleting…', '#f5b942');
+        fetch('/api/diagrams/' + d.id, { method: 'DELETE' })
+            .then(function(r) { return r.json(); })
+            .then(function() {
+                diagramsList.splice(idx, 1);
+                if (diagramsList.length === 0) {
+                    // recreate one empty
+                    return fetch('/api/videos/' + _getStudioVideoId() + '/diagrams', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+                        .then(function(r) { return r.json(); })
+                        .then(function(nd) {
+                            diagramsList.push(_serverRowToLocal(nd));
+                            activeDiagramIdx = 0;
+                        });
+                }
+                if (activeDiagramIdx >= diagramsList.length) activeDiagramIdx = diagramsList.length - 1;
+            })
+            .then(function() {
+                renderSidebar();
+                loadDiagram(activeDiagramIdx);
+                setStudioStatus('Saved', '#4caf50');
+            })
+            .catch(function(err) { setStudioStatus('Delete failed: ' + err, '#e07070'); });
+    }
+    function renderSidebar() {
+        var c = document.getElementById('diagramsSidebarList');
+        if (!c) return;
+        c.innerHTML = '';
+        diagramsList.forEach(function(d, i) {
+            var active = (i === activeDiagramIdx);
+            var item = document.createElement('div');
+            item.style.cssText = 'padding:9px 10px; background:' + (active ? '#15151f' : 'transparent') + '; border:1px solid ' + (active ? '#f5b942' : '#1f1f30') + '; border-radius:4px; margin-bottom:6px; cursor:pointer; display:flex; align-items:center; gap:9px;';
+            item.onclick = function() {
+                if (i === activeDiagramIdx) return;
+                // flush pending save for the diagram we're leaving
+                if (_patchTimer) { clearTimeout(_patchTimer); _patchTimer = null; }
+                var leaving = diagramsList[activeDiagramIdx];
+                if (leaving) {
+                    _apiPatch(leaving.id, { boxes: diagramBoxes, script: document.getElementById('diagramsScript').value })
+                        .catch(function() {});
+                    leaving.boxes = diagramBoxes.slice();
+                    leaving.script = document.getElementById('diagramsScript').value;
+                }
+                activeDiagramIdx = i;
+                renderSidebar();
+                loadDiagram(i);
+            };
+            item.oncontextmenu = function(ev) {
+                ev.preventDefault();
+                if (confirm('Delete ' + d.name + '?')) deleteDiagram(i);
+            };
+
+            var num = document.createElement('div');
+            num.textContent = (i + 1);
+            num.style.cssText = 'background:' + (active ? '#f5b942' : '#2a2a4a') + '; color:' + (active ? '#000' : '#888') + '; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:11px; flex-shrink:0;';
+            item.appendChild(num);
+
+            var info = document.createElement('div');
+            info.style.cssText = 'flex:1; min-width:0;';
+            var nm = document.createElement('div');
+            nm.textContent = d.name;
+            nm.style.cssText = 'font-size:12px; color:' + (active ? '#ddd' : '#aaa') + '; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+            info.appendChild(nm);
+            var bits = [];
+            var liveBoxes = active ? diagramBoxes.length : (d.boxes ? d.boxes.length : 0);
+            var liveImage = active ? !!document.getElementById('diagramsImage').src : !!d.imageUrl;
+            var liveAudio = active ? !!document.getElementById('diagramsAudioPlayer').src : !!d.audioUrl;
+            if (liveImage) bits.push('img');
+            if (liveBoxes) bits.push(liveBoxes + ' box' + (liveBoxes === 1 ? '' : 'es'));
+            if (liveAudio) bits.push('audio');
+            if (d.resultUrl) bits.push('rendered');
+            var meta = document.createElement('div');
+            meta.textContent = bits.length ? bits.join(' · ') : 'empty';
+            meta.style.cssText = 'font-size:10px; color:' + (bits.length ? '#666' : '#444') + '; margin-top:2px;';
+            info.appendChild(meta);
+            item.appendChild(info);
+            c.appendChild(item);
+        });
+    }
+
+    function loadDiagram(idx) {
+        if (idx < 0 || idx >= diagramsList.length) return;
+        var d = diagramsList[idx];
+
+        // image + boxes
+        if (d.imageUrl) {
+            document.getElementById('diagramsImage').src = d.imageUrl + '?t=' + Date.now();
+            document.getElementById('diagramsPreview').style.display = 'block';
+            document.getElementById('diagramsDropZone').style.display = 'none';
+        } else {
+            document.getElementById('diagramsImage').src = '';
+            document.getElementById('diagramsPreview').style.display = 'none';
+            document.getElementById('diagramsDropZone').style.display = 'block';
+        }
+        diagramBoxes = (d.boxes || []).slice();
+        renderBoxes();
+
+        // audio
+        if (d.audioUrl) {
+            document.getElementById('diagramsAudioName').textContent = d.audioName || '';
+            document.getElementById('diagramsAudioDuration').textContent = d.audioDuration || '';
+            document.getElementById('diagramsAudioPlayer').src = d.audioUrl;
+            document.getElementById('diagramsAudioPreview').style.display = 'block';
+            document.getElementById('diagramsAudioDropZone').style.display = 'none';
+        } else {
+            document.getElementById('diagramsAudioPlayer').src = '';
+            document.getElementById('diagramsAudioPreview').style.display = 'none';
+            document.getElementById('diagramsAudioDropZone').style.display = 'block';
+        }
+        diagramsAudioFile = null;  // unused when audio comes from server
+
+        // script
+        document.getElementById('diagramsScript').value = d.script || '';
+        var st = document.getElementById('diagramsScriptStatus');
+        st.textContent = '';
+        st.style.color = '#555';
+
+        // result video (if previously rendered)
+        document.getElementById('diagramsRenderStatus').textContent = '';
+        if (d.resultUrl) {
+            showDiagramResult(d.resultMeta || { url: d.resultUrl, duration: 0, boxes: 0, reveal_times: [], size: [0,0], alignment: '' });
+        } else {
+            hideDiagramResult();
+        }
+    }
+    function refreshSidebarMeta() {
+        // called by UI mutations to keep sidebar metadata fresh without re-saving
+        renderSidebar();
+    }
+    function renderAllDiagrams() {
+        saveActiveDiagramState();
+        var ready = diagramsList.filter(function(d) {
+            return d.imageSrc && d.boxes.length > 0 && d.audioFile && (d.script || '').trim();
+        });
+        if (ready.length === 0) {
+            alert('No diagrams are fully set up yet. Each needs: image + ≥1 box + audio + script.');
+            return;
+        }
+        alert('Render pipeline ships next iteration.\n\nReady to render: ' + ready.length + ' / ' + diagramsList.length);
+    }
+    function handleDiagramsFile(file) {
+        if (!file || !file.type || !file.type.startsWith('image/')) return;
+        var d = diagramsList[activeDiagramIdx];
+        if (!d) return;
+        // optimistic local preview
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            document.getElementById('diagramsImage').src = e.target.result;
+            document.getElementById('diagramsPreview').style.display = 'block';
+            document.getElementById('diagramsDropZone').style.display = 'none';
+            clearBoxes();
+            renderSidebar();
+        };
+        reader.readAsDataURL(file);
+
+        // upload to server
+        setStudioStatus('Uploading image…', '#f5b942');
+        var fd = new FormData();
+        fd.append('image', file, file.name);
+        fetch('/api/diagrams/' + d.id + '/image', { method: 'POST', body: fd })
+            .then(function(r) { return r.json().then(function(j) { return {ok: r.ok, body: j}; }); })
+            .then(function(res) {
+                if (!res.ok) { setStudioStatus('Upload failed: ' + (res.body.error||''), '#e07070'); return; }
+                d.imageUrl = res.body.image_path_url;
+                // boxes were cleared client-side; persist that too
+                d.boxes = [];
+                _apiPatch(d.id, { boxes: [] }).catch(function(){});
+                // swap to server URL (cache-busted)
+                document.getElementById('diagramsImage').src = res.body.image_path_url + '?t=' + Date.now();
+                setStudioStatus('Saved', '#4caf50');
+                renderSidebar();
+            })
+            .catch(function(err) { setStudioStatus('Upload error: ' + err, '#e07070'); });
+    }
+    function resetDiagramsImage() {
+        var d = diagramsList[activeDiagramIdx];
+        document.getElementById('diagramsImage').src = '';
+        document.getElementById('diagramsPreview').style.display = 'none';
+        document.getElementById('diagramsDropZone').style.display = 'block';
+        document.getElementById('diagramsFileInput').value = '';
+        clearBoxes();
+        if (d) { d.imageUrl = ''; d.boxes = []; _apiPatch(d.id, { boxes: [] }).catch(function(){}); }
+        renderSidebar();
+    }
+
+    // ---- box drawing + crop mode ----
+    var diagramBoxes = []; // [{x,y,w,h}] in fractions of image displayed size
+    var diagramDragStart = null;
+    var diagramActiveEl = null;
+    var diagramCropMode = false;
+    var diagramCropStart = null;
+    var diagramCropRect = null; // displayed-px coords {x,y,w,h}
+
+    function enterCropMode() {
+        var img = document.getElementById('diagramsImage');
+        if (!img.src) { alert('Upload an image first.'); return; }
+        diagramCropMode = true;
+        var layer = document.getElementById('diagramsBoxLayer');
+        Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.style.display = 'none'; });
+        document.getElementById('diagramsCropOverlay').style.display = 'block';
+        document.getElementById('diagramsBoxToolbar').style.display = 'none';
+        document.getElementById('diagramsCropToolbar').style.display = 'flex';
+        // initial selection: centered, 50% of image
+        var r = layer.getBoundingClientRect();
+        var w = r.width * 0.5, h = r.height * 0.5;
+        updateCropRect((r.width - w) / 2, (r.height - h) / 2, w, h);
+    }
+    function exitCropMode() {
+        diagramCropMode = false;
+        diagramCropStart = null;
+        var layer = document.getElementById('diagramsBoxLayer');
+        Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.style.display = 'block'; });
+        document.getElementById('diagramsCropOverlay').style.display = 'none';
+        document.getElementById('diagramsBoxToolbar').style.display = 'flex';
+        document.getElementById('diagramsCropToolbar').style.display = 'none';
+    }
+    function updateCropRect(x, y, w, h) {
+        var layer = document.getElementById('diagramsBoxLayer');
+        var r = layer.getBoundingClientRect();
+        // Free aspect — just clamp inside the image bounds
+        if (x < 0) { w += x; x = 0; }
+        if (y < 0) { h += y; y = 0; }
+        if (w < 0) w = 0;
+        if (h < 0) h = 0;
+        if (x + w > r.width) w = r.width - x;
+        if (y + h > r.height) h = r.height - y;
+        diagramCropRect = { x: x, y: y, w: w, h: h };
+        var dim = 'background:rgba(0,0,0,0.55); position:absolute; pointer-events:none;';
+        document.getElementById('diagramsCropDimT').style.cssText = dim + 'left:0; top:0; width:100%; height:' + y + 'px;';
+        document.getElementById('diagramsCropDimB').style.cssText = dim + 'left:0; top:' + (y + h) + 'px; right:0; bottom:0;';
+        document.getElementById('diagramsCropDimL').style.cssText = dim + 'left:0; top:' + y + 'px; width:' + x + 'px; height:' + h + 'px;';
+        document.getElementById('diagramsCropDimR').style.cssText = dim + 'left:' + (x + w) + 'px; top:' + y + 'px; right:0; height:' + h + 'px;';
+        document.getElementById('diagramsCropSel').style.cssText =
+            'position:absolute; left:' + x + 'px; top:' + y + 'px; width:' + w + 'px; height:' + h + 'px; ' +
+            'border:2px dashed #f5b942; box-shadow:0 0 0 1px rgba(0,0,0,0.5); box-sizing:border-box; pointer-events:none;';
+    }
+    function _sampleCornerBgColor(img, patch) {
+        patch = patch || 40;
+        var W = img.naturalWidth, H = img.naturalHeight;
+        var tc = document.createElement('canvas');
+        tc.width = W; tc.height = H;
+        var tctx = tc.getContext('2d');
+        tctx.drawImage(img, 0, 0);
+        var rs = [], gs = [], bs = [];
+        [[0,0], [W-patch,0], [0,H-patch], [W-patch,H-patch]].forEach(function(c) {
+            var cx = Math.max(0, c[0]), cy = Math.max(0, c[1]);
+            var cw = Math.min(patch, W - cx), ch = Math.min(patch, H - cy);
+            if (cw <= 0 || ch <= 0) return;
+            var d = tctx.getImageData(cx, cy, cw, ch).data;
+            for (var i = 0; i < d.length; i += 4) {
+                rs.push(d[i]); gs.push(d[i+1]); bs.push(d[i+2]);
+            }
+        });
+        if (!rs.length) return [8, 8, 18];
+        rs.sort(function(a,b){return a-b;});
+        gs.sort(function(a,b){return a-b;});
+        bs.sort(function(a,b){return a-b;});
+        var m = rs.length >> 1;
+        return [rs[m], gs[m], bs[m]];
+    }
+
+    function applyCrop() {
+        if (!diagramCropRect || diagramCropRect.w < 12 || diagramCropRect.h < 12) {
+            alert('Selection too small.'); return;
+        }
+        var d = diagramsList[activeDiagramIdx];
+        if (!d) return;
+        var img = document.getElementById('diagramsImage');
+        var layer = document.getElementById('diagramsBoxLayer');
+        var r = layer.getBoundingClientRect();
+        var scaleX = img.naturalWidth / r.width;
+        var scaleY = img.naturalHeight / r.height;
+        var sx = Math.round(diagramCropRect.x * scaleX);
+        var sy = Math.round(diagramCropRect.y * scaleY);
+        var sw = Math.round(diagramCropRect.w * scaleX);
+        var sh = Math.round(diagramCropRect.h * scaleY);
+        sw -= sw % 2; sh -= sh % 2;
+        if (sw < 4 || sh < 4) { alert('Selection too small.'); return; }
+
+        // Sample bg color from corners of the ORIGINAL image
+        var bg = _sampleCornerBgColor(img, 40);
+
+        // Compute 16:9 canvas that fits the selection (selection centered, rest = bg color)
+        var tw, th;
+        if (sw / sh >= 16 / 9) {
+            tw = sw;
+            th = Math.round(sw * 9 / 16);
+        } else {
+            th = sh;
+            tw = Math.round(sh * 16 / 9);
+        }
+        tw -= tw % 2; th -= th % 2;
+
+        var canvas = document.createElement('canvas');
+        canvas.width = tw; canvas.height = th;
+        var ctx = canvas.getContext('2d');
+        ctx.fillStyle = 'rgb(' + bg[0] + ',' + bg[1] + ',' + bg[2] + ')';
+        ctx.fillRect(0, 0, tw, th);
+        var ox = Math.round((tw - sw) / 2);
+        var oy = Math.round((th - sh) / 2);
+        ctx.drawImage(img, sx, sy, sw, sh, ox, oy, sw, sh);
+
+        setStudioStatus('Saving cropped image…', '#f5b942');
+        canvas.toBlob(function(blob) {
+            var fd = new FormData();
+            fd.append('image', blob, 'cropped.png');
+            fetch('/api/diagrams/' + d.id + '/image', { method: 'POST', body: fd })
+                .then(function(resp) { return resp.json().then(function(j) { return {ok: resp.ok, body: j}; }); })
+                .then(function(res) {
+                    if (!res.ok) { setStudioStatus('Crop save failed', '#e07070'); return; }
+                    d.imageUrl = res.body.image_path_url;
+                    d.boxes = [];
+                    _apiPatch(d.id, { boxes: [] }).catch(function() {});
+                    document.getElementById('diagramsImage').src = res.body.image_path_url + '?t=' + Date.now();
+                    clearBoxes();
+                    exitCropMode();
+                    setStudioStatus('Saved', '#4caf50');
+                    renderSidebar();
+                })
+                .catch(function() { setStudioStatus('Crop upload error', '#e07070'); });
+        }, 'image/png');
+    }
+
+    function boxLayerDown(e) {
+        if (diagramCropMode) {
+            var layer = document.getElementById('diagramsBoxLayer');
+            var r = layer.getBoundingClientRect();
+            diagramCropStart = { x: e.clientX - r.left, y: e.clientY - r.top };
+            updateCropRect(diagramCropStart.x, diagramCropStart.y, 0, 0);
+            e.preventDefault();
+            return;
+        }
+        var layer = document.getElementById('diagramsBoxLayer');
+        var r = layer.getBoundingClientRect();
+        diagramDragStart = { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height };
+        diagramActiveEl = document.createElement('div');
+        diagramActiveEl.style.cssText = 'position:absolute; border:2px dashed #f5b942; background:rgba(245,185,66,0.12); pointer-events:none;';
+        diagramActiveEl.style.left = diagramDragStart.x + 'px';
+        diagramActiveEl.style.top = diagramDragStart.y + 'px';
+        diagramActiveEl.style.width = '0px';
+        diagramActiveEl.style.height = '0px';
+        layer.appendChild(diagramActiveEl);
+        e.preventDefault();
+    }
+    function boxLayerMove(e) {
+        if (diagramCropMode) {
+            if (!diagramCropStart) return;
+            var layer = document.getElementById('diagramsBoxLayer');
+            var r = layer.getBoundingClientRect();
+            var cx = e.clientX - r.left, cy = e.clientY - r.top;
+            cx = Math.max(0, Math.min(cx, r.width));
+            cy = Math.max(0, Math.min(cy, r.height));
+            var sx = diagramCropStart.x, sy = diagramCropStart.y;
+            var x = Math.min(sx, cx), y = Math.min(sy, cy);
+            var w = Math.abs(cx - sx), h = Math.abs(cy - sy);
+            updateCropRect(x, y, w, h);
+            return;
+        }
+        if (!diagramDragStart || !diagramActiveEl) return;
+        var layer = document.getElementById('diagramsBoxLayer');
+        var r = layer.getBoundingClientRect();
+        var cx = e.clientX - r.left, cy = e.clientY - r.top;
+        cx = Math.max(0, Math.min(cx, r.width));
+        cy = Math.max(0, Math.min(cy, r.height));
+        var x = Math.min(diagramDragStart.x, cx), y = Math.min(diagramDragStart.y, cy);
+        var w = Math.abs(cx - diagramDragStart.x), h = Math.abs(cy - diagramDragStart.y);
+        diagramActiveEl.style.left = x + 'px';
+        diagramActiveEl.style.top = y + 'px';
+        diagramActiveEl.style.width = w + 'px';
+        diagramActiveEl.style.height = h + 'px';
+    }
+    function boxLayerUp(e) {
+        if (diagramCropMode) {
+            diagramCropStart = null;
+            return;
+        }
+        if (!diagramDragStart || !diagramActiveEl) return;
+        var rect = diagramActiveEl.getBoundingClientRect();
+        var layer = document.getElementById('diagramsBoxLayer');
+        var r = layer.getBoundingClientRect();
+        var w = parseFloat(diagramActiveEl.style.width) || 0;
+        var h = parseFloat(diagramActiveEl.style.height) || 0;
+        var x = parseFloat(diagramActiveEl.style.left) || 0;
+        var y = parseFloat(diagramActiveEl.style.top) || 0;
+        diagramActiveEl.remove();
+        diagramActiveEl = null;
+        diagramDragStart = null;
+        if (w > 8 && h > 8) {
+            diagramBoxes.push({ x: x / r.width, y: y / r.height, w: w / r.width, h: h / r.height });
+            renderBoxes();
+            // Auto-select the just-drawn box so the user can immediately hit W/A/S/D/Q/E/C/H
+            if (typeof setSelectedBox === 'function') setSelectedBox(diagramBoxes.length - 1);
+            if (typeof schedulePatch === 'function') schedulePatch();
+        }
+    }
+    function renderBoxes() {
+        var layer = document.getElementById('diagramsBoxLayer');
+        // clear committed boxes (but keep any drag preview)
+        Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.remove(); });
+        diagramBoxes.forEach(function(b, i) {
+            var isHide = (b.anim === 'hide');
+            var isSelected = (i === selectedBoxIdx);
+            var borderClr = isHide ? '#e07070' : '#f5b942';
+            var bgClr = isHide ? 'rgba(224,112,112,0.18)' : 'rgba(245,185,66,0.10)';
+            var d = document.createElement('div');
+            d.className = 'diagram-box';
+            d.dataset.idx = i;
+            d.title = isHide
+                ? 'Hidden region — masked the whole video. Right-click to delete.'
+                : 'Right-click or click the × to delete';
+            var borderWidth = isSelected ? 3 : 2;
+            var glow = isSelected ? 'box-shadow:0 0 0 1px rgba(0,0,0,0.4),0 0 12px rgba(245,185,66,0.6);' : 'box-shadow:0 0 0 1px rgba(0,0,0,0.4);';
+            d.style.cssText = 'position:absolute; border:' + borderWidth + 'px solid ' + borderClr + '; background:' + bgClr + '; pointer-events:auto;' + glow + ' cursor:context-menu;';
+            if (isHide) {
+                d.style.borderStyle = 'dashed';
+            }
+            d.style.left = (b.x * 100) + '%';
+            d.style.top = (b.y * 100) + '%';
+            d.style.width = (b.w * 100) + '%';
+            d.style.height = (b.h * 100) + '%';
+            d.oncontextmenu = function(ev) { ev.preventDefault(); ev.stopPropagation(); deleteBox(parseInt(d.dataset.idx, 10)); };
+            // Allow left-click+drag to fall through to the layer so users can draw a NEW
+            // box inside an existing one (e.g. selecting smaller text inside a big region).
+            d.style.pointerEvents = 'none';
+            // The number badge + delete × stay clickable (their own pointer-events:auto below).
+            var badge = document.createElement('div');
+            badge.textContent = isHide ? '×' : (i + 1);
+            badge.style.cssText = 'position:absolute; top:-10px; left:-10px; background:' + borderClr + '; color:#000; font-weight:700; font-size:' + (isHide ? '14' : '12') + 'px; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 4px rgba(0,0,0,0.5); pointer-events:none;';
+            d.appendChild(badge);
+            var del = document.createElement('div');
+            del.textContent = '×';
+            del.title = 'Delete this box';
+            del.style.cssText = 'position:absolute; top:-10px; right:-10px; background:#2a2a4a; color:' + borderClr + '; font-weight:700; font-size:14px; line-height:1; width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,0.5); border:1px solid ' + borderClr + '; pointer-events:auto;';
+            del.onclick = function(ev) { ev.preventDefault(); ev.stopPropagation(); deleteBox(parseInt(d.dataset.idx, 10)); };
+            del.onmousedown = function(ev) { ev.stopPropagation(); };
+            d.appendChild(del);
+            layer.appendChild(d);
+        });
+        document.getElementById('diagramsBoxCount').textContent = diagramBoxes.length + ' box' + (diagramBoxes.length === 1 ? '' : 'es');
+        if (typeof renderSidebar === 'function' && diagramsList && diagramsList.length) renderSidebar();
+        if (typeof renderBoxAnimList === 'function') renderBoxAnimList();
+    }
+
+    var ANIM_OPTIONS = [
+        ['fade', 'Crossfade (C)'],
+        ['from_right', 'Slide ← (from right) (A)'],
+        ['from_left', 'Slide → (from left) (D)'],
+        ['from_above', 'Slide ↓ (from above) (S)'],
+        ['from_below', 'Slide ↑ (from below) (W)'],
+        ['zoom_in', 'Zoom in (Q)'],
+        ['zoom_out', 'Zoom out (E)'],
+        ['hide', 'Hide (persistent — no reveal) (H)'],
+    ];
+    // WASD = direction of motion (like in games). 'W' = box moves up = comes from below.
+    var KEY_TO_ANIM = {
+        c: 'fade',
+        w: 'from_below',   // motion ↑  (box rises into place)
+        a: 'from_right',   // motion ←  (box slides leftward)
+        s: 'from_above',   // motion ↓  (box drops into place)
+        d: 'from_left',    // motion →  (box slides rightward)
+        q: 'zoom_in',
+        e: 'zoom_out',
+        h: 'hide',
+    };
+    var selectedBoxIdx = -1;
+    function setSelectedBox(idx, opts) {
+        opts = opts || {};
+        selectedBoxIdx = (idx >= 0 && idx < diagramBoxes.length) ? idx : -1;
+        if (opts.silent) {
+            // update CSS in place — preserves open dropdown / focus
+            _highlightSelectedRow();
+        } else {
+            if (typeof renderBoxAnimList === 'function') renderBoxAnimList();
+        }
+        if (typeof renderBoxes === 'function') renderBoxes();
+    }
+    function _highlightSelectedRow() {
+        var c = document.getElementById('diagramsBoxList');
+        if (!c) return;
+        for (var k = 0; k < c.children.length; k++) {
+            var row = c.children[k];
+            var idx = parseInt(row.dataset.idx, 10);
+            if (isNaN(idx)) continue;
+            var isSel = (idx === selectedBoxIdx);
+            var isHide = diagramBoxes[idx] && diagramBoxes[idx].anim === 'hide';
+            row.style.borderColor = isSel ? '#f5b942' : (isHide ? '#3a2020' : '#1f1f30');
+            row.style.background = isSel ? '#1f1c0c' : '#15151f';
+        }
+    }
+    function applyAnimToSelected(animKey) {
+        if (selectedBoxIdx < 0 || selectedBoxIdx >= diagramBoxes.length) return;
+        diagramBoxes[selectedBoxIdx].anim = animKey;
+        renderBoxes();
+        renderBoxAnimList();
+        if (typeof schedulePatch === 'function') schedulePatch();
+    }
+    // Catch mouseup anywhere on the page so an in-progress box-drag commits even when
+    // the cursor leaves the image area.
+    document.addEventListener('mousemove', function(ev) {
+        if (diagramDragStart || diagramCropStart) {
+            // bubble through to the layer's move logic so the rect tracks the cursor
+            // even when it's outside the image bounds (we already clamp inside).
+            boxLayerMove(ev);
+        }
+    });
+    document.addEventListener('mouseup', function(ev) {
+        if (diagramDragStart || diagramCropStart) {
+            boxLayerUp(ev);
+        }
+    });
+
+    document.addEventListener('keydown', function(ev) {
+        var studio = document.getElementById('diagramsStudio');
+        if (!studio || studio.style.display !== 'block') return;
+        var tag = ((ev.target && ev.target.tagName) || '').toLowerCase();
+        // skip when typing in inputs/textareas/selects; allow keys when target is body/document
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+        if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+        var k = ev.key;
+        var kLower = k.toLowerCase();
+        if (KEY_TO_ANIM[kLower]) {
+            if (selectedBoxIdx < 0) return;  // need a selection
+            ev.preventDefault();
+            applyAnimToSelected(KEY_TO_ANIM[kLower]);
+            return;
+        }
+        if (k >= '1' && k <= '9') {
+            var n = parseInt(k, 10) - 1;
+            if (n < diagramBoxes.length) {
+                ev.preventDefault();
+                setSelectedBox(n);
+            }
+            return;
+        }
+        if (k === 'ArrowUp') {
+            ev.preventDefault();
+            if (diagramBoxes.length === 0) return;
+            setSelectedBox(selectedBoxIdx <= 0 ? 0 : selectedBoxIdx - 1);
+        } else if (k === 'ArrowDown') {
+            ev.preventDefault();
+            if (diagramBoxes.length === 0) return;
+            setSelectedBox(selectedBoxIdx >= diagramBoxes.length - 1 ? diagramBoxes.length - 1 : selectedBoxIdx + 1);
+        } else if (k === 'Escape') {
+            setSelectedBox(-1);
+        }
+    });
+    // Legacy aliases — old picks map to new.
+    var LEGACY_ANIM = { from_right_fade:'from_right', from_left_fade:'from_left',
+                        from_above_fade:'from_above', from_below_fade:'from_below' };
+    function renderBoxAnimList() {
+        var c = document.getElementById('diagramsBoxList');
+        if (!c) return;
+        c.innerHTML = '';
+        if (diagramBoxes.length === 0) {
+            var empty = document.createElement('div');
+            empty.style.cssText = 'color:#444; font-size:11px; padding:8px 4px;';
+            empty.textContent = 'Draw boxes on the image — they\'ll appear here for animation styling.';
+            c.appendChild(empty);
+            return;
+        }
+        // pull descriptions + reveal_times from last render meta if available
+        var d = diagramsList[activeDiagramIdx];
+        var descs = (d && d.resultMeta && d.resultMeta.descriptions) || [];
+        var revealTimes = (d && d.resultMeta && d.resultMeta.reveal_times) || [];
+        var revealIdxCounter = -1;  // tracks reveal-box ordinal (skips hide boxes)
+        diagramBoxes.forEach(function(b, i) {
+            var isHide = (b.anim === 'hide');
+            var isSelected = (i === selectedBoxIdx);
+            var accent = isHide ? '#e07070' : '#f5b942';
+            var row = document.createElement('div');
+            row.draggable = true;
+            row.dataset.idx = i;
+            var borderClr = isSelected ? '#f5b942' : (isHide ? '#3a2020' : '#1f1f30');
+            var bgClr = isSelected ? '#1f1c0c' : '#15151f';
+            row.style.cssText = 'margin-bottom:8px; padding:8px 10px; background:' + bgClr + '; border:1px solid ' + borderClr + '; border-radius:4px; transition:border-color 0.1s, opacity 0.1s; cursor:pointer;';
+            row.onclick = function(ev) {
+                // Don't override clicks on the dropdown / × delete; let those bubble through
+                setSelectedBox(i);
+            };
+            row.ondragstart = function(ev) {
+                ev.dataTransfer.effectAllowed = 'move';
+                ev.dataTransfer.setData('text/plain', String(i));
+                row.style.opacity = '0.45';
+            };
+            row.ondragend = function() { row.style.opacity = '1'; };
+            row.ondragover = function(ev) {
+                ev.preventDefault();
+                ev.dataTransfer.dropEffect = 'move';
+                row.style.borderColor = '#f5b942';
+            };
+            row.ondragleave = function() {
+                row.style.borderColor = isHide ? '#3a2020' : '#1f1f30';
+            };
+            row.ondrop = function(ev) {
+                ev.preventDefault();
+                row.style.borderColor = isHide ? '#3a2020' : '#1f1f30';
+                var src = parseInt(ev.dataTransfer.getData('text/plain'), 10);
+                var dst = parseInt(row.dataset.idx, 10);
+                if (isNaN(src) || isNaN(dst) || src === dst) return;
+                var moved = diagramBoxes.splice(src, 1)[0];
+                diagramBoxes.splice(dst, 0, moved);
+                renderBoxes();
+                if (typeof schedulePatch === 'function') schedulePatch();
+            };
+            var head = document.createElement('div');
+            head.style.cssText = 'display:flex; align-items:center; gap:8px;';
+            var grip = document.createElement('div');
+            grip.textContent = '⋮⋮';
+            grip.title = 'Drag to reorder';
+            grip.style.cssText = 'color:#444; cursor:grab; font-size:13px; line-height:1; flex-shrink:0; user-select:none; letter-spacing:-2px;';
+            head.appendChild(grip);
+            var num = document.createElement('div');
+            num.textContent = isHide ? '×' : (i + 1);
+            num.style.cssText = 'background:' + accent + '; color:#000; width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:' + (isHide ? '13' : '11') + 'px; flex-shrink:0;';
+            head.appendChild(num);
+            var sel = document.createElement('select');
+            sel.style.cssText = 'flex:1; min-width:0; background:#0d0d1a; color:' + (isHide ? '#e07070' : '#ddd') + '; border:1px solid #2a2a4a; border-radius:4px; padding:4px 6px; font-size:11px;';
+            var curAnim = LEGACY_ANIM[b.anim] || b.anim || 'fade';
+            ANIM_OPTIONS.forEach(function(o) {
+                var opt = document.createElement('option');
+                opt.value = o[0]; opt.textContent = o[1];
+                if (curAnim === o[0]) opt.selected = true;
+                sel.appendChild(opt);
+            });
+            // Stop the dropdown's click/mousedown from bubbling to row.onclick (which
+            // would re-render and close the open native picker). Still mark the box as
+            // selected — but silently, so the DOM stays intact.
+            sel.onmousedown = function(ev) {
+                ev.stopPropagation();
+                setSelectedBox(i, { silent: true });
+            };
+            sel.onclick = function(ev) { ev.stopPropagation(); };
+            sel.onchange = function() {
+                b.anim = sel.value;
+                if (typeof schedulePatch === 'function') schedulePatch();
+                renderBoxes();
+                renderBoxAnimList();  // hide vs reveal layout differs; rebuild
+            };
+            head.appendChild(sel);
+            row.appendChild(head);
+            if (isHide) {
+                var note = document.createElement('div');
+                note.textContent = 'Masked the entire video — no reveal.';
+                note.style.cssText = 'color:#e07070; font-size:10px; margin-top:6px; padding-left:28px;';
+                row.appendChild(note);
+            } else {
+                revealIdxCounter += 1;
+                var revealOrdinal = revealIdxCounter;
+                if (descs[revealOrdinal]) {
+                    var desc = document.createElement('div');
+                    desc.textContent = descs[revealOrdinal];
+                    desc.style.cssText = 'color:#666; font-size:10px; margin-top:6px; padding-left:28px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+                    desc.title = descs[revealOrdinal];
+                    row.appendChild(desc);
+                }
+            }
+            c.appendChild(row);
+        });
+    }
+    function deleteBox(idx) {
+        if (idx < 0 || idx >= diagramBoxes.length) return;
+        diagramBoxes.splice(idx, 1);
+        renderBoxes();
+        if (typeof schedulePatch === 'function') schedulePatch();
+    }
+    function undoLastBox() {
+        if (diagramBoxes.length === 0) return;
+        diagramBoxes.pop();
+        renderBoxes();
+        if (typeof schedulePatch === 'function') schedulePatch();
+    }
+    function clearBoxes() {
+        diagramBoxes = [];
+        var layer = document.getElementById('diagramsBoxLayer');
+        if (layer) Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.remove(); });
+        var counter = document.getElementById('diagramsBoxCount');
+        if (counter) counter.textContent = '0 boxes';
+        if (typeof schedulePatch === 'function') schedulePatch();
+    }
+
+    // ---- audio upload + auto-transcribe ----
+    var diagramsAudioFile = null;  // (legacy — only set during inline preview before upload completes)
+    function handleDiagramsAudio(file) {
+        if (!file || !file.type || !file.type.startsWith('audio/')) {
+            alert('Pick an audio file (.mp3 / .wav / .m4a).');
+            return;
+        }
+        var d = diagramsList[activeDiagramIdx];
+        if (!d) return;
+        diagramsAudioFile = file;
+        var capturedDuration = '';
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var player = document.getElementById('diagramsAudioPlayer');
+            player.src = e.target.result;
+            player.onloadedmetadata = function() {
+                capturedDuration = player.duration.toFixed(1) + 's';
+                document.getElementById('diagramsAudioDuration').textContent = capturedDuration;
+                d.audioDuration = capturedDuration;
+            };
+            document.getElementById('diagramsAudioName').textContent = file.name;
+            document.getElementById('diagramsAudioPreview').style.display = 'block';
+            document.getElementById('diagramsAudioDropZone').style.display = 'none';
+            d.audioName = file.name;
+            renderSidebar();
+        };
+        reader.readAsDataURL(file);
+
+        // upload to server (parallel with transcribe)
+        setStudioStatus('Uploading audio…', '#f5b942');
+        var doUpload = function() {
+            var fd = new FormData();
+            fd.append('audio', file, file.name);
+            fd.append('duration', capturedDuration || '');
+            return fetch('/api/diagrams/' + d.id + '/audio', { method: 'POST', body: fd })
+                .then(function(r) { return r.json().then(function(j) { return {ok: r.ok, body: j}; }); })
+                .then(function(res) {
+                    if (!res.ok) { setStudioStatus('Upload failed: ' + (res.body.error||''), '#e07070'); return; }
+                    d.audioUrl = res.body.audio_path_url;
+                    setStudioStatus('Saved', '#4caf50');
+                    renderSidebar();
+                });
+        };
+        // small delay so the FileReader has a chance to capture duration
+        setTimeout(doUpload, 250);
+
+        transcribeDiagramsAudio(file);
+    }
+    function transcribeDiagramsAudio(file) {
+        var ta = document.getElementById('diagramsScript');
+        var status = document.getElementById('diagramsScriptStatus');
+        // only auto-fill if textarea is empty (don't clobber manual edits)
+        var wasEmpty = ta.value.trim() === '';
+        if (wasEmpty) ta.value = '';
+        status.textContent = 'Transcribing…';
+        status.style.color = '#f5b942';
+        var fd = new FormData();
+        fd.append('audio', file);
+        fetch('/api/diagrams/transcribe', { method: 'POST', body: fd })
+            .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, body: j }; }); })
+            .then(function(res) {
+                if (!res.ok) {
+                    status.textContent = 'Transcribe failed: ' + (res.body.error || 'unknown') + ' — paste script manually';
+                    status.style.color = '#e07070';
+                    return;
+                }
+                if (wasEmpty) {
+                    ta.value = res.body.transcript || '';
+                    status.textContent = 'Auto-transcribed (edit if needed)';
+                    status.style.color = '#4caf50';
+                } else {
+                    status.textContent = 'Skipped auto-fill (textarea has content)';
+                    status.style.color = '#888';
+                }
+            })
+            .catch(function(err) {
+                status.textContent = 'Transcribe error: ' + err + ' — paste script manually';
+                status.style.color = '#e07070';
+            });
+    }
+    function resetDiagramsAudio() {
+        var d = diagramsList[activeDiagramIdx];
+        diagramsAudioFile = null;
+        document.getElementById('diagramsAudioPlayer').src = '';
+        document.getElementById('diagramsAudioPreview').style.display = 'none';
+        document.getElementById('diagramsAudioDropZone').style.display = 'block';
+        document.getElementById('diagramsAudioInput').value = '';
+        if (d) { d.audioUrl = ''; d.audioName = ''; d.audioDuration = ''; }
+        renderSidebar();
+    }
+
+    function dataUrlToBlob(dataUrl) {
+        var parts = dataUrl.split(',');
+        var mime = (parts[0].match(/data:(.*?);/) || [])[1] || 'image/png';
+        var bin = atob(parts[1]);
+        var arr = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        return new Blob([arr], { type: mime });
+    }
+
+    function renderDiagram() {
+        var d = diagramsList[activeDiagramIdx];
+        if (!d) return;
+        if (!d.imageUrl && !document.getElementById('diagramsImage').src) { alert('Upload an image first.'); return; }
+        if (diagramBoxes.length === 0) { alert('Draw at least one box on the image (click & drag).'); return; }
+        if (!d.audioUrl) { alert('Wait for audio upload to finish, or upload an audio clip.'); return; }
+        return _renderActiveDiagram();
+    }
+
+    function _renderActiveDiagram() {
+        var d = diagramsList[activeDiagramIdx];
+        if (!d) return Promise.resolve(null);
+        var btn = document.getElementById('diagramsRenderBtn');
+        var btnAll = document.getElementById('diagramsRenderAllBtn');
+        var status = document.getElementById('diagramsRenderStatus');
+
+        btn.disabled = true; btnAll.disabled = true;
+        btn.style.opacity = '0.5'; btnAll.style.opacity = '0.5';
+        status.style.color = '#f5b942';
+        status.textContent = 'Saving…';
+
+        // 1) Flush boxes + script to server, then 2) render against diagram_id
+        if (_patchTimer) { clearTimeout(_patchTimer); _patchTimer = null; }
+        var save = _apiPatch(d.id, { boxes: diagramBoxes, script: document.getElementById('diagramsScript').value });
+        var t0 = Date.now();
+        return save
+            .then(function() {
+                d.boxes = diagramBoxes.slice();
+                d.script = document.getElementById('diagramsScript').value;
+                status.textContent = 'Rendering…';
+                var fd = new FormData();
+                fd.append('diagram_id', d.id);
+                return fetch('/api/diagrams/render', { method: 'POST', body: fd });
+            })
+            .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, body: j }; }); })
+            .then(function(res) {
+                if (!res.ok) {
+                    status.style.color = '#e07070';
+                    status.textContent = 'Render failed: ' + (res.body.error || 'unknown');
+                    console.error('render error', res.body);
+                    return null;
+                }
+                var dt = ((Date.now() - t0) / 1000).toFixed(1);
+                status.style.color = '#4caf50';
+                status.textContent = 'Rendered in ' + dt + 's';
+                d.resultUrl = res.body.url;
+                d.resultMeta = res.body;
+                showDiagramResult(res.body);
+                renderSidebar();
+                return res.body;
+            })
+            .catch(function(err) {
+                status.style.color = '#e07070';
+                status.textContent = 'Render error: ' + err;
+                return null;
+            })
+            .finally(function() {
+                btn.disabled = false; btnAll.disabled = false;
+                btn.style.opacity = '1'; btnAll.style.opacity = '1';
+            });
+    }
+
+    function showDiagramResult(meta) {
+        var box = document.getElementById('diagramsResult');
+        var vid = document.getElementById('diagramsResultVideo');
+        var dl = document.getElementById('diagramsResultDownload');
+        var m = document.getElementById('diagramsResultMeta');
+        // cache-bust so re-renders refresh the video
+        var bust = meta.url + (meta.url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now();
+        vid.src = bust;
+        dl.href = meta.url;
+        var sz = meta.size ? (meta.size[0] + '×' + meta.size[1]) : '';
+        var alignLabel = meta.alignment === 'ai_aligned' ? 'AI-aligned' : 'Time-distributed';
+        m.textContent = alignLabel + ' · ' + meta.duration + 's · ' + meta.boxes + ' reveals · ' + sz + ' · reveals at ' + (meta.reveal_times || []).map(function(t){return t+'s';}).join(', ');
+        box.style.display = 'block';
+        box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function hideDiagramResult() {
+        document.getElementById('diagramsResult').style.display = 'none';
+        document.getElementById('diagramsResultVideo').src = '';
+    }
+
+    function renderAllDiagrams() {
+        var ready = [];
+        diagramsList.forEach(function(d, i) {
+            var liveBoxes = (i === activeDiagramIdx) ? diagramBoxes.length : (d.boxes ? d.boxes.length : 0);
+            if (d.imageUrl && liveBoxes > 0 && d.audioUrl) ready.push(i);
+        });
+        if (ready.length === 0) {
+            alert('No diagrams are fully set up. Each needs: image + ≥1 box + audio.');
+            return;
+        }
+        var status = document.getElementById('diagramsRenderStatus');
+        var i = 0;
+        function next() {
+            if (i >= ready.length) {
+                status.style.color = '#4caf50';
+                status.textContent = 'Rendered ' + ready.length + ' diagrams.';
+                return;
+            }
+            var idx = ready[i];
+            saveActiveDiagramState();
+            activeDiagramIdx = idx;
+            renderSidebar();
+            loadDiagram(idx);
+            status.style.color = '#f5b942';
+            status.textContent = 'Rendering ' + (i+1) + '/' + ready.length + '…';
+            _renderActiveDiagram().then(function() { i++; next(); });
+        }
+        next();
     }
     </script>
     <script>
