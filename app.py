@@ -2925,9 +2925,9 @@ def diagrams_render():
             for i in range(N):
                 if ai_times[i] is None:
                     ai_times[i] = even_times[i]
-            # 0.12s lead — between the 0.15s that felt early and the 0.08s that felt
-            # slightly late, especially with eased slide motion.
-            lead = 0.12 if alignment_mode == "whisper_aligned" else 0.0
+            # 0.18s lead — with eased slide motion the perceived arrival lags the
+            # motion onset by ~half the slide duration, so we lean a touch earlier.
+            lead = 0.18 if alignment_mode == "whisper_aligned" else 0.0
             for i in range(N):
                 ai_times[i] = max(0.3, float(ai_times[i]) - lead)
             # Clamp + enforce strictly increasing (min step 0.25s)
@@ -3007,15 +3007,18 @@ def diagrams_render():
             return segs
 
         # Legacy alias: pre-merge "*_fade" variants now resolve to the base direction
-        # (which carries fade by default).
+        # (which carries fade by default). Zoom is temporarily stubbed to fade —
+        # ffmpeg's scale=eval=frame can't produce variable output dims, needs a
+        # pre-rendered intro-clip approach (TODO).
         LEGACY_ANIM_MAP = {
             "from_right_fade": "from_right",
             "from_left_fade": "from_left",
             "from_above_fade": "from_above",
             "from_below_fade": "from_below",
+            "zoom_in": "fade",
+            "zoom_out": "fade",
         }
-        valid_anims = {"fade", "from_right", "from_left", "from_above", "from_below",
-                       "zoom_in", "zoom_out"}
+        valid_anims = {"fade", "from_right", "from_left", "from_above", "from_below"}
         filter_parts = []
         last_label = "[0:v]"
         for i, ((bx, by, bw, bh), t) in enumerate(zip(box_rects, times)):
