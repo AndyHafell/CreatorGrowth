@@ -244,6 +244,12 @@ def init_db():
         conn.execute("ALTER TABLE chapters ADD COLUMN numbering TEXT NOT NULL DEFAULT 'none'")
     except sqlite3.OperationalError:
         pass
+    # Migration: add manual layout overrides (auto-fit when 'auto')
+    for col, default in [("box_size", "auto"), ("text_size", "auto"), ("wrap_mode", "off")]:
+        try:
+            conn.execute(f"ALTER TABLE chapters ADD COLUMN {col} TEXT NOT NULL DEFAULT '{default}'")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
@@ -3538,6 +3544,11 @@ def _chapter_row_to_dict(row):
     return d
 
 
+_CS_BOX_VALUES = {"auto", "70", "80", "90", "95", "100"}
+_CS_TEXT_VALUES = {"auto", "40", "50", "60", "70", "80", "90", "100"}
+_CS_WRAP_VALUES = {"off", "on"}
+
+
 @app.route("/api/videos/<int:vid>/chapter", methods=["GET"])
 def chapter_get(vid):
     conn = get_db()
@@ -3545,7 +3556,11 @@ def chapter_get(vid):
     row = conn.execute("SELECT * FROM chapters WHERE video_id=?", (vid,)).fetchone()
     conn.close()
     if not row:
-        return jsonify({"video_id": vid, "items": [], "style": "blue_glass", "numbering": "none", "result_zip_url": None})
+        return jsonify({
+            "video_id": vid, "items": [], "style": "blue_glass", "numbering": "none",
+            "box_size": "auto", "text_size": "auto", "wrap_mode": "off",
+            "result_zip_url": None,
+        })
     return jsonify(_chapter_row_to_dict(row))
 
 
@@ -3562,17 +3577,26 @@ def chapter_put(vid):
     numbering = (payload.get("numbering") or "none")
     if numbering not in ("none", "number", "step"):
         numbering = "none"
+    box_size = (payload.get("box_size") or "auto")
+    if box_size not in _CS_BOX_VALUES: box_size = "auto"
+    text_size = (payload.get("text_size") or "auto")
+    if text_size not in _CS_TEXT_VALUES: text_size = "auto"
+    wrap_mode = (payload.get("wrap_mode") or "off")
+    if wrap_mode not in _CS_WRAP_VALUES: wrap_mode = "off"
     now = datetime.now(timezone.utc).isoformat()
     conn = get_db()
     conn.execute(
-        """INSERT INTO chapters (video_id, items_json, style, numbering, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)
+        """INSERT INTO chapters (video_id, items_json, style, numbering, box_size, text_size, wrap_mode, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(video_id) DO UPDATE SET
              items_json=excluded.items_json,
              style=excluded.style,
              numbering=excluded.numbering,
+             box_size=excluded.box_size,
+             text_size=excluded.text_size,
+             wrap_mode=excluded.wrap_mode,
              updated_at=excluded.updated_at""",
-        (vid, json.dumps(items), style, numbering, now, now)
+        (vid, json.dumps(items), style, numbering, box_size, text_size, wrap_mode, now, now)
     )
     conn.commit()
     conn.row_factory = sqlite3.Row

@@ -2042,6 +2042,40 @@
                     </select>
                 </div>
 
+                <div style="display:flex; gap:8px;">
+                    <div style="flex:1; display:flex; flex-direction:column; gap:6px;">
+                        <div style="color:#666; font-size:10px; letter-spacing:2px;">BOX SIZE</div>
+                        <select id="csBoxSize" onchange="csOnLayoutChange()" style="background:#0a0a14; border:1px solid #2a2a4a; color:#ddd; padding:8px; border-radius:4px; font-size:12px;">
+                            <option value="auto">Auto</option>
+                            <option value="70">70%</option>
+                            <option value="80">80%</option>
+                            <option value="90">90%</option>
+                            <option value="95">95%</option>
+                            <option value="100">100%</option>
+                        </select>
+                    </div>
+                    <div style="flex:1; display:flex; flex-direction:column; gap:6px;">
+                        <div style="color:#666; font-size:10px; letter-spacing:2px;">TEXT SIZE</div>
+                        <select id="csTextSize" onchange="csOnLayoutChange()" style="background:#0a0a14; border:1px solid #2a2a4a; color:#ddd; padding:8px; border-radius:4px; font-size:12px;">
+                            <option value="auto">Auto</option>
+                            <option value="40">40 px</option>
+                            <option value="50">50 px</option>
+                            <option value="60">60 px</option>
+                            <option value="70">70 px</option>
+                            <option value="80">80 px</option>
+                            <option value="90">90 px</option>
+                            <option value="100">100 px</option>
+                        </select>
+                    </div>
+                    <div style="flex:1; display:flex; flex-direction:column; gap:6px;">
+                        <div style="color:#666; font-size:10px; letter-spacing:2px;">WRAP</div>
+                        <select id="csWrapMode" onchange="csOnLayoutChange()" style="background:#0a0a14; border:1px solid #2a2a4a; color:#ddd; padding:8px; border-radius:4px; font-size:12px;">
+                            <option value="off">Off (single line)</option>
+                            <option value="on">On (allow wrap)</option>
+                        </select>
+                    </div>
+                </div>
+
                 <div style="border-top:1px solid #1f1f30; padding-top:14px;">
                     <button id="csRenderBtn" onclick="csRenderClips()" style="background:#5b9bd5; color:#000; border:none; border-radius:6px; padding:12px 18px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer; width:100%;">RENDER <span id="csRenderCount">0</span> CLIPS</button>
                     <div id="csRenderStatus" style="color:#555; font-size:11px; margin-top:8px;"></div>
@@ -2141,7 +2175,7 @@
         }
         .cs-style-blue-glass .cs-card {
             position: relative;
-            width: min(86%, 1660px);
+            width: var(--cs-card-width, min(86%, 1660px));
             background: linear-gradient(165deg, #c4ebff 0%, #7cc2ff 60%, #5aa8ee 100%);
             border-radius: 36px;
             padding: 60px 80px;
@@ -2162,7 +2196,7 @@
         }
         .cs-style-blue-glass .cs-items > li {
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             gap: 30px;
             font-size: var(--cs-fontsize);
             font-weight: 900;
@@ -2171,8 +2205,10 @@
             color: #0d2a8a;
             text-transform: uppercase;
             text-shadow: 0 1px 0 rgba(255,255,255,0.3);
-            white-space: nowrap;
+            white-space: var(--cs-wrap, nowrap);
         }
+        .cs-style-blue-glass .cs-items > li .cs-text { flex: 1 1 auto; min-width: 0; }
+        .cs-style-blue-glass .cs-items > li .cs-dot { margin-top: 0.32em; }
         .cs-style-blue-glass .cs-items > li.cs-blur {
             filter: blur(14px);
         }
@@ -6173,7 +6209,10 @@
 
 
     // ─── CHAPTER STUDIO: list-driven preview + render ────────────────────────
-    var csState = { items: [], style: 'blue_glass', numbering: 'none' };
+    var csState = {
+        items: [], style: 'blue_glass', numbering: 'none',
+        box_size: 'auto', text_size: 'auto', wrap_mode: 'off',
+    };
 
     function csPrefix(i) {
         // i is 0-indexed item position
@@ -6187,39 +6226,56 @@
     // (b) all N items stack vertically inside the card's content height.
     // Returns { fontPx, gapPx } for the canvas state.
     var _csMeasureCanvas = null;
+    function csCardWidthPx() {
+        // Card width in CSS pixels of the 1920px canvas.
+        if (csState.box_size && csState.box_size !== 'auto') {
+            return 1920 * (parseInt(csState.box_size, 10) / 100);
+        }
+        return Math.min(1660, 1920 * 0.86); // default
+    }
     function csComputeFit(items) {
+        // If user picked a fixed text size, just return it (no measurement).
+        if (csState.text_size && csState.text_size !== 'auto') {
+            var fixed = parseInt(csState.text_size, 10);
+            return { fontPx: fixed, gapPx: Math.max(14, Math.min(60, Math.round(fixed * 0.55))) };
+        }
         if (!_csMeasureCanvas) _csMeasureCanvas = document.createElement('canvas');
         var ctx = _csMeasureCanvas.getContext('2d');
-        // Capture-target dimensions (1920×1080) and card geometry from the CSS above:
-        //   card width = min(86%, 1660px) → assume 1660 ceiling
-        //   horizontal padding = 80px each side
-        //   dot width + flex gap = 28 + 30 = 58px
-        var cardW = Math.min(1660, 1920 * 0.86);
-        var contentW = cardW - 80 * 2 - (28 + 30);   // text-available width
-        var cardMaxH = 1080 - 90 * 2;                // page padding ~90 top/bottom
-        var contentH = cardMaxH - 60 * 2;            // card vertical padding
+        var cardW = csCardWidthPx();
+        var contentW = cardW - 80 * 2 - (28 + 30);   // pad + dot + gap
+        var cardMaxH = 1080 - 90 * 2;
+        var contentH = cardMaxH - 60 * 2;
 
-        // Longest line text (uppercased to match CSS text-transform)
         var rendered = items.map(function(t, i) { return (csPrefix(i) + (t || '')).toUpperCase(); });
         var longest = rendered.reduce(function(a, b) { return b.length > a.length ? b : a; }, '');
 
-        // Use canvas to measure: bold 900 Montserrat at ref size, scale
         var ref = 80;
         ctx.font = '900 ' + ref + 'px Montserrat, "Helvetica Neue", sans-serif';
         var measured = Math.max(1, ctx.measureText(longest).width);
-        var widthLimited = (contentW / measured) * ref;
 
-        // Vertical fit: each row height ≈ font × 1.05 (line-height), gap ≈ font × 0.55
+        // When wrap is allowed, don't constrain by width — let lines wrap.
+        var widthLimited = (csState.wrap_mode === 'on')
+            ? 80
+            : (contentW / measured) * ref;
+
         var N = items.length || 1;
-        // total = N*font*1.05 + (N-1)*font*0.55 = font * (1.6N - 0.55)
         var rowFactor = 1.6 * N - 0.55;
         var heightLimited = contentH / Math.max(0.5, rowFactor);
 
         var fontPx = Math.min(widthLimited, heightLimited, 80);
         fontPx = Math.max(32, fontPx);
-        // Gap scales with font for visual rhythm
         var gapPx = Math.max(14, Math.min(50, fontPx * 0.55));
         return { fontPx: Math.round(fontPx), gapPx: Math.round(gapPx) };
+    }
+    function csApplyLayout(targetEl) {
+        // Set --cs-card-width and --cs-wrap on the .cs-style-* container.
+        var bs = csState.box_size;
+        if (bs && bs !== 'auto') {
+            targetEl.style.setProperty('--cs-card-width', bs + '%');
+        } else {
+            targetEl.style.setProperty('--cs-card-width', 'min(86%, 1660px)');
+        }
+        targetEl.style.setProperty('--cs-wrap', csState.wrap_mode === 'on' ? 'normal' : 'nowrap');
     }
     var _csSaveTimer = null;
     var _csVid = null;
@@ -6252,14 +6308,23 @@
             csState.items = Array.isArray(d.items) ? d.items.slice() : [];
             csState.style = d.style || 'blue_glass';
             csState.numbering = d.numbering || 'none';
+            csState.box_size = d.box_size || 'auto';
+            csState.text_size = d.text_size || 'auto';
+            csState.wrap_mode = d.wrap_mode || 'off';
         } catch (e) {
             csState.items = [];
             csState.style = 'blue_glass';
             csState.numbering = 'none';
+            csState.box_size = 'auto';
+            csState.text_size = 'auto';
+            csState.wrap_mode = 'off';
         }
         if (csState.items.length === 0) csState.items = ['', ''];
         document.getElementById('csStyle').value = csState.style;
         document.getElementById('csNumbering').value = csState.numbering;
+        document.getElementById('csBoxSize').value = csState.box_size;
+        document.getElementById('csTextSize').value = csState.text_size;
+        document.getElementById('csWrapMode').value = csState.wrap_mode;
         csRenderList();
         csRenderPreview();
         csSetStatus('', '#555');
@@ -6267,6 +6332,12 @@
         window.addEventListener('resize', csRescalePreview);
         // First scale
         setTimeout(csRescalePreview, 0);
+        // Re-fit once Montserrat 900 has loaded — initial measure uses fallback metrics otherwise.
+        if (document.fonts && document.fonts.load) {
+            document.fonts.load('900 80px Montserrat').then(function() {
+                csRenderPreview();
+            }).catch(function() {});
+        }
     }
 
     function closeChaptersStudio() {
@@ -6410,11 +6481,12 @@
             li.appendChild(t);
             ul.appendChild(li);
         });
-        // Auto-fit font + gap so the longest line fits without wrapping
+        // Auto-fit font + gap (or use manual override)
         var fit = csComputeFit(visible);
         var preview = document.getElementById('csPreview');
         preview.style.setProperty('--cs-fontsize', fit.fontPx + 'px');
         preview.style.setProperty('--cs-gap', fit.gapPx + 'px');
+        csApplyLayout(preview);
     }
 
     function csAddRow() {
@@ -6437,6 +6509,13 @@
         csRenderPreview();
         csScheduleSave();
     }
+    function csOnLayoutChange() {
+        csState.box_size = document.getElementById('csBoxSize').value || 'auto';
+        csState.text_size = document.getElementById('csTextSize').value || 'auto';
+        csState.wrap_mode = document.getElementById('csWrapMode').value || 'off';
+        csRenderPreview();
+        csScheduleSave();
+    }
 
     function csScheduleSave() {
         if (_csSaveTimer) clearTimeout(_csSaveTimer);
@@ -6450,7 +6529,14 @@
             await fetch('/api/videos/' + _csVid + '/chapter', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ items: csState.items, style: csState.style, numbering: csState.numbering }),
+                body: JSON.stringify({
+                    items: csState.items,
+                    style: csState.style,
+                    numbering: csState.numbering,
+                    box_size: csState.box_size,
+                    text_size: csState.text_size,
+                    wrap_mode: csState.wrap_mode,
+                }),
             });
             csSetStatus('Saved', '#4caf50');
             setTimeout(function() { csSetStatus('', '#555'); }, 1200);
@@ -6507,6 +6593,7 @@
         var fit = csComputeFit(items);
         cap.style.setProperty('--cs-fontsize', fit.fontPx + 'px');
         cap.style.setProperty('--cs-gap', fit.gapPx + 'px');
+        csApplyLayout(cap);
 
         var capUl = document.getElementById('csCaptureItems');
         capUl.innerHTML = '';
