@@ -1982,7 +1982,7 @@
 
             <!-- Right panel: per-box animation pickers -->
             <div id="diagramsRightPanel" style="width:270px; background:#0d0d1a; border-left:1px solid #1f1f30; padding:14px 12px; overflow-y:auto;">
-                <div style="color:#444; font-size:10px; letter-spacing:1.5px; padding:0 4px 8px;">BOX ANIMATIONS</div>
+                <div id="diagramsBoxAnimTitle" style="color:#444; font-size:10px; letter-spacing:1.5px; padding:0 4px 8px;">BOX ANIMATIONS</div>
                 <div id="diagramsBoxList"></div>
                 <div style="color:#333; font-size:10px; padding:10px 4px 2px; border-top:1px solid #1f1f30; margin-top:8px; letter-spacing:0.3px; line-height:1.5;">
                     click row to select, then press:<br>
@@ -4887,6 +4887,8 @@
         btn.style.color = isSlideshow ? '#000' : '#888';
         btn.style.borderColor = isSlideshow ? '#f5b942' : '#2a2a4a';
         btn.style.fontWeight = isSlideshow ? '700' : '400';
+        var title = document.getElementById('diagramsBoxAnimTitle');
+        if (title) title.textContent = isSlideshow ? 'SLIDE ANIMATIONS' : 'BOX ANIMATIONS';
     }
     function _apiPatch(id, body) {
         return fetch('/api/diagrams/' + id, {

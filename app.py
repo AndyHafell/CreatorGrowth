@@ -2302,6 +2302,41 @@ def _ring_median_color(img, x, y, w, h, pad=8, ring=24):
     return (rs[m], gs[m], bs[m])
 
 
+def _despeckle_stars(crop, bg_color, luma_threshold=110, radius=3, dark_ratio=0.80):
+    """Remove isolated bright pixels (stars) from a box crop. A pixel is considered
+    a 'star' if it's brighter than luma_threshold AND most of its neighbors are dark.
+    Replaces star pixels with bg_color. Used for slideshow slides where the crop is
+    scaled up — stars would otherwise become very visible dots."""
+    W, H = crop.size
+    src = crop.load()
+    out = crop.copy()
+    dst = out.load()
+    # Build a luma map first (faster than recomputing for each pixel's neighbors)
+    luma = [[0] * H for _ in range(W)]
+    for y in range(H):
+        for x in range(W):
+            p = src[x, y]
+            luma[x][y] = 0.3 * p[0] + 0.6 * p[1] + 0.1 * p[2]
+    for y in range(H):
+        for x in range(W):
+            if luma[x][y] < luma_threshold:
+                continue
+            dark = 0; total = 0
+            for dy in range(-radius, radius + 1):
+                ny = y + dy
+                if ny < 0 or ny >= H: continue
+                for dx in range(-radius, radius + 1):
+                    if dx == 0 and dy == 0: continue
+                    nx = x + dx
+                    if nx < 0 or nx >= W: continue
+                    if luma[nx][ny] < 60:
+                        dark += 1
+                    total += 1
+            if total > 0 and (dark / total) >= dark_ratio:
+                dst[x, y] = bg_color
+    return out
+
+
 def _corner_bg_color(img, patch=40):
     """Median RGB sampled from the 4 corner patches — global background guess."""
     px = img.load()
@@ -3133,6 +3168,9 @@ def diagrams_render():
             else:
                 # SLIDESHOW: the box content becomes a full 16:9 slide.
                 box_crop = img.crop((x, y, x + w, y + h))
+                # Remove isolated bright pixels (stars) before upscaling — otherwise
+                # a 1-2px star becomes a 5-10px dot in the slide.
+                box_crop = _despeckle_stars(box_crop, canvas_bg_color)
                 margin = 0.85   # leave 15% breathing room
                 sx_ = (canvas_w * margin) / w
                 sy_ = (H * margin) / h   # vertical center within the content area (top H of canvas)
