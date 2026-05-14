@@ -6231,12 +6231,13 @@
         csState.items.forEach(function(txt, i) {
             var row = document.createElement('div');
             row.className = 'cs-row';
-            row.draggable = true;
             row.dataset.idx = String(i);
 
             var handle = document.createElement('span');
             handle.className = 'cs-handle';
             handle.textContent = '≡';
+            handle.draggable = true;
+            handle.title = 'Drag to reorder';
             row.appendChild(handle);
 
             var num = document.createElement('span');
@@ -6290,13 +6291,13 @@
             };
             row.appendChild(del);
 
-            // Drag reorder
-            row.ondragstart = function(e) {
+            // Drag reorder — only the ≡ handle is draggable; row is the drop target.
+            handle.ondragstart = function(e) {
                 e.dataTransfer.setData('text/plain', String(i));
                 e.dataTransfer.effectAllowed = 'move';
                 row.style.opacity = '0.4';
             };
-            row.ondragend = function() { row.style.opacity = '1'; };
+            handle.ondragend = function() { row.style.opacity = '1'; };
             row.ondragover = function(e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; };
             row.ondrop = function(e) {
                 e.preventDefault();
