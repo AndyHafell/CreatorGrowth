@@ -1907,13 +1907,26 @@
                                  onmousemove="boxLayerMove(event)"
                                  onmouseup="boxLayerUp(event)"
                                  onmouseleave="boxLayerUp(event)"></div>
+                            <div id="diagramsCropOverlay" style="display:none; position:absolute; inset:0; pointer-events:none;">
+                                <div id="diagramsCropDimT"></div>
+                                <div id="diagramsCropDimB"></div>
+                                <div id="diagramsCropDimL"></div>
+                                <div id="diagramsCropDimR"></div>
+                                <div id="diagramsCropSel"></div>
+                            </div>
                         </div>
-                        <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                        <div id="diagramsBoxToolbar" style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                             <button onclick="resetDiagramsImage()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Replace image</button>
+                            <button onclick="enterCropMode()" style="background:none; border:1px solid #2a2a4a; color:#f5b942; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Crop region (16:9)</button>
                             <button onclick="undoLastBox()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Undo last box</button>
                             <button onclick="clearBoxes()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Clear boxes</button>
                             <span id="diagramsBoxCount" style="color:#f5b942; font-size:11px; letter-spacing:0.5px;">0 boxes</span>
                             <span style="color:#444; font-size:11px;">&middot; drag to draw &middot; right-click box to delete</span>
+                        </div>
+                        <div id="diagramsCropToolbar" style="display:none; margin-top:10px; gap:10px; align-items:center; flex-wrap:wrap;">
+                            <button onclick="applyCrop()" style="background:#f5b942; color:#000; border:none; border-radius:4px; padding:6px 14px; font-size:11px; font-weight:700; letter-spacing:0.5px; cursor:pointer;">Apply crop</button>
+                            <button onclick="exitCropMode()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Cancel</button>
+                            <span style="color:#888; font-size:11px;">Drag to select &middot; 16:9 locked &middot; existing boxes will be cleared</span>
                         </div>
                     </div>
                 </div>
@@ -5115,12 +5128,107 @@
         renderSidebar();
     }
 
-    // ---- box drawing ----
+    // ---- box drawing + crop mode ----
     var diagramBoxes = []; // [{x,y,w,h}] in fractions of image displayed size
     var diagramDragStart = null;
     var diagramActiveEl = null;
+    var diagramCropMode = false;
+    var diagramCropStart = null;
+    var diagramCropRect = null; // displayed-px coords {x,y,w,h}
+
+    function enterCropMode() {
+        var img = document.getElementById('diagramsImage');
+        if (!img.src) { alert('Upload an image first.'); return; }
+        diagramCropMode = true;
+        var layer = document.getElementById('diagramsBoxLayer');
+        Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.style.display = 'none'; });
+        document.getElementById('diagramsCropOverlay').style.display = 'block';
+        document.getElementById('diagramsBoxToolbar').style.display = 'none';
+        document.getElementById('diagramsCropToolbar').style.display = 'flex';
+        // initial selection: centered 16:9 at 80% width
+        var r = layer.getBoundingClientRect();
+        var w = r.width * 0.8;
+        var h = w * 9 / 16;
+        if (h > r.height * 0.9) { h = r.height * 0.9; w = h * 16 / 9; }
+        updateCropRect((r.width - w) / 2, (r.height - h) / 2, w, h);
+    }
+    function exitCropMode() {
+        diagramCropMode = false;
+        diagramCropStart = null;
+        var layer = document.getElementById('diagramsBoxLayer');
+        Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.style.display = 'block'; });
+        document.getElementById('diagramsCropOverlay').style.display = 'none';
+        document.getElementById('diagramsBoxToolbar').style.display = 'flex';
+        document.getElementById('diagramsCropToolbar').style.display = 'none';
+    }
+    function updateCropRect(x, y, w, h) {
+        var layer = document.getElementById('diagramsBoxLayer');
+        var r = layer.getBoundingClientRect();
+        // Clamp position keeping 16:9: shrink uniformly if outside
+        if (w > r.width) { w = r.width; h = w * 9 / 16; }
+        if (h > r.height) { h = r.height; w = h * 16 / 9; }
+        x = Math.max(0, Math.min(r.width - w, x));
+        y = Math.max(0, Math.min(r.height - h, y));
+        diagramCropRect = { x: x, y: y, w: w, h: h };
+        var dim = 'background:rgba(0,0,0,0.55); position:absolute; pointer-events:none;';
+        document.getElementById('diagramsCropDimT').style.cssText = dim + 'left:0; top:0; width:100%; height:' + y + 'px;';
+        document.getElementById('diagramsCropDimB').style.cssText = dim + 'left:0; top:' + (y + h) + 'px; right:0; bottom:0;';
+        document.getElementById('diagramsCropDimL').style.cssText = dim + 'left:0; top:' + y + 'px; width:' + x + 'px; height:' + h + 'px;';
+        document.getElementById('diagramsCropDimR').style.cssText = dim + 'left:' + (x + w) + 'px; top:' + y + 'px; right:0; height:' + h + 'px;';
+        document.getElementById('diagramsCropSel').style.cssText =
+            'position:absolute; left:' + x + 'px; top:' + y + 'px; width:' + w + 'px; height:' + h + 'px; ' +
+            'border:2px dashed #f5b942; box-shadow:0 0 0 1px rgba(0,0,0,0.5); box-sizing:border-box; pointer-events:none;';
+    }
+    function applyCrop() {
+        if (!diagramCropRect || diagramCropRect.w < 12 || diagramCropRect.h < 12) {
+            alert('Selection too small.'); return;
+        }
+        var d = diagramsList[activeDiagramIdx];
+        if (!d) return;
+        var img = document.getElementById('diagramsImage');
+        var layer = document.getElementById('diagramsBoxLayer');
+        var r = layer.getBoundingClientRect();
+        var scaleX = img.naturalWidth / r.width;
+        var scaleY = img.naturalHeight / r.height;
+        var sx = Math.round(diagramCropRect.x * scaleX);
+        var sy = Math.round(diagramCropRect.y * scaleY);
+        var sw = Math.round(diagramCropRect.w * scaleX);
+        var sh = Math.round(diagramCropRect.h * scaleY);
+        sw -= sw % 2; sh -= sh % 2;
+        var canvas = document.createElement('canvas');
+        canvas.width = sw; canvas.height = sh;
+        var ctx = canvas.getContext('2d');
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+        setStudioStatus('Saving cropped image…', '#f5b942');
+        canvas.toBlob(function(blob) {
+            var fd = new FormData();
+            fd.append('image', blob, 'cropped.png');
+            fetch('/api/diagrams/' + d.id + '/image', { method: 'POST', body: fd })
+                .then(function(resp) { return resp.json().then(function(j) { return {ok: resp.ok, body: j}; }); })
+                .then(function(res) {
+                    if (!res.ok) { setStudioStatus('Crop save failed', '#e07070'); return; }
+                    d.imageUrl = res.body.image_path_url;
+                    d.boxes = [];
+                    _apiPatch(d.id, { boxes: [] }).catch(function() {});
+                    document.getElementById('diagramsImage').src = res.body.image_path_url + '?t=' + Date.now();
+                    clearBoxes();
+                    exitCropMode();
+                    setStudioStatus('Saved', '#4caf50');
+                    renderSidebar();
+                })
+                .catch(function() { setStudioStatus('Crop upload error', '#e07070'); });
+        }, 'image/png');
+    }
 
     function boxLayerDown(e) {
+        if (diagramCropMode) {
+            var layer = document.getElementById('diagramsBoxLayer');
+            var r = layer.getBoundingClientRect();
+            diagramCropStart = { x: e.clientX - r.left, y: e.clientY - r.top };
+            updateCropRect(diagramCropStart.x, diagramCropStart.y, 0, 0);
+            e.preventDefault();
+            return;
+        }
         var layer = document.getElementById('diagramsBoxLayer');
         var r = layer.getBoundingClientRect();
         diagramDragStart = { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height };
@@ -5134,6 +5242,24 @@
         e.preventDefault();
     }
     function boxLayerMove(e) {
+        if (diagramCropMode) {
+            if (!diagramCropStart) return;
+            var layer = document.getElementById('diagramsBoxLayer');
+            var r = layer.getBoundingClientRect();
+            var cx = e.clientX - r.left, cy = e.clientY - r.top;
+            cx = Math.max(0, Math.min(cx, r.width));
+            cy = Math.max(0, Math.min(cy, r.height));
+            var sx = diagramCropStart.x, sy = diagramCropStart.y;
+            var dx = cx - sx, dy = cy - sy;
+            var sw = Math.abs(dx);
+            var sh = sw * 9 / 16;
+            if (sh > r.height) { sh = r.height; sw = sh * 16 / 9; }
+            if (sw > r.width) { sw = r.width; sh = sw * 9 / 16; }
+            var nx = dx >= 0 ? sx : sx - sw;
+            var ny = dy >= 0 ? sy : sy - sh;
+            updateCropRect(nx, ny, sw, sh);
+            return;
+        }
         if (!diagramDragStart || !diagramActiveEl) return;
         var layer = document.getElementById('diagramsBoxLayer');
         var r = layer.getBoundingClientRect();
@@ -5148,6 +5274,10 @@
         diagramActiveEl.style.height = h + 'px';
     }
     function boxLayerUp(e) {
+        if (diagramCropMode) {
+            diagramCropStart = null;
+            return;
+        }
         if (!diagramDragStart || !diagramActiveEl) return;
         var rect = diagramActiveEl.getBoundingClientRect();
         var layer = document.getElementById('diagramsBoxLayer');
