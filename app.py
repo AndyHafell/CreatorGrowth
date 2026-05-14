@@ -2264,31 +2264,46 @@ def twitter_feed():
     return jsonify([dict(r) for r in rows])
 
 
-def _ring_avg_color(img, x, y, w, h, ring=12):
-    """Average RGB of pixels in a ring just outside the box rect — used to
-    fill the masked area with the actual local background color instead of black."""
+def _ring_median_color(img, x, y, w, h, pad=8, ring=24):
+    """Median RGB of pixels in an annulus around the box (pad outside, ring wide).
+    Median resists outliers like the bright text/borders adjacent to box edges that
+    would otherwise pull a mean toward foreground colors."""
     px = img.load()
     W, H = img.size
-    samples = []
-    for yy in range(max(0, y - ring), y):
-        for xx in range(max(0, x - ring), min(W, x + w + ring)):
-            samples.append(px[xx, yy])
-    for yy in range(min(H, y + h), min(H, y + h + ring)):
-        for xx in range(max(0, x - ring), min(W, x + w + ring)):
-            samples.append(px[xx, yy])
-    for xx in range(max(0, x - ring), x):
-        for yy in range(y, min(H, y + h)):
-            samples.append(px[xx, yy])
-    for xx in range(min(W, x + w), min(W, x + w + ring)):
-        for yy in range(y, min(H, y + h)):
-            samples.append(px[xx, yy])
-    if not samples:
+    ox1 = max(0, x - pad - ring); oy1 = max(0, y - pad - ring)
+    ox2 = min(W, x + w + pad + ring); oy2 = min(H, y + h + pad + ring)
+    ix1 = max(0, x - pad); iy1 = max(0, y - pad)
+    ix2 = min(W, x + w + pad); iy2 = min(H, y + h + pad)
+    rs = []; gs = []; bs = []
+    for yy in range(oy1, oy2):
+        in_inner_y = iy1 <= yy < iy2
+        for xx in range(ox1, ox2):
+            if in_inner_y and ix1 <= xx < ix2:
+                continue
+            p = px[xx, yy]
+            rs.append(p[0]); gs.append(p[1]); bs.append(p[2])
+    if not rs:
         return (8, 8, 18)
-    n = len(samples)
-    r = sum(p[0] for p in samples) // n
-    g = sum(p[1] for p in samples) // n
-    b = sum(p[2] for p in samples) // n
-    return (r, g, b)
+    rs.sort(); gs.sort(); bs.sort()
+    m = len(rs) // 2
+    return (rs[m], gs[m], bs[m])
+
+
+def _corner_bg_color(img, patch=40):
+    """Median RGB sampled from the 4 corner patches — global background guess."""
+    px = img.load()
+    W, H = img.size
+    rs = []; gs = []; bs = []
+    for (cx, cy) in ((0, 0), (W - patch, 0), (0, H - patch), (W - patch, H - patch)):
+        for yy in range(max(0, cy), min(H, cy + patch)):
+            for xx in range(max(0, cx), min(W, cx + patch)):
+                p = px[xx, yy]
+                rs.append(p[0]); gs.append(p[1]); bs.append(p[2])
+    if not rs:
+        return (8, 8, 18)
+    rs.sort(); gs.sort(); bs.sort()
+    m = len(rs) // 2
+    return (rs[m], gs[m], bs[m])
 
 
 def _gemini_align_boxes(image_with_boxes_bytes, audio_bytes, audio_mime, transcript, n_boxes, duration):
@@ -2661,14 +2676,21 @@ def diagrams_render():
         N = len(box_rects)
 
         # Background = image with each box filled with the LOCAL background color
-        # (sampled from a ring just outside the box) so the masked area blends in.
+        # (median of a ring of pixels outside the box) so the masked area blends in.
         bg = img.copy()
         draw = ImageDraw.Draw(bg)
         for (x, y, w, h) in box_rects:
-            fill = _ring_avg_color(img, x, y, w, h, ring=14)
+            fill = _ring_median_color(img, x, y, w, h, pad=8, ring=24)
             draw.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
+
+        # Pad the bottom so the HTML5 video player's control gradient sits over empty bg
+        bottom_pad = int(min(120, max(60, H * 0.10)))
+        bottom_pad -= bottom_pad % 2
+        canvas_bg_color = _corner_bg_color(img, patch=40)
+        bg_padded = Image.new("RGB", (W, H + bottom_pad), canvas_bg_color)
+        bg_padded.paste(bg, (0, 0))
         bg_path = work_dir / "bg.png"
-        bg.save(bg_path)
+        bg_padded.save(bg_path)
 
         # Crop each box
         crop_paths = []
@@ -2817,7 +2839,9 @@ def diagrams_render():
             "reveal_times": [round(t, 2) for t in times],
             "alignment": alignment_mode,
             "descriptions": alignment_descs,
-            "size": (W, H),
+            "size": (W, H + bottom_pad),
+            "content_size": (W, H),
+            "bottom_pad": bottom_pad,
         }
 
         if diagram_row:
