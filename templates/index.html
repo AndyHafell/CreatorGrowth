@@ -1984,7 +1984,14 @@
             <div id="diagramsRightPanel" style="width:270px; background:#0d0d1a; border-left:1px solid #1f1f30; padding:14px 12px; overflow-y:auto;">
                 <div style="color:#444; font-size:10px; letter-spacing:1.5px; padding:0 4px 8px;">BOX ANIMATIONS</div>
                 <div id="diagramsBoxList"></div>
-                <div style="color:#333; font-size:10px; padding:8px 4px 0; border-top:1px solid #1f1f30; margin-top:8px; letter-spacing:0.3px;">drag rows to reorder reveal sequence</div>
+                <div style="color:#333; font-size:10px; padding:10px 4px 2px; border-top:1px solid #1f1f30; margin-top:8px; letter-spacing:0.3px; line-height:1.5;">
+                    click row to select, then press:<br>
+                    <span style="color:#666;">W/A/S/D</span> &nbsp;slide directions<br>
+                    <span style="color:#666;">Q/E</span> &nbsp;zoom in / out<br>
+                    <span style="color:#666;">C</span> &nbsp;crossfade &middot; <span style="color:#666;">H</span> &nbsp;hide<br>
+                    <span style="color:#666;">1-9</span> &nbsp;jump to box &middot; <span style="color:#666;">↑↓</span> &nbsp;nav<br>
+                    drag rows to reorder reveal order
+                </div>
             </div>
         </div>
     </div>
@@ -5349,6 +5356,7 @@
         Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.remove(); });
         diagramBoxes.forEach(function(b, i) {
             var isHide = (b.anim === 'hide');
+            var isSelected = (i === selectedBoxIdx);
             var borderClr = isHide ? '#e07070' : '#f5b942';
             var bgClr = isHide ? 'rgba(224,112,112,0.18)' : 'rgba(245,185,66,0.10)';
             var d = document.createElement('div');
@@ -5357,7 +5365,9 @@
             d.title = isHide
                 ? 'Hidden region — masked the whole video. Right-click to delete.'
                 : 'Right-click or click the × to delete';
-            d.style.cssText = 'position:absolute; border:2px solid ' + borderClr + '; background:' + bgClr + '; pointer-events:auto; box-shadow:0 0 0 1px rgba(0,0,0,0.4); cursor:context-menu;';
+            var borderWidth = isSelected ? 3 : 2;
+            var glow = isSelected ? 'box-shadow:0 0 0 1px rgba(0,0,0,0.4),0 0 12px rgba(245,185,66,0.6);' : 'box-shadow:0 0 0 1px rgba(0,0,0,0.4);';
+            d.style.cssText = 'position:absolute; border:' + borderWidth + 'px solid ' + borderClr + '; background:' + bgClr + '; pointer-events:auto;' + glow + ' cursor:context-menu;';
             if (isHide) {
                 d.style.borderStyle = 'dashed';
             }
@@ -5389,15 +5399,74 @@
     }
 
     var ANIM_OPTIONS = [
-        ['fade', 'Crossfade'],
-        ['from_right', 'Slide ← (from right)'],
-        ['from_left', 'Slide → (from left)'],
-        ['from_above', 'Slide ↓ (from above)'],
-        ['from_below', 'Slide ↑ (from below)'],
-        ['zoom_in', 'Zoom in'],
-        ['zoom_out', 'Zoom out'],
-        ['hide', 'Hide (persistent — no reveal)'],
+        ['fade', 'Crossfade (C)'],
+        ['from_right', 'Slide ← (from right) (A)'],
+        ['from_left', 'Slide → (from left) (D)'],
+        ['from_above', 'Slide ↓ (from above) (S)'],
+        ['from_below', 'Slide ↑ (from below) (W)'],
+        ['zoom_in', 'Zoom in (Q)'],
+        ['zoom_out', 'Zoom out (E)'],
+        ['hide', 'Hide (persistent — no reveal) (H)'],
     ];
+    // WASD = direction of motion (like in games). 'W' = box moves up = comes from below.
+    var KEY_TO_ANIM = {
+        c: 'fade',
+        w: 'from_below',   // motion ↑  (box rises into place)
+        a: 'from_right',   // motion ←  (box slides leftward)
+        s: 'from_above',   // motion ↓  (box drops into place)
+        d: 'from_left',    // motion →  (box slides rightward)
+        q: 'zoom_in',
+        e: 'zoom_out',
+        h: 'hide',
+    };
+    var selectedBoxIdx = -1;
+    function setSelectedBox(idx) {
+        selectedBoxIdx = (idx >= 0 && idx < diagramBoxes.length) ? idx : -1;
+        if (typeof renderBoxAnimList === 'function') renderBoxAnimList();
+        if (typeof renderBoxes === 'function') renderBoxes();
+    }
+    function applyAnimToSelected(animKey) {
+        if (selectedBoxIdx < 0 || selectedBoxIdx >= diagramBoxes.length) return;
+        diagramBoxes[selectedBoxIdx].anim = animKey;
+        renderBoxes();
+        renderBoxAnimList();
+        if (typeof schedulePatch === 'function') schedulePatch();
+    }
+    document.addEventListener('keydown', function(ev) {
+        var studio = document.getElementById('diagramsStudio');
+        if (!studio || studio.style.display !== 'block') return;
+        var tag = ((ev.target && ev.target.tagName) || '').toLowerCase();
+        // skip when typing in inputs/textareas/selects; allow keys when target is body/document
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+        if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+        var k = ev.key;
+        var kLower = k.toLowerCase();
+        if (KEY_TO_ANIM[kLower]) {
+            if (selectedBoxIdx < 0) return;  // need a selection
+            ev.preventDefault();
+            applyAnimToSelected(KEY_TO_ANIM[kLower]);
+            return;
+        }
+        if (k >= '1' && k <= '9') {
+            var n = parseInt(k, 10) - 1;
+            if (n < diagramBoxes.length) {
+                ev.preventDefault();
+                setSelectedBox(n);
+            }
+            return;
+        }
+        if (k === 'ArrowUp') {
+            ev.preventDefault();
+            if (diagramBoxes.length === 0) return;
+            setSelectedBox(selectedBoxIdx <= 0 ? 0 : selectedBoxIdx - 1);
+        } else if (k === 'ArrowDown') {
+            ev.preventDefault();
+            if (diagramBoxes.length === 0) return;
+            setSelectedBox(selectedBoxIdx >= diagramBoxes.length - 1 ? diagramBoxes.length - 1 : selectedBoxIdx + 1);
+        } else if (k === 'Escape') {
+            setSelectedBox(-1);
+        }
+    });
     // Legacy aliases — old picks map to new.
     var LEGACY_ANIM = { from_right_fade:'from_right', from_left_fade:'from_left',
                         from_above_fade:'from_above', from_below_fade:'from_below' };
@@ -5417,11 +5486,18 @@
         var descs = (d && d.resultMeta && d.resultMeta.descriptions) || [];
         diagramBoxes.forEach(function(b, i) {
             var isHide = (b.anim === 'hide');
+            var isSelected = (i === selectedBoxIdx);
             var accent = isHide ? '#e07070' : '#f5b942';
             var row = document.createElement('div');
             row.draggable = true;
             row.dataset.idx = i;
-            row.style.cssText = 'margin-bottom:8px; padding:8px 10px; background:#15151f; border:1px solid ' + (isHide ? '#3a2020' : '#1f1f30') + '; border-radius:4px; transition:border-color 0.1s, opacity 0.1s;';
+            var borderClr = isSelected ? '#f5b942' : (isHide ? '#3a2020' : '#1f1f30');
+            var bgClr = isSelected ? '#1f1c0c' : '#15151f';
+            row.style.cssText = 'margin-bottom:8px; padding:8px 10px; background:' + bgClr + '; border:1px solid ' + borderClr + '; border-radius:4px; transition:border-color 0.1s, opacity 0.1s; cursor:pointer;';
+            row.onclick = function(ev) {
+                // Don't override clicks on the dropdown / × delete; let those bubble through
+                setSelectedBox(i);
+            };
             row.ondragstart = function(ev) {
                 ev.dataTransfer.effectAllowed = 'move';
                 ev.dataTransfer.setData('text/plain', String(i));
