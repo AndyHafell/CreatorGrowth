@@ -2387,19 +2387,29 @@ def _gemini_match_boxes_to_words(image_with_boxes_bytes, words, n_boxes):
     # Compact numbered transcript: [idx]word
     numbered_words = " ".join(f"[{i}]{w['word']}" for i, w in enumerate(words))
     prompt = (
-        f"You are aligning visual reveals to a narrated transcript with word-level timing.\n\n"
+        f"You are aligning visual reveals to a narrated transcript with word-level timing. "
+        f"This drives a video where each numbered box appears the instant its KEY descriptive word is spoken.\n\n"
         f"The image has {n_boxes} gold-outlined boxes numbered 1..{n_boxes}. Each covers a visual element.\n\n"
         f"Below is the transcript with each word prefixed by its position [N]:\n{numbered_words}\n\n"
         f"For each numbered box (in order 1..{n_boxes}):\n"
-        f"  1. Identify the visual element it covers (text or icon).\n"
-        f"  2. Find the SINGLE word position [N] where the most-related phrase BEGINS in the transcript. "
-        f"Prefer the first word of a directly-matching phrase. If the element is not directly mentioned, "
-        f"pick the word position where it becomes thematically relevant.\n"
-        f"  3. Box order should match transcript order (box 1 first, box N last). If two boxes match the same word, "
-        f"the lower-numbered box uses that word and later boxes use the next-closest word.\n\n"
+        f"  1. Read the visible TEXT inside the box (use OCR — the boxes contain pixel-art text like "
+        f"'COLD OPEN', 'CHAPTER CUT', 'BACKGROUND', subtitles like 'full 6 seconds', 'trimmed to 3 seconds', "
+        f"'slowed down in post', etc.). Also note any icon or shape.\n"
+        f"  2. Pick the SINGLE word position [N] of the EARLIEST descriptive verb/adjective in the transcript "
+        f"that directly describes the box's content. Prefer ACTION VERBS and DISTINCTIVE adjectives over "
+        f"the literal noun. Examples:\n"
+        f"     - Box about 'CHAPTER CUT — trimmed to 3 seconds' → pick 'trimmed' (verb), NOT 'chapter' (noun later).\n"
+        f"     - Box about 'BACKGROUND — slowed down in post' → pick 'slowed' (verb), NOT 'background' (noun later).\n"
+        f"     - Box about 'COLD OPEN — full 6 seconds' → pick 'cold' (adjective opening the phrase).\n"
+        f"     - Box about 'THE GENERATED CLIP — 6 seconds' → pick 'six' or 'loop' (the descriptor used in audio).\n"
+        f"     - Boxes containing a title/heading that's NOT spoken in audio → pick the first word of the audio "
+        f"(position 0) for the opening title, or the final phrase for a concluding tagline.\n"
+        f"  3. NEVER pick filler words: 'as', 'a', 'the', 'in', 'of', 'and', 'or', 'to', 'for'. Skip these.\n"
+        f"  4. Box order must be strictly increasing (box 1's word_index < box 2's < ...). If your picks "
+        f"violate this, adjust later boxes forward.\n\n"
         f"Return ONLY valid JSON, no markdown:\n"
-        f'{{"boxes":[{{"box":1,"describes":"<short>","start_word":3}},'
-        f'{{"box":2,"describes":"...","start_word":12}}]}}'
+        f'{{"boxes":[{{"box":1,"describes":"<short>","key_word":"<the word you picked>","start_word":3}},'
+        f'{{"box":2,"describes":"...","key_word":"...","start_word":12}}]}}'
     )
     body = {
         "contents": [{"parts": [
