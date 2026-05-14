@@ -5481,9 +5481,11 @@
             c.appendChild(empty);
             return;
         }
-        // pull descriptions from last render meta if available, for label hints
+        // pull descriptions + reveal_times from last render meta if available
         var d = diagramsList[activeDiagramIdx];
         var descs = (d && d.resultMeta && d.resultMeta.descriptions) || [];
+        var revealTimes = (d && d.resultMeta && d.resultMeta.reveal_times) || [];
+        var revealIdxCounter = -1;  // tracks reveal-box ordinal (skips hide boxes)
         diagramBoxes.forEach(function(b, i) {
             var isHide = (b.anim === 'hide');
             var isSelected = (i === selectedBoxIdx);
@@ -5555,12 +5557,90 @@
                 note.textContent = 'Masked the entire video — no reveal.';
                 note.style.cssText = 'color:#e07070; font-size:10px; margin-top:6px; padding-left:28px;';
                 row.appendChild(note);
-            } else if (descs[i]) {
-                var desc = document.createElement('div');
-                desc.textContent = descs[i];
-                desc.style.cssText = 'color:#666; font-size:10px; margin-top:6px; padding-left:28px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-                desc.title = descs[i];
-                row.appendChild(desc);
+            } else {
+                revealIdxCounter += 1;
+                var revealOrdinal = revealIdxCounter;
+                var renderedT = (typeof revealTimes[revealOrdinal] === 'number') ? revealTimes[revealOrdinal] : null;
+                var manualT = (typeof b.time_override === 'number') ? b.time_override : null;
+                var displayT = (manualT !== null) ? manualT : renderedT;
+
+                if (descs[revealOrdinal]) {
+                    var desc = document.createElement('div');
+                    desc.textContent = descs[revealOrdinal];
+                    desc.style.cssText = 'color:#666; font-size:10px; margin-top:6px; padding-left:28px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+                    desc.title = descs[revealOrdinal];
+                    row.appendChild(desc);
+                }
+
+                // Time row: −  @4.50s  +    AI/Manual
+                var timeRow = document.createElement('div');
+                timeRow.style.cssText = 'display:flex; align-items:center; gap:6px; margin-top:6px; padding-left:28px;';
+
+                var btnStyle = 'background:#0d0d1a; border:1px solid #2a2a4a; color:#888; border-radius:3px; padding:1px 7px; cursor:pointer; font-size:12px; line-height:1; font-weight:700;';
+
+                var minus = document.createElement('button');
+                minus.textContent = '−';
+                minus.title = 'Nudge 0.1s earlier';
+                minus.style.cssText = btnStyle;
+                minus.onclick = function(ev) {
+                    ev.stopPropagation();
+                    var base = (manualT !== null) ? manualT : (renderedT !== null ? renderedT : 0);
+                    b.time_override = Math.max(0, Math.round((base - 0.1) * 100) / 100);
+                    if (typeof schedulePatch === 'function') schedulePatch();
+                    renderBoxAnimList();
+                };
+                timeRow.appendChild(minus);
+
+                var timeLabel = document.createElement('span');
+                timeLabel.textContent = (displayT !== null) ? ('@' + displayT.toFixed(2) + 's') : '@—';
+                timeLabel.style.cssText = 'color:' + (manualT !== null ? '#f5b942' : (renderedT !== null ? '#aaa' : '#555')) + '; min-width:62px; text-align:center; cursor:pointer; font-variant-numeric:tabular-nums; font-size:11px;';
+                timeLabel.title = 'Click to type exact time';
+                timeLabel.onclick = function(ev) {
+                    ev.stopPropagation();
+                    var promptDefault = (displayT !== null) ? displayT.toFixed(2) : '';
+                    var input = prompt('Reveal time (seconds):', promptDefault);
+                    if (input === null) return;
+                    var n = parseFloat(input);
+                    if (isNaN(n) || n < 0) return;
+                    b.time_override = Math.round(n * 100) / 100;
+                    if (typeof schedulePatch === 'function') schedulePatch();
+                    renderBoxAnimList();
+                };
+                timeRow.appendChild(timeLabel);
+
+                var plus = document.createElement('button');
+                plus.textContent = '+';
+                plus.title = 'Nudge 0.1s later';
+                plus.style.cssText = btnStyle;
+                plus.onclick = function(ev) {
+                    ev.stopPropagation();
+                    var base = (manualT !== null) ? manualT : (renderedT !== null ? renderedT : 0);
+                    b.time_override = Math.round((base + 0.1) * 100) / 100;
+                    if (typeof schedulePatch === 'function') schedulePatch();
+                    renderBoxAnimList();
+                };
+                timeRow.appendChild(plus);
+
+                var modeBadge = document.createElement('span');
+                if (manualT !== null) {
+                    modeBadge.textContent = 'Manual · reset';
+                    modeBadge.style.cssText = 'color:#f5b942; font-size:10px; cursor:pointer; letter-spacing:0.3px;';
+                    modeBadge.title = 'Clear manual override and use AI time';
+                    modeBadge.onclick = function(ev) {
+                        ev.stopPropagation();
+                        delete b.time_override;
+                        if (typeof schedulePatch === 'function') schedulePatch();
+                        renderBoxAnimList();
+                    };
+                } else if (renderedT !== null) {
+                    modeBadge.textContent = 'AI';
+                    modeBadge.style.cssText = 'color:#555; font-size:10px; letter-spacing:0.3px;';
+                } else {
+                    modeBadge.textContent = '';
+                }
+                timeRow.appendChild(modeBadge);
+
+                row.appendChild(timeRow);
             }
             c.appendChild(row);
         });
