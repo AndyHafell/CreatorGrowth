@@ -2770,6 +2770,36 @@ def diagrams_upload_audio(diagram_id):
     return jsonify({"audio_path": rel, "audio_path_url": "/" + rel, "audio_name": f.filename, "audio_duration": duration})
 
 
+def _render_write_on_frames(frames_dir, crop_img, bw, bh, reveal_dur, fps=30):
+    """Pre-render PNG frames for a 'write-on' wipe: alpha mask sweeps left → right
+    over reveal_dur seconds, with a soft 3%-of-width feather at the leading edge.
+    Returns (frames_dir, n_frames)."""
+    from PIL import Image as _Image, ImageDraw as _ImageDraw, ImageChops as _ImageChops
+    n_frames = max(2, int(round(reveal_dur * fps)))
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    base = crop_img.convert("RGBA")
+    soft = max(6, int(bw * 0.03))
+    src_alpha = base.split()[3]
+    for i in range(n_frames):
+        p = i / max(1, n_frames - 1)
+        ease = p * p * (3 - 2 * p)
+        mask_x = int(bw * ease)
+        # Build a column mask: 255 left of mask_x-soft, gradient down to 0 at mask_x, 0 beyond.
+        col_mask = _Image.new("L", (bw, bh), 0)
+        d = _ImageDraw.Draw(col_mask)
+        if mask_x - soft > 0:
+            d.rectangle([0, 0, mask_x - soft - 1, bh - 1], fill=255)
+        for x in range(max(0, mask_x - soft), min(bw, mask_x)):
+            v = int(round(255 * (mask_x - x) / soft))
+            d.line([(x, 0), (x, bh - 1)], fill=max(0, min(255, v)))
+        # Combine column mask with the source alpha
+        new_alpha = _ImageChops.multiply(src_alpha, col_mask)
+        frame = base.copy()
+        frame.putalpha(new_alpha)
+        frame.save(frames_dir / f"f{i:04d}.png")
+    return frames_dir, n_frames
+
+
 def _render_zoom_frames(frames_dir, crop_img, bw, bh, anim, zoom_dur, fade_dur, fps=30):
     """Pre-render PNG frames for a zoom intro animation. Each frame is a (bw, bh)
     RGBA canvas with the box content scaled per smoothstep ease + alpha fade baked in.
@@ -3231,7 +3261,7 @@ def diagrams_render():
             "from_below_fade": "from_below",
         }
         valid_anims = {"fade", "from_right", "from_left", "from_above", "from_below",
-                       "zoom_in", "zoom_out"}
+                       "zoom_in", "zoom_out", "write_on"}
 
         # Resolve each reveal box's effective anim
         resolved_anims = []
@@ -3243,7 +3273,7 @@ def diagrams_render():
         # Build ffmpeg inputs
         inputs = ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(bg_path)]
         for i in range(N):
-            if resolved_anims[i] in ("zoom_in", "zoom_out"):
+            if resolved_anims[i] in ("zoom_in", "zoom_out", "write_on"):
                 # image sequence input (fade is baked into the PNG frames)
                 inputs += ["-framerate", f"{FPS}",
                            "-i", str(zoom_frame_dirs[i] / "f%04d.png")]
@@ -3265,7 +3295,7 @@ def diagrams_render():
             segs = []
             exit_filter = (f",fade=t=out:st={t_exit:.3f}:d={exit_fade_dur:.3f}:alpha=1"
                            if t_exit is not None else "")
-            if anim in ("zoom_in", "zoom_out"):
+            if anim in ("zoom_in", "zoom_out", "write_on"):
                 zoom_clip_len = n_zoom_frames / FPS
                 stop_extra = max(0.0, duration - t - zoom_clip_len)
                 segs.append(
@@ -4093,7 +4123,7 @@ def chapters_render():
             "from_below_fade": "from_below",
         }
         valid_anims = {"fade", "from_right", "from_left", "from_above", "from_below",
-                       "zoom_in", "zoom_out"}
+                       "zoom_in", "zoom_out", "write_on"}
 
         # Resolve each reveal box's effective anim
         resolved_anims = []
@@ -4105,7 +4135,7 @@ def chapters_render():
         # Build ffmpeg inputs
         inputs = ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(bg_path)]
         for i in range(N):
-            if resolved_anims[i] in ("zoom_in", "zoom_out"):
+            if resolved_anims[i] in ("zoom_in", "zoom_out", "write_on"):
                 # image sequence input (fade is baked into the PNG frames)
                 inputs += ["-framerate", f"{FPS}",
                            "-i", str(zoom_frame_dirs[i] / "f%04d.png")]
@@ -4127,7 +4157,7 @@ def chapters_render():
             segs = []
             exit_filter = (f",fade=t=out:st={t_exit:.3f}:d={exit_fade_dur:.3f}:alpha=1"
                            if t_exit is not None else "")
-            if anim in ("zoom_in", "zoom_out"):
+            if anim in ("zoom_in", "zoom_out", "write_on"):
                 zoom_clip_len = n_zoom_frames / FPS
                 stop_extra = max(0.0, duration - t - zoom_clip_len)
                 segs.append(
