@@ -3594,17 +3594,21 @@ def chapter_from_doc(vid):
             break
     if not doc_path:
         return jsonify({"error": "no Content Doc field set on this video"}), 404
-    # Path may be relative ("content_docs/foo.md") or absolute
-    p = Path(doc_path)
-    if not p.is_absolute():
-        p = CONTENT_DIR / doc_path if not str(doc_path).startswith("content_docs/") else CONTENT_DIR.parent / doc_path
-    if not p.exists():
-        # Try one more fallback — content docs sometimes live in CONTENT_DIR directly
-        alt = CONTENT_DIR / Path(doc_path).name
-        if alt.exists():
-            p = alt
-        else:
-            return jsonify({"error": f"content doc not found at {p}"}), 404
+    # Field may hold an absolute path, "content_docs/foo.md", or just "foo.md".
+    # Canonical prod layout: CONTENT_DIR/content_docs/<filename>. Try a few resolutions.
+    fname = Path(doc_path).name
+    candidates = []
+    p0 = Path(doc_path)
+    if p0.is_absolute():
+        candidates.append(p0)
+    candidates += [
+        CONTENT_DIR / doc_path,                # CONTENT_DIR + "content_docs/foo.md"
+        CONTENT_DIR / "content_docs" / fname,  # CONTENT_DIR/content_docs/foo.md
+        CONTENT_DIR / fname,                   # CONTENT_DIR/foo.md
+    ]
+    p = next((c for c in candidates if c.exists()), None)
+    if not p:
+        return jsonify({"error": f"content doc not found. tried: {[str(c) for c in candidates]}"}), 404
     try:
         text = p.read_text(encoding="utf-8", errors="ignore")
     except OSError as e:
