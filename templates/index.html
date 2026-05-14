@@ -6275,6 +6275,23 @@
                         var focusIdx = Math.max(0, i - 1);
                         if (rows[focusIdx]) rows[focusIdx].focus();
                     }, 0);
+                } else if (e.key === 'ArrowDown' && i < csState.items.length - 1) {
+                    e.preventDefault();
+                    var rowsD = document.querySelectorAll('#csListRows .cs-row input');
+                    if (rowsD[i + 1]) {
+                        rowsD[i + 1].focus();
+                        // Place caret at end of next field
+                        var v = rowsD[i + 1].value;
+                        rowsD[i + 1].setSelectionRange(v.length, v.length);
+                    }
+                } else if (e.key === 'ArrowUp' && i > 0) {
+                    e.preventDefault();
+                    var rowsU = document.querySelectorAll('#csListRows .cs-row input');
+                    if (rowsU[i - 1]) {
+                        rowsU[i - 1].focus();
+                        var v = rowsU[i - 1].value;
+                        rowsU[i - 1].setSelectionRange(v.length, v.length);
+                    }
                 }
             };
             row.appendChild(inp);
