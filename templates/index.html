@@ -1527,6 +1527,7 @@
         .notion-editor ::selection { background:rgba(91,155,213,0.3); }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
     <script>
       document.addEventListener('DOMContentLoaded', function() {
         if (typeof marked !== 'undefined') {
@@ -1997,134 +1998,76 @@
         </div>
     </div>
 
+    <!-- ── CHAPTER STUDIO ──────────────────────────────────────────────────── -->
     <div id="chaptersStudio" style="display:none; position:fixed; inset:0; background:#0a0a14; z-index:600; color:#ddd;">
         <!-- Header bar -->
         <div style="display:flex; align-items:center; gap:14px; padding:12px 22px; border-bottom:1px solid #1f1f30; background:#0d0d1a;">
             <div style="font-weight:700; letter-spacing:2px; color:#5b9bd5; font-size:12px;">CHAPTERS STUDIO</div>
-            <div id="chaptersStudioTitle" style="color:#666; font-size:12px; border-left:1px solid #2a2a4a; padding-left:14px;"></div>
+            <div id="csVideoTitle" style="color:#666; font-size:12px; border-left:1px solid #2a2a4a; padding-left:14px;"></div>
             <div style="flex:1;"></div>
-            <span id="chaptersStudioStatus" style="color:#555; font-size:11px;"></span>
+            <span id="csStatus" style="color:#555; font-size:11px;"></span>
             <button onclick="closeChaptersStudio()" style="background:none; border:1px solid #2a2a4a; color:#888; padding:6px 14px; border-radius:4px; font-size:11px; letter-spacing:0.5px; cursor:pointer;">CLOSE</button>
         </div>
 
-        <!-- Body: sidebar + canvas -->
+        <!-- Body: list panel + preview panel -->
         <div style="display:flex; height:calc(100vh - 49px);">
-            <!-- Sidebar -->
-            <div style="width:230px; background:#0d0d1a; border-right:1px solid #1f1f30; padding:14px 12px; overflow-y:auto; display:flex; flex-direction:column;">
-                <button onclick="addNewChapter()" style="background:#5b9bd5; color:#000; border:none; border-radius:4px; padding:9px; font-size:11px; font-weight:700; letter-spacing:1px; cursor:pointer; margin-bottom:14px;">+ NEW CHAPTER</button>
-                <div style="color:#444; font-size:10px; letter-spacing:1.5px; padding:0 4px 6px;">CHAPTERS IN THIS VIDEO</div>
-                <div id="chaptersSidebarList" style="flex:1;"></div>
-                <div style="color:#333; font-size:10px; padding:8px 4px 0; border-top:1px solid #1f1f30; margin-top:8px; letter-spacing:0.3px;">right-click to delete</div>
+            <!-- LEFT: list editor -->
+            <div style="width:420px; background:#0d0d1a; border-right:1px solid #1f1f30; padding:18px 16px; overflow-y:auto; display:flex; flex-direction:column; gap:14px;">
+                <div style="color:#666; font-size:10px; letter-spacing:2px;">CHAPTERS</div>
+
+                <button onclick="csPullFromDoc()" style="background:none; border:1px solid #2a2a4a; color:#5b9bd5; border-radius:4px; padding:8px 12px; font-size:11px; letter-spacing:0.5px; cursor:pointer; text-align:left;">
+                    ⇣ PULL FROM CONTENT DOC
+                </button>
+
+                <div id="csListRows" style="display:flex; flex-direction:column; gap:6px;"></div>
+
+                <button onclick="csAddRow()" style="background:none; border:1px dashed #2a2a4a; color:#888; border-radius:4px; padding:9px; font-size:11px; letter-spacing:0.5px; cursor:pointer;">
+                    + ADD CHAPTER
+                </button>
+
+                <div style="border-top:1px solid #1f1f30; padding-top:14px; display:flex; flex-direction:column; gap:8px;">
+                    <div style="color:#666; font-size:10px; letter-spacing:2px;">STYLE</div>
+                    <select id="csStyle" onchange="csOnStyleChange()" style="background:#0a0a14; border:1px solid #2a2a4a; color:#ddd; padding:8px; border-radius:4px; font-size:12px;">
+                        <option value="blue_glass">Blue Glass</option>
+                    </select>
+                </div>
+
+                <div style="border-top:1px solid #1f1f30; padding-top:14px;">
+                    <button id="csRenderBtn" onclick="csRenderClips()" style="background:#5b9bd5; color:#000; border:none; border-radius:6px; padding:12px 18px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer; width:100%;">RENDER <span id="csRenderCount">0</span> CLIPS</button>
+                    <div id="csRenderStatus" style="color:#555; font-size:11px; margin-top:8px;"></div>
+                </div>
+
+                <div id="csResults" style="display:none; border-top:1px solid #1f1f30; padding-top:14px; display:flex; flex-direction:column; gap:8px;">
+                    <div style="color:#666; font-size:10px; letter-spacing:2px;">RESULTS</div>
+                    <a id="csZipLink" href="#" download style="background:none; border:1px solid #2a2a4a; color:#5b9bd5; border-radius:4px; padding:6px 11px; font-size:11px; cursor:pointer; text-decoration:none; letter-spacing:0.5px; text-align:center;">DOWNLOAD ALL (.zip)</a>
+                    <div id="csClipList" style="display:flex; flex-direction:column; gap:6px;"></div>
+                </div>
             </div>
 
-            <!-- Main canvas -->
-            <div id="chaptersMainCanvas" style="flex:1; overflow-y:auto; padding:24px 32px 80px;">
-                <!-- IMAGE SECTION -->
-                <div style="margin-bottom:28px;">
-                    <div style="color:#666; font-size:10px; letter-spacing:2px; margin-bottom:10px;">IMAGE &amp; BOXES</div>
-                    <div id="chaptersDropZone" style="padding:48px; border:2px dashed #2a2a4a; border-radius:6px; text-align:center; cursor:pointer; background:transparent; transition:all 0.15s;"
-                         onclick="document.getElementById('chaptersFileInput').click()"
-                         ondragover="event.preventDefault(); this.style.borderColor='#5b9bd5';"
-                         ondragleave="this.style.borderColor='#2a2a4a';"
-                         ondrop="event.preventDefault(); this.style.borderColor='#2a2a4a'; handleChaptersFile(event.dataTransfer.files[0]);">
-                        <div style="color:#666; font-size:13px;">Drag &amp; drop an image, or click to choose</div>
-                    </div>
-                    <input type="file" id="chaptersFileInput" accept="image/*" style="display:none;" onchange="handleChaptersFile(this.files[0])">
-
-                    <div id="chaptersPreview" style="display:none;">
-                        <div id="chaptersImageWrap" style="position:relative; display:inline-block; max-width:100%; user-select:none;">
-                            <img id="chaptersImage" style="max-width:100%; max-height:82vh; display:block; pointer-events:none;">
-                            <div id="chaptersBoxLayer" style="position:absolute; inset:0; cursor:crosshair;"
-                                 onmousedown="chBoxLayerDown(event)"
-                                 onmousemove="chBoxLayerMove(event)"
-                                 onmouseup="chBoxLayerUp(event)"></div>
-                            <div id="chaptersCropOverlay" style="display:none; position:absolute; inset:0; pointer-events:none;">
-                                <div id="chaptersCropDimT"></div>
-                                <div id="chaptersCropDimB"></div>
-                                <div id="chaptersCropDimL"></div>
-                                <div id="chaptersCropDimR"></div>
-                                <div id="chaptersCropSel"></div>
+            <!-- RIGHT: preview panel -->
+            <div style="flex:1; padding:24px 32px; overflow:auto; display:flex; flex-direction:column; align-items:center; gap:14px;">
+                <div style="color:#666; font-size:10px; letter-spacing:2px; align-self:flex-start;">LIVE PREVIEW (final frame)</div>
+                <div id="csPreviewWrap" style="position:relative; width:100%; max-width:1280px;">
+                    <!-- Outer 16:9 frame, scaled-down version of the real 1920x1080 capture target -->
+                    <div id="csPreviewScale" style="position:relative; width:100%; padding-top:56.25%; background:transparent;">
+                        <div id="csPreview" class="cs-style-blue-glass" style="position:absolute; top:0; left:0; width:1920px; height:1080px; transform-origin:top left;">
+                            <div class="cs-card">
+                                <ul class="cs-items" id="csPreviewItems"></ul>
                             </div>
                         </div>
-                        <div id="chaptersBoxToolbar" style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-                            <button onclick="resetChaptersImage()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Replace image</button>
-                            <button onclick="enterChCropMode()" style="background:none; border:1px solid #2a2a4a; color:#5b9bd5; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Crop region</button>
-                            <button onclick="undoChLastBox()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Undo last box</button>
-                            <button onclick="clearChBoxes()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Clear boxes</button>
-                            <span id="chaptersBoxCount" style="color:#5b9bd5; font-size:11px; letter-spacing:0.5px;">0 boxes</span>
-                            <span style="color:#444; font-size:11px;">&middot; drag to draw &middot; right-click box to delete</span>
-                            <span style="flex:1;"></span>
-                            <button id="chaptersModeToggle" onclick="toggleChSlideshow()" title="Toggle slideshow mode (one slide at a time vs reveals)" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Slideshow mode</button>
-                        </div>
-                        <div id="chaptersCropToolbar" style="display:none; margin-top:10px; gap:10px; align-items:center; flex-wrap:wrap;">
-                            <button onclick="applyChCrop()" style="background:#5b9bd5; color:#000; border:none; border-radius:4px; padding:6px 14px; font-size:11px; font-weight:700; letter-spacing:0.5px; cursor:pointer;">Apply crop</button>
-                            <button onclick="exitChCropMode()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Cancel</button>
-                            <span style="color:#888; font-size:11px;">Drag any region &middot; output is 16:9 with bg color padding &middot; boxes will be cleared</span>
-                        </div>
                     </div>
                 </div>
-
-                <!-- AUDIO SECTION -->
-                <div style="margin-bottom:28px;">
-                    <div style="color:#666; font-size:10px; letter-spacing:2px; margin-bottom:10px;">AUDIO</div>
-                    <div id="chaptersAudioDropZone" style="padding:20px; border:2px dashed #2a2a4a; border-radius:6px; text-align:center; cursor:pointer; background:transparent; transition:all 0.15s;"
-                         onclick="document.getElementById('chaptersAudioInput').click()"
-                         ondragover="event.preventDefault(); this.style.borderColor='#5b9bd5';"
-                         ondragleave="this.style.borderColor='#2a2a4a';"
-                         ondrop="event.preventDefault(); this.style.borderColor='#2a2a4a'; handleChaptersAudio(event.dataTransfer.files[0]);">
-                        <div style="color:#666; font-size:13px;">Drag &amp; drop audio (.mp3 / .wav / .m4a), or click to choose</div>
-                    </div>
-                    <input type="file" id="chaptersAudioInput" accept="audio/*" style="display:none;" onchange="handleChaptersAudio(this.files[0])">
-                    <div id="chaptersAudioPreview" style="display:none;">
-                        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 0;">
-                            <span style="color:#5b9bd5; font-size:14px;">&#9835;</span>
-                            <span id="chaptersAudioName" style="color:#ddd; font-size:12px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
-                            <span id="chaptersAudioDuration" style="color:#888; font-size:11px;"></span>
-                            <button onclick="resetChaptersAudio()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:3px 9px; font-size:11px; cursor:pointer;">Replace</button>
-                        </div>
-                        <audio id="chaptersAudioPlayer" controls style="width:100%; height:36px;"></audio>
-                    </div>
-                </div>
-
-                <!-- SCRIPT SECTION -->
-                <div style="margin-bottom:28px;">
-                    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:10px;">
-                        <span style="color:#666; font-size:10px; letter-spacing:2px;">SCRIPT</span>
-                        <span id="chaptersScriptStatus" style="color:#555; font-size:11px;"></span>
-                    </div>
-                    <textarea id="chaptersScript" oninput="scheduleChPatch()" style="width:100%; min-height:120px; background:transparent; border:1px solid #2a2a4a; border-radius:6px; padding:12px; color:#ddd; font-size:13px; line-height:1.6; resize:vertical; font-family:inherit; box-sizing:border-box;" placeholder="Auto-fills when you upload audio. Or paste here."></textarea>
-                </div>
-
-                <!-- RENDER -->
-                <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
-                    <button id="chaptersRenderBtn" onclick="renderChapter()" style="background:#5b9bd5; color:#000; border:none; border-radius:6px; padding:11px 26px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer;">RENDER THIS CHAPTER</button>
-                    <span id="chaptersRenderStatus" style="color:#555; font-size:11px;"></span>
-                </div>
-
-                <!-- RESULT -->
-                <div id="chaptersResult" style="display:none; margin-top:28px; padding-top:24px; border-top:1px solid #1f1f30;">
-                    <div style="color:#666; font-size:10px; letter-spacing:2px; margin-bottom:10px;">RESULT</div>
-                    <video id="chaptersResultVideo" controls style="width:100%; max-height:60vh; background:#000; border-radius:6px;"></video>
-                    <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-                        <a id="chaptersResultDownload" href="#" download style="background:none; border:1px solid #2a2a4a; color:#5b9bd5; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer; text-decoration:none; letter-spacing:0.5px;">DOWNLOAD MP4</a>
-                        <span id="chaptersResultMeta" style="color:#666; font-size:11px;"></span>
-                    </div>
+                <div style="color:#444; font-size:11px; letter-spacing:0.3px; align-self:flex-start;">
+                    Each clip = 4.5s hold · 1s blur fade-in · 4.5s hold &nbsp;=&nbsp; 10s total
                 </div>
             </div>
+        </div>
+    </div>
 
-            <!-- Right panel: per-box animation pickers -->
-            <div id="chaptersRightPanel" style="width:270px; background:#0d0d1a; border-left:1px solid #1f1f30; padding:14px 12px; overflow-y:auto;">
-                <div id="chaptersBoxAnimTitle" style="color:#444; font-size:10px; letter-spacing:1.5px; padding:0 4px 8px;">BOX ANIMATIONS</div>
-                <div id="chaptersBoxList"></div>
-                <div style="color:#333; font-size:10px; padding:10px 4px 2px; border-top:1px solid #1f1f30; margin-top:8px; letter-spacing:0.3px; line-height:1.5;">
-                    click row to select, then press:<br>
-                    <span style="color:#666;">W/A/S/D</span> &nbsp;slide directions<br>
-                    <span style="color:#666;">Q/E</span> &nbsp;zoom in / out<br>
-                    <span style="color:#666;">C</span> &nbsp;crossfade &middot; <span style="color:#666;">H</span> &nbsp;hide<br>
-                    <span style="color:#666;">1-9</span> &nbsp;move selected to that slot<br>
-                    <span style="color:#666;">↑↓</span> &nbsp;nav between boxes
-                </div>
-            </div>
+    <!-- Off-screen sibling for html2canvas capture (always full 1920×1080, never scaled) -->
+    <div id="csCapture" class="cs-style-blue-glass" style="position:fixed; left:-99999px; top:0; width:1920px; height:1080px; pointer-events:none;">
+        <div class="cs-card">
+            <ul class="cs-items" id="csCaptureItems"></ul>
         </div>
     </div>
 
@@ -2172,6 +2115,85 @@
         .tp-content a { color:#5b9bd5; }
         .tp-content code { background:#1a1a2e; padding:2px 6px; border-radius:3px; font-size:0.9em; }
         .tp-content img { width:100% !important; max-width:680px !important; height:auto !important; display:block; margin:16px auto; border-radius:8px; }
+
+        /* ─── CHAPTER STUDIO: Blue Glass style ─── */
+        .cs-style-blue-glass {
+            box-sizing: border-box;
+            background: radial-gradient(ellipse at 50% 50%, #1c4a8a 0%, #0a1a3e 55%, #02061a 100%);
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+            padding: 90px 80px;
+            font-family: 'Montserrat', 'Helvetica Neue', sans-serif;
+            color: #0d2a8a;
+            --cs-fontsize: 60px;
+            --cs-gap: 36px;
+        }
+        .cs-style-blue-glass .cs-card {
+            position: relative;
+            width: min(78%, 1400px);
+            background: linear-gradient(165deg, #c4ebff 0%, #7cc2ff 60%, #5aa8ee 100%);
+            border-radius: 36px;
+            padding: 70px 90px;
+            box-shadow:
+                0 0 1px 1px rgba(255,255,255,0.6) inset,
+                0 0 40px 4px rgba(140,200,255,0.55),
+                0 0 140px 30px rgba(80,140,255,0.35),
+                0 0 260px 80px rgba(40,90,200,0.25);
+            box-sizing: border-box;
+        }
+        .cs-style-blue-glass .cs-items {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            gap: var(--cs-gap);
+        }
+        .cs-style-blue-glass .cs-items > li {
+            display: flex;
+            align-items: center;
+            gap: 30px;
+            font-size: var(--cs-fontsize);
+            font-weight: 900;
+            letter-spacing: 0.5px;
+            line-height: 1.05;
+            color: #0d2a8a;
+            text-transform: uppercase;
+            text-shadow: 0 1px 0 rgba(255,255,255,0.3);
+        }
+        .cs-style-blue-glass .cs-items > li.cs-blur {
+            filter: blur(14px);
+        }
+        .cs-style-blue-glass .cs-dot {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background:
+                radial-gradient(circle at 35% 35%, #ffffff 0%, #cfeaff 35%, #4a90e2 100%);
+            box-shadow:
+                0 0 8px 2px rgba(255,255,255,0.7),
+                0 0 18px 6px rgba(120,180,255,0.55),
+                inset 0 0 0 1px rgba(255,255,255,0.6);
+            flex-shrink: 0;
+        }
+        /* Live-preview scaling: the source div is 1920×1080 absolute; the wrapper provides
+           a 16:9 aspect-ratio box and scales the source to fit via JS-set transform. */
+        #csPreviewScale { overflow: hidden; }
+
+        /* Editable list row */
+        .cs-row { display:flex; align-items:center; gap:6px; }
+        .cs-row .cs-handle { color:#444; cursor:grab; padding:0 4px; font-size:14px; user-select:none; }
+        .cs-row input.cs-text-input {
+            flex:1; background:#0a0a14; border:1px solid #2a2a4a; color:#ddd;
+            padding:8px 10px; border-radius:4px; font-size:12px; font-family:inherit;
+        }
+        .cs-row input.cs-text-input:focus { outline:none; border-color:#5b9bd5; }
+        .cs-row .cs-del {
+            background:none; border:1px solid #2a2a4a; color:#666; padding:5px 9px;
+            border-radius:4px; font-size:11px; cursor:pointer;
+        }
+        .cs-row .cs-del:hover { color:#e07070; border-color:#e07070; }
     </style>
     <div class="toast" id="toast"></div>
 
@@ -6130,1163 +6152,358 @@
         next();
     }
 
-    // ---- studio shell + multi-chapter state (server-backed) ----
-    var chaptersList = [];   // local mirror; each entry has {id, name, imageUrl, boxes, audioUrl, audioName, audioDuration, script, resultUrl, resultMeta}
-    var activeChapterIdx = -1;
-    var _chPatchTimer = null;
 
-    function _getChStudioVideoId() {
+    // ─── CHAPTER STUDIO: list-driven preview + render ────────────────────────
+    var csState = { items: [], style: 'blue_glass' };
+    var _csSaveTimer = null;
+    var _csVid = null;
+
+    function _csVideoId() {
         return (typeof modalVideoId !== 'undefined' && modalVideoId) ? modalVideoId : null;
     }
-    function setChStudioStatus(text, color) {
-        var el = document.getElementById('chaptersStudioStatus');
+    function csSetStatus(text, color) {
+        var el = document.getElementById('csStatus');
         if (!el) return;
         el.textContent = text || '';
         el.style.color = color || '#555';
     }
-    function _chServerRowToLocal(row) {
-        return {
-            id: row.id,
-            name: row.name || 'Chapter',
-            imageUrl: row.image_path_url || '',
-            boxes: row.boxes || [],
-            audioUrl: row.audio_path_url || '',
-            audioName: row.audio_name || '',
-            audioDuration: row.audio_duration || '',
-            script: row.script || '',
-            scriptStatus: '',
-            resultUrl: row.result_url || '',
-            resultMeta: row.result_meta || null,
-            mode: row.mode || 'reveal'
-        };
-    }
-    function toggleChSlideshow() {
-        var d = chaptersList[activeChapterIdx];
-        if (!d) return;
-        d.mode = (d.mode === 'slideshow') ? 'reveal' : 'slideshow';
-        _updateChModeButtonStyle();
-        setChStudioStatus('Saving…', '#5b9bd5');
-        _chApiPatch(d.id, { mode: d.mode })
-            .then(function() { setChStudioStatus('Saved', '#4caf50'); })
-            .catch(function(err) { setChStudioStatus('Save failed: ' + err, '#e07070'); });
-    }
-    function _updateChModeButtonStyle() {
-        var btn = document.getElementById('chaptersModeToggle');
-        var d = chaptersList[activeChapterIdx];
-        if (!btn || !d) return;
-        var isSlideshow = (d.mode === 'slideshow');
-        btn.style.background = isSlideshow ? '#5b9bd5' : 'none';
-        btn.style.color = isSlideshow ? '#000' : '#888';
-        btn.style.borderColor = isSlideshow ? '#5b9bd5' : '#2a2a4a';
-        btn.style.fontWeight = isSlideshow ? '700' : '400';
-        var title = document.getElementById('chaptersBoxAnimTitle');
-        if (title) title.textContent = isSlideshow ? 'SLIDE ANIMATIONS' : 'BOX ANIMATIONS';
-    }
-    function _chApiPatch(id, body) {
-        return fetch('/api/chapters/' + id, {
-            method: 'PATCH',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(body)
-        }).then(function(r) { return r.json(); });
-    }
-    function scheduleChPatch() {
-        if (_chPatchTimer) clearTimeout(_chPatchTimer);
-        _chPatchTimer = setTimeout(function() {
-            var d = chaptersList[activeChapterIdx];
-            if (!d) return;
-            setChStudioStatus('Saving…', '#5b9bd5');
-            var payload = {
-                boxes: chapterBoxes,
-                script: document.getElementById('chaptersScript').value
-            };
-            _chApiPatch(d.id, payload).then(function(res) {
-                d.boxes = payload.boxes.slice();
-                d.script = payload.script;
-                setChStudioStatus('Saved', '#4caf50');
-            }).catch(function(err) {
-                setChStudioStatus('Save failed: ' + err, '#e07070');
-            });
-        }, 700);
-    }
 
-    function openChapters() {
-        var vid = _getChStudioVideoId();
+    async function openChapters() {
+        var vid = _csVideoId();
         if (!vid) { alert('Open a video first.'); return; }
-        var studio = document.getElementById('chaptersStudio');
-        studio.style.display = 'block';
+        _csVid = vid;
+        // Title in header
         var t = document.getElementById('modalTitle');
-        document.getElementById('chaptersStudioTitle').textContent = (t && t.textContent.trim()) || 'untitled';
-
-        setChStudioStatus('Loading…', '#5b9bd5');
-        fetch('/api/videos/' + vid + '/chapters')
-            .then(function(r) { return r.json(); })
-            .then(function(rows) {
-                chaptersList = (rows || []).map(_chServerRowToLocal);
-                if (chaptersList.length === 0) {
-                    return fetch('/api/videos/' + vid + '/chapters', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
-                        .then(function(r) { return r.json(); })
-                        .then(function(d) { chaptersList.push(_chServerRowToLocal(d)); });
-                }
-            })
-            .then(function() {
-                activeChapterIdx = 0;
-                renderChSidebar();
-                loadChapter(0);
-                setChStudioStatus('Saved', '#4caf50');
-            })
-            .catch(function(err) { setChStudioStatus('Load failed: ' + err, '#e07070'); });
+        document.getElementById('csVideoTitle').textContent = (t && t.textContent.trim()) || 'untitled';
+        // Show studio
+        document.getElementById('chaptersStudio').style.display = 'block';
+        // Fetch existing state
+        csSetStatus('Loading…', '#5b9bd5');
+        try {
+            var r = await fetch('/api/videos/' + vid + '/chapter');
+            var d = await r.json();
+            csState.items = Array.isArray(d.items) ? d.items.slice() : [];
+            csState.style = d.style || 'blue_glass';
+        } catch (e) {
+            csState.items = [];
+            csState.style = 'blue_glass';
+        }
+        if (csState.items.length === 0) csState.items = ['', ''];
+        document.getElementById('csStyle').value = csState.style;
+        csRenderList();
+        csRenderPreview();
+        csSetStatus('', '#555');
+        // Schedule preview rescale on resize
+        window.addEventListener('resize', csRescalePreview);
+        // First scale
+        setTimeout(csRescalePreview, 0);
     }
+
     function closeChaptersStudio() {
-        // flush any pending debounced save synchronously by triggering it now
-        if (_chPatchTimer) { clearTimeout(_chPatchTimer); _chPatchTimer = null; }
-        var d = chaptersList[activeChapterIdx];
-        if (d) {
-            _chApiPatch(d.id, { boxes: chapterBoxes, script: document.getElementById('chaptersScript').value })
-                .catch(function() {});
-        }
         document.getElementById('chaptersStudio').style.display = 'none';
+        window.removeEventListener('resize', csRescalePreview);
     }
-    function addNewChapter() {
-        var vid = _getChStudioVideoId();
-        if (!vid) return;
-        // flush current pending save
-        if (_chPatchTimer) { clearTimeout(_chPatchTimer); _chPatchTimer = null; }
-        var prev = chaptersList[activeChapterIdx];
-        var prevPromise = prev
-            ? _chApiPatch(prev.id, { boxes: chapterBoxes, script: document.getElementById('chaptersScript').value })
-            : Promise.resolve();
-        setChStudioStatus('Saving…', '#5b9bd5');
-        prevPromise
-            .then(function() {
-                return fetch('/api/videos/' + vid + '/chapters', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
-            })
-            .then(function(r) { return r.json(); })
-            .then(function(d) {
-                chaptersList.push(_chServerRowToLocal(d));
-                activeChapterIdx = chaptersList.length - 1;
-                renderChSidebar();
-                loadChapter(activeChapterIdx);
-                setChStudioStatus('Saved', '#4caf50');
-            })
-            .catch(function(err) { setChStudioStatus('Create failed: ' + err, '#e07070'); });
+
+    function csRescalePreview() {
+        var wrap = document.getElementById('csPreviewScale');
+        var preview = document.getElementById('csPreview');
+        if (!wrap || !preview) return;
+        var w = wrap.clientWidth;
+        if (!w) return;
+        var scale = w / 1920;
+        preview.style.transform = 'scale(' + scale + ')';
+        // The padding-top of csPreviewScale gives 56.25% aspect; nothing more to do.
     }
-    function deleteChapter(idx) {
-        if (idx < 0 || idx >= chaptersList.length) return;
-        var d = chaptersList[idx];
-        setChStudioStatus('Deleting…', '#5b9bd5');
-        fetch('/api/chapters/' + d.id, { method: 'DELETE' })
-            .then(function(r) { return r.json(); })
-            .then(function() {
-                chaptersList.splice(idx, 1);
-                if (chaptersList.length === 0) {
-                    // recreate one empty
-                    return fetch('/api/videos/' + _getChStudioVideoId() + '/chapters', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
-                        .then(function(r) { return r.json(); })
-                        .then(function(nd) {
-                            chaptersList.push(_chServerRowToLocal(nd));
-                            activeChapterIdx = 0;
-                        });
-                }
-                if (activeChapterIdx >= chaptersList.length) activeChapterIdx = chaptersList.length - 1;
-            })
-            .then(function() {
-                renderChSidebar();
-                loadChapter(activeChapterIdx);
-                setChStudioStatus('Saved', '#4caf50');
-            })
-            .catch(function(err) { setChStudioStatus('Delete failed: ' + err, '#e07070'); });
-    }
-    function renderChSidebar() {
-        var c = document.getElementById('chaptersSidebarList');
-        if (!c) return;
+
+    function csRenderList() {
+        var c = document.getElementById('csListRows');
         c.innerHTML = '';
-        chaptersList.forEach(function(d, i) {
-            var active = (i === activeChapterIdx);
-            var item = document.createElement('div');
-            item.style.cssText = 'padding:9px 10px; background:' + (active ? '#15151f' : 'transparent') + '; border:1px solid ' + (active ? '#5b9bd5' : '#1f1f30') + '; border-radius:4px; margin-bottom:6px; cursor:pointer; display:flex; align-items:center; gap:9px;';
-            item.onclick = function() {
-                if (i === activeChapterIdx) return;
-                // flush pending save for the chapter we're leaving
-                if (_chPatchTimer) { clearTimeout(_chPatchTimer); _chPatchTimer = null; }
-                var leaving = chaptersList[activeChapterIdx];
-                if (leaving) {
-                    _chApiPatch(leaving.id, { boxes: chapterBoxes, script: document.getElementById('chaptersScript').value })
-                        .catch(function() {});
-                    leaving.boxes = chapterBoxes.slice();
-                    leaving.script = document.getElementById('chaptersScript').value;
-                }
-                activeChapterIdx = i;
-                renderChSidebar();
-                loadChapter(i);
-            };
-            item.oncontextmenu = function(ev) {
-                ev.preventDefault();
-                if (confirm('Delete ' + d.name + '?')) deleteChapter(i);
-            };
-
-            var num = document.createElement('div');
-            num.textContent = (i + 1);
-            num.style.cssText = 'background:' + (active ? '#5b9bd5' : '#2a2a4a') + '; color:' + (active ? '#000' : '#888') + '; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:11px; flex-shrink:0;';
-            item.appendChild(num);
-
-            var info = document.createElement('div');
-            info.style.cssText = 'flex:1; min-width:0;';
-            var nm = document.createElement('div');
-            nm.textContent = d.name;
-            nm.style.cssText = 'font-size:12px; color:' + (active ? '#ddd' : '#aaa') + '; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-            info.appendChild(nm);
-            var bits = [];
-            var liveBoxes = active ? chapterBoxes.length : (d.boxes ? d.boxes.length : 0);
-            var liveImage = active ? !!document.getElementById('chaptersImage').src : !!d.imageUrl;
-            var liveAudio = active ? !!document.getElementById('chaptersAudioPlayer').src : !!d.audioUrl;
-            if (liveImage) bits.push('img');
-            if (liveBoxes) bits.push(liveBoxes + ' box' + (liveBoxes === 1 ? '' : 'es'));
-            if (liveAudio) bits.push('audio');
-            if (d.resultUrl) bits.push('rendered');
-            var meta = document.createElement('div');
-            meta.textContent = bits.length ? bits.join(' · ') : 'empty';
-            meta.style.cssText = 'font-size:10px; color:' + (bits.length ? '#666' : '#444') + '; margin-top:2px;';
-            info.appendChild(meta);
-            item.appendChild(info);
-            c.appendChild(item);
-        });
-    }
-
-    function loadChapter(idx) {
-        if (idx < 0 || idx >= chaptersList.length) return;
-        var d = chaptersList[idx];
-
-        // image + boxes
-        if (d.imageUrl) {
-            document.getElementById('chaptersImage').src = d.imageUrl + '?t=' + Date.now();
-            document.getElementById('chaptersPreview').style.display = 'block';
-            document.getElementById('chaptersDropZone').style.display = 'none';
-        } else {
-            document.getElementById('chaptersImage').src = '';
-            document.getElementById('chaptersPreview').style.display = 'none';
-            document.getElementById('chaptersDropZone').style.display = 'block';
-        }
-        chapterBoxes = (d.boxes || []).slice();
-        renderChBoxes();
-        renderChBoxAnimList();
-
-        // audio
-        if (d.audioUrl) {
-            document.getElementById('chaptersAudioName').textContent = d.audioName || '';
-            document.getElementById('chaptersAudioDuration').textContent = d.audioDuration || '';
-            document.getElementById('chaptersAudioPlayer').src = d.audioUrl;
-            document.getElementById('chaptersAudioPreview').style.display = 'block';
-            document.getElementById('chaptersAudioDropZone').style.display = 'none';
-        } else {
-            document.getElementById('chaptersAudioPlayer').src = '';
-            document.getElementById('chaptersAudioPreview').style.display = 'none';
-            document.getElementById('chaptersAudioDropZone').style.display = 'block';
-        }
-        chaptersAudioFile = null;  // unused when audio comes from server
-
-        // script
-        document.getElementById('chaptersScript').value = d.script || '';
-        var st = document.getElementById('chaptersScriptStatus');
-        st.textContent = '';
-        st.style.color = '#555';
-
-        // mode toggle button styling
-        _updateChModeButtonStyle();
-
-        // result video (if previously rendered)
-        document.getElementById('chaptersRenderStatus').textContent = '';
-        if (d.resultUrl) {
-            showChapterResult(d.resultMeta || { url: d.resultUrl, duration: 0, boxes: 0, reveal_times: [], size: [0,0], alignment: '' });
-        } else {
-            hideChapterResult();
-        }
-    }
-    function refreshChSidebarMeta() {
-        // called by UI mutations to keep sidebar metadata fresh without re-saving
-        renderChSidebar();
-    }
-    function renderAllChapters() {
-        saveActiveChapterState();
-        var ready = chaptersList.filter(function(d) {
-            return d.imageSrc && d.boxes.length > 0 && d.audioFile && (d.script || '').trim();
-        });
-        if (ready.length === 0) {
-            alert('No chapters are fully set up yet. Each needs: image + ≥1 box + audio + script.');
-            return;
-        }
-        alert('Render pipeline ships next iteration.\n\nReady to render: ' + ready.length + ' / ' + chaptersList.length);
-    }
-    function handleChaptersFile(file) {
-        if (!file || !file.type || !file.type.startsWith('image/')) return;
-        var d = chaptersList[activeChapterIdx];
-        if (!d) return;
-        // optimistic local preview
-        var reader = new FileReader();
-        reader.onload = function(e) {
-            document.getElementById('chaptersImage').src = e.target.result;
-            document.getElementById('chaptersPreview').style.display = 'block';
-            document.getElementById('chaptersDropZone').style.display = 'none';
-            clearChBoxes();
-            renderChSidebar();
-        };
-        reader.readAsDataURL(file);
-
-        // upload to server
-        setChStudioStatus('Uploading image…', '#5b9bd5');
-        var fd = new FormData();
-        fd.append('image', file, file.name);
-        fetch('/api/chapters/' + d.id + '/image', { method: 'POST', body: fd })
-            .then(function(r) { return r.json().then(function(j) { return {ok: r.ok, body: j}; }); })
-            .then(function(res) {
-                if (!res.ok) { setChStudioStatus('Upload failed: ' + (res.body.error||''), '#e07070'); return; }
-                d.imageUrl = res.body.image_path_url;
-                // boxes were cleared client-side; persist that too
-                d.boxes = [];
-                _chApiPatch(d.id, { boxes: [] }).catch(function(){});
-                // swap to server URL (cache-busted)
-                document.getElementById('chaptersImage').src = res.body.image_path_url + '?t=' + Date.now();
-                setChStudioStatus('Saved', '#4caf50');
-                renderChSidebar();
-            })
-            .catch(function(err) { setChStudioStatus('Upload error: ' + err, '#e07070'); });
-    }
-    function resetChaptersImage() {
-        var d = chaptersList[activeChapterIdx];
-        document.getElementById('chaptersImage').src = '';
-        document.getElementById('chaptersPreview').style.display = 'none';
-        document.getElementById('chaptersDropZone').style.display = 'block';
-        document.getElementById('chaptersFileInput').value = '';
-        clearChBoxes();
-        if (d) { d.imageUrl = ''; d.boxes = []; _chApiPatch(d.id, { boxes: [] }).catch(function(){}); }
-        renderChSidebar();
-    }
-
-    // ---- box drawing + crop mode ----
-    var chapterBoxes = []; // [{x,y,w,h}] in fractions of image displayed size
-    var chapterDragStart = null;
-    var chapterActiveEl = null;
-    var chapterCropMode = false;
-    var chapterCropStart = null;
-    var chapterCropRect = null; // displayed-px coords {x,y,w,h}
-    var chapterResize = null;   // {idx, edges, startX, startY, orig:{x,y,w,h}}
-
-    function enterChCropMode() {
-        var img = document.getElementById('chaptersImage');
-        if (!img.src) { alert('Upload an image first.'); return; }
-        chapterCropMode = true;
-        var layer = document.getElementById('chaptersBoxLayer');
-        Array.from(layer.querySelectorAll('.chapter-box')).forEach(function(el) { el.style.display = 'none'; });
-        document.getElementById('chaptersCropOverlay').style.display = 'block';
-        document.getElementById('chaptersBoxToolbar').style.display = 'none';
-        document.getElementById('chaptersCropToolbar').style.display = 'flex';
-        // initial selection: centered, 50% of image
-        var r = layer.getBoundingClientRect();
-        var w = r.width * 0.5, h = r.height * 0.5;
-        updateChCropRect((r.width - w) / 2, (r.height - h) / 2, w, h);
-    }
-    function exitChCropMode() {
-        chapterCropMode = false;
-        chapterCropStart = null;
-        var layer = document.getElementById('chaptersBoxLayer');
-        Array.from(layer.querySelectorAll('.chapter-box')).forEach(function(el) { el.style.display = 'block'; });
-        document.getElementById('chaptersCropOverlay').style.display = 'none';
-        document.getElementById('chaptersBoxToolbar').style.display = 'flex';
-        document.getElementById('chaptersCropToolbar').style.display = 'none';
-    }
-    function updateChCropRect(x, y, w, h) {
-        var layer = document.getElementById('chaptersBoxLayer');
-        var r = layer.getBoundingClientRect();
-        // Free aspect — just clamp inside the image bounds
-        if (x < 0) { w += x; x = 0; }
-        if (y < 0) { h += y; y = 0; }
-        if (w < 0) w = 0;
-        if (h < 0) h = 0;
-        if (x + w > r.width) w = r.width - x;
-        if (y + h > r.height) h = r.height - y;
-        chapterCropRect = { x: x, y: y, w: w, h: h };
-        var dim = 'background:rgba(0,0,0,0.55); position:absolute; pointer-events:none;';
-        document.getElementById('chaptersCropDimT').style.cssText = dim + 'left:0; top:0; width:100%; height:' + y + 'px;';
-        document.getElementById('chaptersCropDimB').style.cssText = dim + 'left:0; top:' + (y + h) + 'px; right:0; bottom:0;';
-        document.getElementById('chaptersCropDimL').style.cssText = dim + 'left:0; top:' + y + 'px; width:' + x + 'px; height:' + h + 'px;';
-        document.getElementById('chaptersCropDimR').style.cssText = dim + 'left:' + (x + w) + 'px; top:' + y + 'px; right:0; height:' + h + 'px;';
-        document.getElementById('chaptersCropSel').style.cssText =
-            'position:absolute; left:' + x + 'px; top:' + y + 'px; width:' + w + 'px; height:' + h + 'px; ' +
-            'border:2px dashed #5b9bd5; box-shadow:0 0 0 1px rgba(0,0,0,0.5); box-sizing:border-box; pointer-events:none;';
-    }
-    function _sampleChCornerBgColor(img, patch) {
-        patch = patch || 40;
-        var W = img.naturalWidth, H = img.naturalHeight;
-        var tc = document.createElement('canvas');
-        tc.width = W; tc.height = H;
-        var tctx = tc.getContext('2d');
-        tctx.drawImage(img, 0, 0);
-        var rs = [], gs = [], bs = [];
-        [[0,0], [W-patch,0], [0,H-patch], [W-patch,H-patch]].forEach(function(c) {
-            var cx = Math.max(0, c[0]), cy = Math.max(0, c[1]);
-            var cw = Math.min(patch, W - cx), ch = Math.min(patch, H - cy);
-            if (cw <= 0 || ch <= 0) return;
-            var d = tctx.getImageData(cx, cy, cw, ch).data;
-            for (var i = 0; i < d.length; i += 4) {
-                rs.push(d[i]); gs.push(d[i+1]); bs.push(d[i+2]);
-            }
-        });
-        if (!rs.length) return [8, 8, 18];
-        rs.sort(function(a,b){return a-b;});
-        gs.sort(function(a,b){return a-b;});
-        bs.sort(function(a,b){return a-b;});
-        var m = rs.length >> 1;
-        return [rs[m], gs[m], bs[m]];
-    }
-
-    function applyChCrop() {
-        if (!chapterCropRect || chapterCropRect.w < 12 || chapterCropRect.h < 12) {
-            alert('Selection too small.'); return;
-        }
-        var d = chaptersList[activeChapterIdx];
-        if (!d) return;
-        var img = document.getElementById('chaptersImage');
-        var layer = document.getElementById('chaptersBoxLayer');
-        var r = layer.getBoundingClientRect();
-        var scaleX = img.naturalWidth / r.width;
-        var scaleY = img.naturalHeight / r.height;
-        var sx = Math.round(chapterCropRect.x * scaleX);
-        var sy = Math.round(chapterCropRect.y * scaleY);
-        var sw = Math.round(chapterCropRect.w * scaleX);
-        var sh = Math.round(chapterCropRect.h * scaleY);
-        sw -= sw % 2; sh -= sh % 2;
-        if (sw < 4 || sh < 4) { alert('Selection too small.'); return; }
-
-        // Sample bg color from corners of the ORIGINAL image
-        var bg = _sampleChCornerBgColor(img, 40);
-
-        // Compute 16:9 canvas that fits the selection (selection centered, rest = bg color)
-        var tw, th;
-        if (sw / sh >= 16 / 9) {
-            tw = sw;
-            th = Math.round(sw * 9 / 16);
-        } else {
-            th = sh;
-            tw = Math.round(sh * 16 / 9);
-        }
-        tw -= tw % 2; th -= th % 2;
-
-        var canvas = document.createElement('canvas');
-        canvas.width = tw; canvas.height = th;
-        var ctx = canvas.getContext('2d');
-        ctx.fillStyle = 'rgb(' + bg[0] + ',' + bg[1] + ',' + bg[2] + ')';
-        ctx.fillRect(0, 0, tw, th);
-        var ox = Math.round((tw - sw) / 2);
-        var oy = Math.round((th - sh) / 2);
-        ctx.drawImage(img, sx, sy, sw, sh, ox, oy, sw, sh);
-
-        setChStudioStatus('Saving cropped image…', '#5b9bd5');
-        canvas.toBlob(function(blob) {
-            var fd = new FormData();
-            fd.append('image', blob, 'cropped.png');
-            fetch('/api/chapters/' + d.id + '/image', { method: 'POST', body: fd })
-                .then(function(resp) { return resp.json().then(function(j) { return {ok: resp.ok, body: j}; }); })
-                .then(function(res) {
-                    if (!res.ok) { setChStudioStatus('Crop save failed', '#e07070'); return; }
-                    d.imageUrl = res.body.image_path_url;
-                    d.boxes = [];
-                    _chApiPatch(d.id, { boxes: [] }).catch(function() {});
-                    document.getElementById('chaptersImage').src = res.body.image_path_url + '?t=' + Date.now();
-                    clearChBoxes();
-                    exitChCropMode();
-                    setChStudioStatus('Saved', '#4caf50');
-                    renderChSidebar();
-                })
-                .catch(function() { setChStudioStatus('Crop upload error', '#e07070'); });
-        }, 'image/png');
-    }
-
-    function chBoxLayerDown(e) {
-        if (chapterCropMode) {
-            var layer = document.getElementById('chaptersBoxLayer');
-            var r = layer.getBoundingClientRect();
-            chapterCropStart = { x: e.clientX - r.left, y: e.clientY - r.top };
-            updateChCropRect(chapterCropStart.x, chapterCropStart.y, 0, 0);
-            e.preventDefault();
-            return;
-        }
-        var layer = document.getElementById('chaptersBoxLayer');
-        var r = layer.getBoundingClientRect();
-        chapterDragStart = { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height };
-        chapterActiveEl = document.createElement('div');
-        chapterActiveEl.style.cssText = 'position:absolute; border:2px dashed #5b9bd5; background:rgba(245,185,66,0.12); pointer-events:none;';
-        chapterActiveEl.style.left = chapterDragStart.x + 'px';
-        chapterActiveEl.style.top = chapterDragStart.y + 'px';
-        chapterActiveEl.style.width = '0px';
-        chapterActiveEl.style.height = '0px';
-        layer.appendChild(chapterActiveEl);
-        e.preventDefault();
-    }
-    function chBoxLayerMove(e) {
-        if (chapterCropMode) {
-            if (!chapterCropStart) return;
-            var layer = document.getElementById('chaptersBoxLayer');
-            var r = layer.getBoundingClientRect();
-            var cx = e.clientX - r.left, cy = e.clientY - r.top;
-            cx = Math.max(0, Math.min(cx, r.width));
-            cy = Math.max(0, Math.min(cy, r.height));
-            var sx = chapterCropStart.x, sy = chapterCropStart.y;
-            var x = Math.min(sx, cx), y = Math.min(sy, cy);
-            var w = Math.abs(cx - sx), h = Math.abs(cy - sy);
-            updateChCropRect(x, y, w, h);
-            return;
-        }
-        if (!chapterDragStart || !chapterActiveEl) return;
-        var layer = document.getElementById('chaptersBoxLayer');
-        var r = layer.getBoundingClientRect();
-        var cx = e.clientX - r.left, cy = e.clientY - r.top;
-        cx = Math.max(0, Math.min(cx, r.width));
-        cy = Math.max(0, Math.min(cy, r.height));
-        var x = Math.min(chapterDragStart.x, cx), y = Math.min(chapterDragStart.y, cy);
-        var w = Math.abs(cx - chapterDragStart.x), h = Math.abs(cy - chapterDragStart.y);
-        chapterActiveEl.style.left = x + 'px';
-        chapterActiveEl.style.top = y + 'px';
-        chapterActiveEl.style.width = w + 'px';
-        chapterActiveEl.style.height = h + 'px';
-    }
-    function chBoxLayerUp(e) {
-        if (chapterCropMode) {
-            chapterCropStart = null;
-            return;
-        }
-        if (!chapterDragStart || !chapterActiveEl) return;
-        var rect = chapterActiveEl.getBoundingClientRect();
-        var layer = document.getElementById('chaptersBoxLayer');
-        var r = layer.getBoundingClientRect();
-        var w = parseFloat(chapterActiveEl.style.width) || 0;
-        var h = parseFloat(chapterActiveEl.style.height) || 0;
-        var x = parseFloat(chapterActiveEl.style.left) || 0;
-        var y = parseFloat(chapterActiveEl.style.top) || 0;
-        chapterActiveEl.remove();
-        chapterActiveEl = null;
-        chapterDragStart = null;
-        if (w > 8 && h > 8) {
-            chapterBoxes.push({ x: x / r.width, y: y / r.height, w: w / r.width, h: h / r.height });
-            renderChBoxes();
-            renderChBoxAnimList();
-            // Auto-select the just-drawn box so the user can immediately hit W/A/S/D/Q/E/C/H
-            if (typeof setChSelectedBox === 'function') setChSelectedBox(chapterBoxes.length - 1);
-            if (typeof scheduleChPatch === 'function') scheduleChPatch();
-        }
-    }
-    function renderChBoxes() {
-        var layer = document.getElementById('chaptersBoxLayer');
-        // clear committed boxes (but keep any drag preview)
-        Array.from(layer.querySelectorAll('.chapter-box')).forEach(function(el) { el.remove(); });
-        chapterBoxes.forEach(function(b, i) {
-            var isHide = (b.anim === 'hide');
-            var isSelected = (i === selectedBoxIdx);
-            var borderClr = isHide ? '#e07070' : '#5b9bd5';
-            var bgClr = isHide ? 'rgba(224,112,112,0.18)' : 'rgba(245,185,66,0.10)';
-            var d = document.createElement('div');
-            d.className = 'chapter-box';
-            d.dataset.idx = i;
-            d.title = isHide
-                ? 'Hidden region — masked the whole video. Right-click to delete.'
-                : 'Right-click or click the × to delete';
-            var borderWidth = isSelected ? 3 : 2;
-            var glow = isSelected ? 'box-shadow:0 0 0 1px rgba(0,0,0,0.4),0 0 12px rgba(245,185,66,0.6);' : 'box-shadow:0 0 0 1px rgba(0,0,0,0.4);';
-            d.style.cssText = 'position:absolute; border:' + borderWidth + 'px solid ' + borderClr + '; background:' + bgClr + '; pointer-events:auto;' + glow + ' cursor:context-menu;';
-            if (isHide) {
-                d.style.borderStyle = 'dashed';
-            }
-            d.style.left = (b.x * 100) + '%';
-            d.style.top = (b.y * 100) + '%';
-            d.style.width = (b.w * 100) + '%';
-            d.style.height = (b.h * 100) + '%';
-            d.oncontextmenu = function(ev) { ev.preventDefault(); ev.stopPropagation(); deleteChBox(parseInt(d.dataset.idx, 10)); };
-            // Allow left-click+drag to fall through to the layer so users can draw a NEW
-            // box inside an existing one (e.g. selecting smaller text inside a big region).
-            d.style.pointerEvents = 'none';
-            // The number badge + delete × stay clickable (their own pointer-events:auto below).
-            var badge = document.createElement('div');
-            badge.textContent = isHide ? '×' : (i + 1);
-            badge.title = 'Click to select this box';
-            badge.style.cssText = 'position:absolute; top:-10px; left:-10px; background:' + borderClr + '; color:#000; font-weight:700; font-size:' + (isHide ? '14' : '12') + 'px; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 4px rgba(0,0,0,0.5); pointer-events:auto; cursor:pointer;';
-            badge.onmousedown = function(ev) { ev.stopPropagation(); };
-            badge.onclick = function(ev) {
-                ev.preventDefault(); ev.stopPropagation();
-                setChSelectedBox(parseInt(d.dataset.idx, 10));
-            };
-            d.appendChild(badge);
-            var del = document.createElement('div');
-            del.textContent = '×';
-            del.title = 'Delete this box';
-            del.style.cssText = 'position:absolute; top:-10px; right:-10px; background:#2a2a4a; color:' + borderClr + '; font-weight:700; font-size:14px; line-height:1; width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,0.5); border:1px solid ' + borderClr + '; pointer-events:auto;';
-            del.onclick = function(ev) { ev.preventDefault(); ev.stopPropagation(); deleteChBox(parseInt(d.dataset.idx, 10)); };
-            del.onmousedown = function(ev) { ev.stopPropagation(); };
-            d.appendChild(del);
-
-            // Resize handles: 4 edges + 4 corners
-            var handles = [
-                { e: 'n',  style: 'left:10px; right:10px; top:-4px; height:8px; cursor:ns-resize;' },
-                { e: 's',  style: 'left:10px; right:10px; bottom:-4px; height:8px; cursor:ns-resize;' },
-                { e: 'w',  style: 'top:10px; bottom:10px; left:-4px; width:8px; cursor:ew-resize;' },
-                { e: 'e',  style: 'top:10px; bottom:10px; right:-4px; width:8px; cursor:ew-resize;' },
-                { e: 'nw', style: 'top:-6px; left:-6px; width:12px; height:12px; cursor:nwse-resize;' },
-                { e: 'ne', style: 'top:-6px; right:-6px; width:12px; height:12px; cursor:nesw-resize;' },
-                { e: 'sw', style: 'bottom:-6px; left:-6px; width:12px; height:12px; cursor:nesw-resize;' },
-                { e: 'se', style: 'bottom:-6px; right:-6px; width:12px; height:12px; cursor:nwse-resize;' },
-            ];
-            handles.forEach(function(hh) {
-                var hd = document.createElement('div');
-                hd.style.cssText = 'position:absolute; ' + hh.style + ' pointer-events:auto; z-index:5;';
-                (function(edges, idx) {
-                    hd.onmousedown = function(ev) {
-                        ev.preventDefault(); ev.stopPropagation();
-                        var bx = chapterBoxes[idx];
-                        if (!bx) return;
-                        chapterResize = {
-                            idx: idx,
-                            edges: edges,
-                            startX: ev.clientX, startY: ev.clientY,
-                            orig: { x: bx.x, y: bx.y, w: bx.w, h: bx.h }
-                        };
-                    };
-                })(hh.e, i);
-                d.appendChild(hd);
-            });
-
-            layer.appendChild(d);
-        });
-        document.getElementById('chaptersBoxCount').textContent = chapterBoxes.length + ' box' + (chapterBoxes.length === 1 ? '' : 'es');
-        if (typeof renderChSidebar === 'function' && chaptersList && chaptersList.length) renderChSidebar();
-        // Note: renderChBoxAnimList NOT called here. Callers that change box structure
-        // call it explicitly. This keeps setChSelectedBox (which uses renderChBoxes for
-        // the on-image glow) from rebuilding the panel and closing open dropdowns.
-    }
-
-    var ANIM_OPTIONS = [
-        ['fade', 'Crossfade (C)'],
-        ['from_right', 'Slide ← (A)'],
-        ['from_left', 'Slide → (D)'],
-        ['from_above', 'Slide ↓ (S)'],
-        ['from_below', 'Slide ↑ (W)'],
-        ['zoom_in', 'Zoom in (Q)'],
-        ['zoom_out', 'Zoom out (E)'],
-        ['write_on', 'Write on (R)'],
-        ['hide', 'Hide (persistent) (H)'],
-    ];
-    // WASD = direction of motion (like in games). 'W' = box moves up = comes from below.
-    var KEY_TO_ANIM = {
-        c: 'fade',
-        w: 'from_below',   // motion ↑  (box rises into place)
-        a: 'from_right',   // motion ←  (box slides leftward)
-        s: 'from_above',   // motion ↓  (box drops into place)
-        d: 'from_left',    // motion →  (box slides rightward)
-        q: 'zoom_in',
-        e: 'zoom_out',
-        r: 'write_on',     // left → right wipe reveal
-        h: 'hide',
-    };
-    var selectedBoxIdx = -1;
-    function setChSelectedBox(idx, opts) {
-        opts = opts || {};
-        selectedBoxIdx = (idx >= 0 && idx < chapterBoxes.length) ? idx : -1;
-        if (opts.silent) {
-            // update CSS in place — preserves open dropdown / focus
-            _highlightChSelectedRow();
-        } else {
-            if (typeof renderChBoxAnimList === 'function') renderChBoxAnimList();
-        }
-        if (typeof renderChBoxes === 'function') renderChBoxes();
-    }
-    var _dragInsertBefore = null;
-    function _setChDragInsertIndicator(insertBeforeIdx) {
-        var c = document.getElementById('chaptersBoxList');
-        if (!c) return;
-        for (var k = 0; k < c.children.length; k++) {
-            c.children[k].style.boxShadow = '';
-        }
-        if (insertBeforeIdx === null || insertBeforeIdx === undefined) return;
-        if (insertBeforeIdx < c.children.length) {
-            // gold line ABOVE this row
-            c.children[insertBeforeIdx].style.boxShadow = '0 -3px 0 #5b9bd5';
-        } else if (c.children.length > 0) {
-            // dropping past the last row — line BELOW the last
-            c.children[c.children.length - 1].style.boxShadow = '0 3px 0 #5b9bd5';
-        }
-    }
-
-    function _highlightChSelectedRow() {
-        var c = document.getElementById('chaptersBoxList');
-        if (!c) return;
-        for (var k = 0; k < c.children.length; k++) {
-            var row = c.children[k];
-            var idx = parseInt(row.dataset.idx, 10);
-            if (isNaN(idx)) continue;
-            var isSel = (idx === selectedBoxIdx);
-            var isHide = chapterBoxes[idx] && chapterBoxes[idx].anim === 'hide';
-            row.style.borderColor = isSel ? '#5b9bd5' : (isHide ? '#3a2020' : '#1f1f30');
-            row.style.background = isSel ? '#1f1c0c' : '#15151f';
-        }
-    }
-    function applyChAnimToSelected(animKey) {
-        if (selectedBoxIdx < 0 || selectedBoxIdx >= chapterBoxes.length) return;
-        chapterBoxes[selectedBoxIdx].anim = animKey;
-        renderChBoxes();
-        renderChBoxAnimList();
-        if (typeof scheduleChPatch === 'function') scheduleChPatch();
-    }
-    // Box resize: update geometry while dragging an edge or corner handle
-    function _applyChBoxResize(cx, cy) {
-        if (!chapterResize) return;
-        var b = chapterBoxes[chapterResize.idx];
-        if (!b) return;
-        var layer = document.getElementById('chaptersBoxLayer');
-        var lr = layer.getBoundingClientRect();
-        var dxf = (cx - chapterResize.startX) / lr.width;
-        var dyf = (cy - chapterResize.startY) / lr.height;
-        var ox = chapterResize.orig.x, oy = chapterResize.orig.y;
-        var ow = chapterResize.orig.w, oh = chapterResize.orig.h;
-        var nx = ox, ny = oy, nw = ow, nh = oh;
-        var minSz = 0.01;
-        if (chapterResize.edges.indexOf('n') >= 0) {
-            nh = oh - dyf; ny = oy + dyf;
-            if (nh < minSz) { nh = minSz; ny = oy + oh - minSz; }
-        }
-        if (chapterResize.edges.indexOf('s') >= 0) {
-            nh = oh + dyf;
-            if (nh < minSz) nh = minSz;
-        }
-        if (chapterResize.edges.indexOf('w') >= 0) {
-            nw = ow - dxf; nx = ox + dxf;
-            if (nw < minSz) { nw = minSz; nx = ox + ow - minSz; }
-        }
-        if (chapterResize.edges.indexOf('e') >= 0) {
-            nw = ow + dxf;
-            if (nw < minSz) nw = minSz;
-        }
-        if (nx < 0) { nw += nx; nx = 0; }
-        if (ny < 0) { nh += ny; ny = 0; }
-        if (nx + nw > 1) nw = 1 - nx;
-        if (ny + nh > 1) nh = 1 - ny;
-        b.x = nx; b.y = ny; b.w = nw; b.h = nh;
-        renderChBoxes();
-    }
-
-    // Catch mouseup anywhere on the page so an in-progress box-drag commits even when
-    // the cursor leaves the image area.
-    document.addEventListener('mousemove', function(ev) {
-        if (chapterResize) {
-            _applyChBoxResize(ev.clientX, ev.clientY);
-            return;
-        }
-        if (chapterDragStart || chapterCropStart) {
-            chBoxLayerMove(ev);
-        }
-    });
-    document.addEventListener('mouseup', function(ev) {
-        if (chapterResize) {
-            chapterResize = null;
-            if (typeof scheduleChPatch === 'function') scheduleChPatch();
-            return;
-        }
-        if (chapterDragStart || chapterCropStart) {
-            chBoxLayerUp(ev);
-        }
-    });
-
-    document.addEventListener('keydown', function(ev) {
-        var studio = document.getElementById('chaptersStudio');
-        if (!studio || studio.style.display !== 'block') return;
-        var tag = ((ev.target && ev.target.tagName) || '').toLowerCase();
-        // skip when typing in inputs/textareas/selects; allow keys when target is body/document
-        if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-        if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
-        var k = ev.key;
-        var kLower = k.toLowerCase();
-        if (KEY_TO_ANIM[kLower]) {
-            if (selectedBoxIdx < 0) return;  // need a selection
-            ev.preventDefault();
-            applyChAnimToSelected(KEY_TO_ANIM[kLower]);
-            return;
-        }
-        if (k >= '1' && k <= '9') {
-            // Number = move the SELECTED box to that position (not select)
-            var target = parseInt(k, 10) - 1;
-            if (selectedBoxIdx < 0 || selectedBoxIdx >= chapterBoxes.length) return;
-            if (target >= chapterBoxes.length || target === selectedBoxIdx) return;
-            ev.preventDefault();
-            var moved = chapterBoxes.splice(selectedBoxIdx, 1)[0];
-            chapterBoxes.splice(target, 0, moved);
-            selectedBoxIdx = target;
-            renderChBoxes();
-            renderChBoxAnimList();
-            if (typeof scheduleChPatch === 'function') scheduleChPatch();
-            return;
-        }
-        if (k === 'ArrowUp') {
-            ev.preventDefault();
-            if (chapterBoxes.length === 0) return;
-            setChSelectedBox(selectedBoxIdx <= 0 ? 0 : selectedBoxIdx - 1);
-        } else if (k === 'ArrowDown') {
-            ev.preventDefault();
-            if (chapterBoxes.length === 0) return;
-            setChSelectedBox(selectedBoxIdx >= chapterBoxes.length - 1 ? chapterBoxes.length - 1 : selectedBoxIdx + 1);
-        } else if (k === 'Escape') {
-            setChSelectedBox(-1);
-        }
-    });
-    // Legacy aliases — old picks map to new.
-    var LEGACY_ANIM = { from_right_fade:'from_right', from_left_fade:'from_left',
-                        from_above_fade:'from_above', from_below_fade:'from_below' };
-    function renderChBoxAnimList() {
-        var c = document.getElementById('chaptersBoxList');
-        if (!c) return;
-        c.innerHTML = '';
-        if (chapterBoxes.length === 0) {
-            var empty = document.createElement('div');
-            empty.style.cssText = 'color:#444; font-size:11px; padding:8px 4px;';
-            empty.textContent = 'Draw boxes on the image — they\'ll appear here for animation styling.';
-            c.appendChild(empty);
-            return;
-        }
-        // pull descriptions + reveal_times from last render meta if available
-        var d = chaptersList[activeChapterIdx];
-        var descs = (d && d.resultMeta && d.resultMeta.descriptions) || [];
-        var revealTimes = (d && d.resultMeta && d.resultMeta.reveal_times) || [];
-        var revealIdxCounter = -1;  // tracks reveal-box ordinal (skips hide boxes)
-        chapterBoxes.forEach(function(b, i) {
-            var isHide = (b.anim === 'hide');
-            var isSelected = (i === selectedBoxIdx);
-            var accent = isHide ? '#e07070' : '#5b9bd5';
+        csState.items.forEach(function(txt, i) {
             var row = document.createElement('div');
+            row.className = 'cs-row';
             row.draggable = true;
-            row.dataset.idx = i;
-            var borderClr = isSelected ? '#5b9bd5' : (isHide ? '#3a2020' : '#1f1f30');
-            var bgClr = isSelected ? '#1f1c0c' : '#15151f';
-            row.style.cssText = 'margin-bottom:8px; padding:8px 10px; background:' + bgClr + '; border:1px solid ' + borderClr + '; border-radius:4px; transition:border-color 0.1s, opacity 0.1s; cursor:pointer;';
-            row.onclick = function(ev) {
-                // Don't override clicks on the dropdown / × delete; let those bubble through
-                setChSelectedBox(i);
-            };
-            row.ondragstart = function(ev) {
-                ev.dataTransfer.effectAllowed = 'move';
-                ev.dataTransfer.setData('text/plain', String(i));
-                row.style.opacity = '0.45';
-            };
-            row.ondragend = function() {
-                row.style.opacity = '1';
-                _setChDragInsertIndicator(null);
-                _dragInsertBefore = null;
-            };
-            row.ondragover = function(ev) {
-                ev.preventDefault();
-                ev.dataTransfer.dropEffect = 'move';
-                // insert above the row if cursor is in upper half, below if lower half
-                var rect = row.getBoundingClientRect();
-                var insertBefore = (ev.clientY < rect.top + rect.height / 2) ? i : (i + 1);
-                _dragInsertBefore = insertBefore;
-                _setChDragInsertIndicator(insertBefore);
-            };
-            row.ondrop = function(ev) {
-                ev.preventDefault();
-                var src = parseInt(ev.dataTransfer.getData('text/plain'), 10);
-                var dst = _dragInsertBefore;
-                _setChDragInsertIndicator(null);
-                _dragInsertBefore = null;
-                if (isNaN(src) || dst === null || dst === undefined) return;
-                // no-op: dropping right above its own index or right below
-                if (src === dst || src === dst - 1) return;
-                var moved = chapterBoxes.splice(src, 1)[0];
-                if (src < dst) dst -= 1;   // we removed an item before the target
-                chapterBoxes.splice(dst, 0, moved);
-                renderChBoxes();
-                renderChBoxAnimList();
-                if (typeof scheduleChPatch === 'function') scheduleChPatch();
-            };
-            var head = document.createElement('div');
-            head.style.cssText = 'display:flex; align-items:center; gap:8px;';
-            var grip = document.createElement('div');
-            grip.textContent = '⋮⋮';
-            grip.title = 'Drag to reorder';
-            grip.style.cssText = 'color:#444; cursor:grab; font-size:13px; line-height:1; flex-shrink:0; user-select:none; letter-spacing:-2px;';
-            head.appendChild(grip);
-            var num = document.createElement('div');
-            num.textContent = isHide ? '×' : (i + 1);
-            num.style.cssText = 'background:' + accent + '; color:#000; width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:' + (isHide ? '13' : '11') + 'px; flex-shrink:0;';
-            head.appendChild(num);
-            var sel = document.createElement('select');
-            sel.style.cssText = 'flex:1; min-width:0; background:#0d0d1a; color:' + (isHide ? '#e07070' : '#ddd') + '; border:1px solid #2a2a4a; border-radius:4px; padding:4px 6px; font-size:11px;';
-            var curAnim = LEGACY_ANIM[b.anim] || b.anim || 'fade';
-            ANIM_OPTIONS.forEach(function(o) {
-                var opt = document.createElement('option');
-                opt.value = o[0]; opt.textContent = o[1];
-                if (curAnim === o[0]) opt.selected = true;
-                sel.appendChild(opt);
-            });
-            // Stop the dropdown's click/mousedown from bubbling to row.onclick (which
-            // would re-render and close the open native picker). Still mark the box as
-            // selected — but silently, so the DOM stays intact.
-            sel.onmousedown = function(ev) {
-                ev.stopPropagation();
-                setChSelectedBox(i, { silent: true });
-            };
-            sel.onclick = function(ev) { ev.stopPropagation(); };
-            sel.onchange = function() {
-                b.anim = sel.value;
-                if (typeof scheduleChPatch === 'function') scheduleChPatch();
-                renderChBoxes();
-                renderChBoxAnimList();  // hide vs reveal layout differs; rebuild
-            };
-            head.appendChild(sel);
-            row.appendChild(head);
-            if (isHide) {
-                var note = document.createElement('div');
-                note.textContent = 'Masked the entire video — no reveal.';
-                note.style.cssText = 'color:#e07070; font-size:10px; margin-top:6px; padding-left:28px;';
-                row.appendChild(note);
-            } else {
-                revealIdxCounter += 1;
-                var revealOrdinal = revealIdxCounter;
-                if (descs[revealOrdinal]) {
-                    var desc = document.createElement('div');
-                    desc.textContent = descs[revealOrdinal];
-                    desc.style.cssText = 'color:#666; font-size:10px; margin-top:6px; padding-left:28px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-                    desc.title = descs[revealOrdinal];
-                    row.appendChild(desc);
+            row.dataset.idx = String(i);
+
+            var handle = document.createElement('span');
+            handle.className = 'cs-handle';
+            handle.textContent = '≡';
+            row.appendChild(handle);
+
+            var num = document.createElement('span');
+            num.style.cssText = 'color:#5b9bd5; font-size:11px; font-weight:700; min-width:22px;';
+            num.textContent = (i + 1) + '.';
+            row.appendChild(num);
+
+            var inp = document.createElement('input');
+            inp.type = 'text';
+            inp.className = 'cs-text-input';
+            inp.value = txt;
+            inp.placeholder = 'Chapter title…';
+            inp.oninput = function() { csState.items[i] = inp.value; csRenderPreview(); csScheduleSave(); };
+            inp.onkeydown = function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    csState.items.splice(i + 1, 0, '');
+                    csRenderList();
+                    csRenderPreview();
+                    csScheduleSave();
+                    // Focus the new row
+                    setTimeout(function() {
+                        var rows = document.querySelectorAll('#csListRows .cs-row input');
+                        if (rows[i + 1]) rows[i + 1].focus();
+                    }, 0);
+                } else if (e.key === 'Backspace' && inp.value === '' && csState.items.length > 1) {
+                    e.preventDefault();
+                    csState.items.splice(i, 1);
+                    csRenderList();
+                    csRenderPreview();
+                    csScheduleSave();
+                    setTimeout(function() {
+                        var rows = document.querySelectorAll('#csListRows .cs-row input');
+                        var focusIdx = Math.max(0, i - 1);
+                        if (rows[focusIdx]) rows[focusIdx].focus();
+                    }, 0);
                 }
-            }
+            };
+            row.appendChild(inp);
+
+            var del = document.createElement('button');
+            del.className = 'cs-del';
+            del.textContent = '×';
+            del.title = 'Delete this chapter';
+            del.onclick = function() {
+                if (csState.items.length <= 1) return;
+                csState.items.splice(i, 1);
+                csRenderList();
+                csRenderPreview();
+                csScheduleSave();
+            };
+            row.appendChild(del);
+
+            // Drag reorder
+            row.ondragstart = function(e) {
+                e.dataTransfer.setData('text/plain', String(i));
+                e.dataTransfer.effectAllowed = 'move';
+                row.style.opacity = '0.4';
+            };
+            row.ondragend = function() { row.style.opacity = '1'; };
+            row.ondragover = function(e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; };
+            row.ondrop = function(e) {
+                e.preventDefault();
+                var from = parseInt(e.dataTransfer.getData('text/plain'), 10);
+                var to = i;
+                if (isNaN(from) || from === to) return;
+                var moved = csState.items.splice(from, 1)[0];
+                csState.items.splice(to, 0, moved);
+                csRenderList();
+                csRenderPreview();
+                csScheduleSave();
+            };
+
             c.appendChild(row);
         });
-    }
-    function deleteChBox(idx) {
-        if (idx < 0 || idx >= chapterBoxes.length) return;
-        chapterBoxes.splice(idx, 1);
-        renderChBoxes();
-        renderChBoxAnimList();
-        if (typeof scheduleChPatch === 'function') scheduleChPatch();
-    }
-    function undoChLastBox() {
-        if (chapterBoxes.length === 0) return;
-        chapterBoxes.pop();
-        renderChBoxes();
-        renderChBoxAnimList();
-        if (typeof scheduleChPatch === 'function') scheduleChPatch();
-    }
-    function clearChBoxes() {
-        chapterBoxes = [];
-        var layer = document.getElementById('chaptersBoxLayer');
-        if (layer) Array.from(layer.querySelectorAll('.chapter-box')).forEach(function(el) { el.remove(); });
-        var counter = document.getElementById('chaptersBoxCount');
-        if (counter) counter.textContent = '0 boxes';
-        renderChBoxAnimList();
-        if (typeof scheduleChPatch === 'function') scheduleChPatch();
+        document.getElementById('csRenderCount').textContent = csState.items.filter(function(x){return x.trim();}).length;
     }
 
-    // ---- audio upload + auto-transcribe ----
-    var chaptersAudioFile = null;  // (legacy — only set during inline preview before upload completes)
-    function handleChaptersAudio(file) {
-        if (!file || !file.type || !file.type.startsWith('audio/')) {
-            alert('Pick an audio file (.mp3 / .wav / .m4a).');
-            return;
-        }
-        var d = chaptersList[activeChapterIdx];
-        if (!d) return;
-        chaptersAudioFile = file;
-        var capturedDuration = '';
-        var reader = new FileReader();
-        reader.onload = function(e) {
-            var player = document.getElementById('chaptersAudioPlayer');
-            player.src = e.target.result;
-            player.onloadedmetadata = function() {
-                capturedDuration = player.duration.toFixed(1) + 's';
-                document.getElementById('chaptersAudioDuration').textContent = capturedDuration;
-                d.audioDuration = capturedDuration;
-            };
-            document.getElementById('chaptersAudioName').textContent = file.name;
-            document.getElementById('chaptersAudioPreview').style.display = 'block';
-            document.getElementById('chaptersAudioDropZone').style.display = 'none';
-            d.audioName = file.name;
-            renderChSidebar();
-        };
-        reader.readAsDataURL(file);
-
-        // upload to server (parallel with transcribe)
-        setChStudioStatus('Uploading audio…', '#5b9bd5');
-        var doUpload = function() {
-            var fd = new FormData();
-            fd.append('audio', file, file.name);
-            fd.append('duration', capturedDuration || '');
-            return fetch('/api/chapters/' + d.id + '/audio', { method: 'POST', body: fd })
-                .then(function(r) { return r.json().then(function(j) { return {ok: r.ok, body: j}; }); })
-                .then(function(res) {
-                    if (!res.ok) { setChStudioStatus('Upload failed: ' + (res.body.error||''), '#e07070'); return; }
-                    d.audioUrl = res.body.audio_path_url;
-                    setChStudioStatus('Saved', '#4caf50');
-                    renderChSidebar();
-                });
-        };
-        // small delay so the FileReader has a chance to capture duration
-        setTimeout(doUpload, 250);
-
-        transcribeChaptersAudio(file);
-    }
-    function transcribeChaptersAudio(file) {
-        var ta = document.getElementById('chaptersScript');
-        var status = document.getElementById('chaptersScriptStatus');
-        // only auto-fill if textarea is empty (don't clobber manual edits)
-        var wasEmpty = ta.value.trim() === '';
-        if (wasEmpty) ta.value = '';
-        status.textContent = 'Transcribing…';
-        status.style.color = '#5b9bd5';
-        var fd = new FormData();
-        fd.append('audio', file);
-        fetch('/api/chapters/transcribe', { method: 'POST', body: fd })
-            .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, body: j }; }); })
-            .then(function(res) {
-                if (!res.ok) {
-                    status.textContent = 'Transcribe failed: ' + (res.body.error || 'unknown') + ' — paste script manually';
-                    status.style.color = '#e07070';
-                    return;
-                }
-                if (wasEmpty) {
-                    ta.value = res.body.transcript || '';
-                    status.textContent = 'Auto-transcribed (edit if needed)';
-                    status.style.color = '#4caf50';
-                } else {
-                    status.textContent = 'Skipped auto-fill (textarea has content)';
-                    status.style.color = '#888';
-                }
-            })
-            .catch(function(err) {
-                status.textContent = 'Transcribe error: ' + err + ' — paste script manually';
-                status.style.color = '#e07070';
-            });
-    }
-    function resetChaptersAudio() {
-        var d = chaptersList[activeChapterIdx];
-        chaptersAudioFile = null;
-        document.getElementById('chaptersAudioPlayer').src = '';
-        document.getElementById('chaptersAudioPreview').style.display = 'none';
-        document.getElementById('chaptersAudioDropZone').style.display = 'block';
-        document.getElementById('chaptersAudioInput').value = '';
-        if (d) { d.audioUrl = ''; d.audioName = ''; d.audioDuration = ''; }
-        renderChSidebar();
-    }
-
-    function dataUrlToBlobCh(dataUrl) {
-        var parts = dataUrl.split(',');
-        var mime = (parts[0].match(/data:(.*?);/) || [])[1] || 'image/png';
-        var bin = atob(parts[1]);
-        var arr = new Uint8Array(bin.length);
-        for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-        return new Blob([arr], { type: mime });
-    }
-
-    function renderChapter() {
-        var d = chaptersList[activeChapterIdx];
-        if (!d) return;
-        if (!d.imageUrl && !document.getElementById('chaptersImage').src) { alert('Upload an image first.'); return; }
-        if (chapterBoxes.length === 0) { alert('Draw at least one box on the image (click & drag).'); return; }
-        if (!d.audioUrl) { alert('Wait for audio upload to finish, or upload an audio clip.'); return; }
-        return _renderActiveChapter();
-    }
-
-    function _renderActiveChapter() {
-        var d = chaptersList[activeChapterIdx];
-        if (!d) return Promise.resolve(null);
-        var btn = document.getElementById('chaptersRenderBtn');
-        var status = document.getElementById('chaptersRenderStatus');
-
-        if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
-        status.style.color = '#5b9bd5';
-        status.textContent = 'Saving…';
-
-        // 1) Flush boxes + script to server, then 2) render against chapter_id
-        if (_chPatchTimer) { clearTimeout(_chPatchTimer); _chPatchTimer = null; }
-        var save = _chApiPatch(d.id, { boxes: chapterBoxes, script: document.getElementById('chaptersScript').value });
-        var t0 = Date.now();
-        return save
-            .then(function() {
-                d.boxes = chapterBoxes.slice();
-                d.script = document.getElementById('chaptersScript').value;
-                status.textContent = 'Rendering…';
-                var fd = new FormData();
-                fd.append('chapter_id', d.id);
-                return fetch('/api/chapters/render', { method: 'POST', body: fd });
-            })
-            .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, body: j }; }); })
-            .then(function(res) {
-                if (!res.ok) {
-                    status.style.color = '#e07070';
-                    status.textContent = 'Render failed: ' + (res.body.error || 'unknown');
-                    console.error('render error', res.body);
-                    return null;
-                }
-                var dt = ((Date.now() - t0) / 1000).toFixed(1);
-                status.style.color = '#4caf50';
-                status.textContent = 'Rendered in ' + dt + 's';
-                d.resultUrl = res.body.url;
-                d.resultMeta = res.body;
-                showChapterResult(res.body);
-                renderChSidebar();
-                return res.body;
-            })
-            .catch(function(err) {
-                status.style.color = '#e07070';
-                status.textContent = 'Render error: ' + err;
-                return null;
-            })
-            .finally(function() {
-                if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
-            });
-    }
-
-    function showChapterResult(meta) {
-        var box = document.getElementById('chaptersResult');
-        var vid = document.getElementById('chaptersResultVideo');
-        var dl = document.getElementById('chaptersResultDownload');
-        var m = document.getElementById('chaptersResultMeta');
-        // cache-bust so re-renders refresh the video
-        var bust = meta.url + (meta.url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now();
-        vid.src = bust;
-        dl.href = meta.url;
-        var sz = meta.size ? (meta.size[0] + '×' + meta.size[1]) : '';
-        var alignLabel = meta.alignment === 'ai_aligned' ? 'AI-aligned' : 'Time-distributed';
-        m.textContent = alignLabel + ' · ' + meta.duration + 's · ' + meta.boxes + ' reveals · ' + sz + ' · reveals at ' + (meta.reveal_times || []).map(function(t){return t+'s';}).join(', ');
-        box.style.display = 'block';
-        box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-
-    function hideChapterResult() {
-        document.getElementById('chaptersResult').style.display = 'none';
-        document.getElementById('chaptersResultVideo').src = '';
-    }
-
-    function renderAllChapters() {
-        var ready = [];
-        chaptersList.forEach(function(d, i) {
-            var liveBoxes = (i === activeChapterIdx) ? chapterBoxes.length : (d.boxes ? d.boxes.length : 0);
-            if (d.imageUrl && liveBoxes > 0 && d.audioUrl) ready.push(i);
+    function csRenderPreview() {
+        var ul = document.getElementById('csPreviewItems');
+        ul.innerHTML = '';
+        // Filter empty items for the visual preview, but keep array indices for the renderer
+        var visible = csState.items.filter(function(x) { return x.trim(); });
+        visible.forEach(function(txt) {
+            var li = document.createElement('li');
+            var dot = document.createElement('span');
+            dot.className = 'cs-dot';
+            var t = document.createElement('span');
+            t.className = 'cs-text';
+            t.textContent = txt;
+            li.appendChild(dot);
+            li.appendChild(t);
+            ul.appendChild(li);
         });
-        if (ready.length === 0) {
-            alert('No chapters are fully set up. Each needs: image + ≥1 box + audio.');
-            return;
+        // Dynamic font size: ~80px @ 2-3 items down to ~32px @ 12+ items.
+        var n = visible.length || 1;
+        var fontPx = Math.max(32, Math.min(80, 92 - n * 6));
+        var gapPx = Math.max(14, Math.min(46, 56 - n * 3));
+        var preview = document.getElementById('csPreview');
+        preview.style.setProperty('--cs-fontsize', fontPx + 'px');
+        preview.style.setProperty('--cs-gap', gapPx + 'px');
+    }
+
+    function csAddRow() {
+        csState.items.push('');
+        csRenderList();
+        csRenderPreview();
+        csScheduleSave();
+        setTimeout(function() {
+            var rows = document.querySelectorAll('#csListRows .cs-row input');
+            if (rows.length) rows[rows.length - 1].focus();
+        }, 0);
+    }
+
+    function csOnStyleChange() {
+        csState.style = document.getElementById('csStyle').value || 'blue_glass';
+        csScheduleSave();
+    }
+
+    function csScheduleSave() {
+        if (_csSaveTimer) clearTimeout(_csSaveTimer);
+        _csSaveTimer = setTimeout(csSaveNow, 600);
+    }
+    async function csSaveNow() {
+        _csSaveTimer = null;
+        if (!_csVid) return;
+        csSetStatus('Saving…', '#888');
+        try {
+            await fetch('/api/videos/' + _csVid + '/chapter', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ items: csState.items, style: csState.style }),
+            });
+            csSetStatus('Saved', '#4caf50');
+            setTimeout(function() { csSetStatus('', '#555'); }, 1200);
+        } catch (e) {
+            csSetStatus('Save failed', '#e07070');
         }
-        var status = document.getElementById('chaptersRenderStatus');
-        var i = 0;
-        function next() {
-            if (i >= ready.length) {
-                status.style.color = '#4caf50';
-                status.textContent = 'Rendered ' + ready.length + ' chapters.';
+    }
+
+    async function csPullFromDoc() {
+        if (!_csVid) return;
+        csSetStatus('Pulling chapters from content doc…', '#5b9bd5');
+        try {
+            var r = await fetch('/api/videos/' + _csVid + '/chapter/from-doc', { method: 'POST' });
+            var d = await r.json();
+            if (!r.ok) {
+                csSetStatus(d.error || 'Pull failed', '#e07070');
                 return;
             }
-            var idx = ready[i];
-            saveActiveChapterState();
-            activeChapterIdx = idx;
-            renderChSidebar();
-            loadChapter(idx);
-            status.style.color = '#5b9bd5';
-            status.textContent = 'Rendering ' + (i+1) + '/' + ready.length + '…';
-            _renderActiveChapter().then(function() { i++; next(); });
+            if (!d.items || d.items.length === 0) {
+                csSetStatus('No "### Step N - …" lines found in the doc', '#e07070');
+                return;
+            }
+            csState.items = d.items.slice();
+            csRenderList();
+            csRenderPreview();
+            csScheduleSave();
+            csSetStatus('Pulled ' + d.items.length + ' chapters', '#4caf50');
+            setTimeout(function() { csSetStatus('', '#555'); }, 2000);
+        } catch (e) {
+            csSetStatus('Pull failed: ' + e.message, '#e07070');
         }
-        next();
+    }
+
+    // ─── RENDER: capture before/after PNGs for each clip, POST to server ───
+    async function csRenderClips() {
+        if (!_csVid) return;
+        var items = csState.items.filter(function(x) { return x.trim(); });
+        var N = items.length;
+        if (N < 1) { csSetStatus('Add at least one chapter first', '#e07070'); return; }
+
+        var btn = document.getElementById('csRenderBtn');
+        var statusEl = document.getElementById('csRenderStatus');
+        btn.disabled = true;
+        btn.style.opacity = '0.6';
+        statusEl.style.color = '#5b9bd5';
+
+        // Save first so the server has the latest list
+        if (_csSaveTimer) { clearTimeout(_csSaveTimer); await csSaveNow(); }
+
+        // Build the capture DOM (off-screen sibling at full 1920×1080)
+        var cap = document.getElementById('csCapture');
+        cap.className = 'cs-style-blue-glass';
+        // Match dynamic font size to preview
+        var fontPx = Math.max(32, Math.min(80, 92 - N * 6));
+        var gapPx = Math.max(14, Math.min(46, 56 - N * 3));
+        cap.style.setProperty('--cs-fontsize', fontPx + 'px');
+        cap.style.setProperty('--cs-gap', gapPx + 'px');
+
+        var capUl = document.getElementById('csCaptureItems');
+        capUl.innerHTML = '';
+        var capLis = [];
+        items.forEach(function(txt) {
+            var li = document.createElement('li');
+            var dot = document.createElement('span'); dot.className = 'cs-dot';
+            var t = document.createElement('span'); t.className = 'cs-text'; t.textContent = txt;
+            li.appendChild(dot); li.appendChild(t);
+            capUl.appendChild(li);
+            capLis.push(li);
+        });
+
+        function applyBlurState(crispCount) {
+            // First `crispCount` items are crisp; the rest are blurred.
+            capLis.forEach(function(li, i) {
+                if (i < crispCount) li.classList.remove('cs-blur');
+                else li.classList.add('cs-blur');
+            });
+        }
+
+        async function captureBlob() {
+            // html2canvas options: scale=1 keeps native 1920×1080
+            var canvas = await html2canvas(cap, {
+                width: 1920, height: 1080,
+                windowWidth: 1920, windowHeight: 1080,
+                scale: 1, backgroundColor: null, logging: false, useCORS: true,
+            });
+            return await new Promise(function(resolve) {
+                canvas.toBlob(function(b) { resolve(b); }, 'image/png');
+            });
+        }
+
+        try {
+            var fd = new FormData();
+            fd.append('count', String(N));
+            for (var k = 1; k <= N; k++) {
+                statusEl.textContent = 'Capturing clip ' + k + '/' + N + ' (before)…';
+                applyBlurState(k - 1); // items 1..k-1 crisp, k..N blurred
+                await new Promise(function(r) { requestAnimationFrame(function() { setTimeout(r, 30); }); });
+                var beforeBlob = await captureBlob();
+                fd.append('clip_' + k + '_before', beforeBlob, 'before_' + k + '.png');
+
+                statusEl.textContent = 'Capturing clip ' + k + '/' + N + ' (after)…';
+                applyBlurState(k);     // items 1..k crisp, k+1..N blurred
+                await new Promise(function(r) { requestAnimationFrame(function() { setTimeout(r, 30); }); });
+                var afterBlob = await captureBlob();
+                fd.append('clip_' + k + '_after', afterBlob, 'after_' + k + '.png');
+            }
+            // Reset capture div state
+            applyBlurState(N);
+
+            statusEl.textContent = 'Rendering ' + N + ' clips on server…';
+            var resp = await fetch('/api/videos/' + _csVid + '/chapter/render', {
+                method: 'POST',
+                body: fd,
+            });
+            var d = await resp.json();
+            if (!resp.ok || !d.ok) {
+                statusEl.style.color = '#e07070';
+                statusEl.textContent = 'Render failed: ' + (d.error || resp.statusText) + (d.stderr ? ' — ' + d.stderr.slice(0, 200) : '');
+                return;
+            }
+            statusEl.style.color = '#4caf50';
+            statusEl.textContent = 'Rendered ' + d.count + ' clips';
+
+            // Show results
+            var results = document.getElementById('csResults');
+            results.style.display = 'flex';
+            document.getElementById('csZipLink').href = d.zip_url;
+            var list = document.getElementById('csClipList');
+            list.innerHTML = '';
+            d.clips.forEach(function(c) {
+                var a = document.createElement('a');
+                a.href = c.url;
+                a.download = c.name;
+                a.target = '_blank';
+                a.textContent = '↓ ' + c.name;
+                a.style.cssText = 'color:#ddd; font-size:11px; text-decoration:none; padding:5px 8px; border:1px solid #2a2a4a; border-radius:4px;';
+                list.appendChild(a);
+            });
+        } catch (e) {
+            statusEl.style.color = '#e07070';
+            statusEl.textContent = 'Render error: ' + (e && e.message ? e.message : e);
+        } finally {
+            btn.disabled = false;
+            btn.style.opacity = '1';
+        }
     }
     </script>
     <script>
