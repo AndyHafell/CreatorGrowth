@@ -231,6 +231,7 @@ def init_db():
             video_id INTEGER PRIMARY KEY,
             items_json TEXT NOT NULL DEFAULT '[]',
             style TEXT NOT NULL DEFAULT 'blue_glass',
+            numbering TEXT NOT NULL DEFAULT 'none',
             result_zip_path TEXT,
             last_rendered_at TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -238,6 +239,11 @@ def init_db():
             FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
         )
     """)
+    # Migration: add `numbering` column to pre-existing tables
+    try:
+        conn.execute("ALTER TABLE chapters ADD COLUMN numbering TEXT NOT NULL DEFAULT 'none'")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -3539,7 +3545,7 @@ def chapter_get(vid):
     row = conn.execute("SELECT * FROM chapters WHERE video_id=?", (vid,)).fetchone()
     conn.close()
     if not row:
-        return jsonify({"video_id": vid, "items": [], "style": "blue_glass", "result_zip_url": None})
+        return jsonify({"video_id": vid, "items": [], "style": "blue_glass", "numbering": "none", "result_zip_url": None})
     return jsonify(_chapter_row_to_dict(row))
 
 
@@ -3553,16 +3559,20 @@ def chapter_put(vid):
     style = (payload.get("style") or "blue_glass")
     if style not in ("blue_glass",):
         style = "blue_glass"
+    numbering = (payload.get("numbering") or "none")
+    if numbering not in ("none", "number", "step"):
+        numbering = "none"
     now = datetime.now(timezone.utc).isoformat()
     conn = get_db()
     conn.execute(
-        """INSERT INTO chapters (video_id, items_json, style, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?)
+        """INSERT INTO chapters (video_id, items_json, style, numbering, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT(video_id) DO UPDATE SET
              items_json=excluded.items_json,
              style=excluded.style,
+             numbering=excluded.numbering,
              updated_at=excluded.updated_at""",
-        (vid, json.dumps(items), style, now, now)
+        (vid, json.dumps(items), style, numbering, now, now)
     )
     conn.commit()
     conn.row_factory = sqlite3.Row
