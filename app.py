@@ -2882,19 +2882,31 @@ def diagrams_render():
 
         N = len(box_rects)
 
-        # Pre-sample bg-fill color per box rect — reused for both bg.png and for
-        # masking nested inner-box regions inside outer-box crops.
-        fill_for_rect = {}  # (x,y,w,h) -> (r,g,b)
+        # Determine mode early — bg + crops differ between reveal and slideshow.
+        mode = "reveal"
+        if diagram_row:
+            try:
+                mode = (diagram_row["mode"] or "reveal").lower()
+            except (KeyError, IndexError):
+                mode = "reveal"
+            if mode not in ("reveal", "slideshow"):
+                mode = "reveal"
+
+        # Pre-sample bg-fill color per box rect — used for reveal-mode masking.
+        fill_for_rect = {}
         for (x, y, w, h, _anim, _bd) in all_box_records:
             fill_for_rect[(x, y, w, h)] = _ring_median_color(img, x, y, w, h, pad=8, ring=24)
 
-        # Background = image with EVERY box filled with the LOCAL background color.
-        # Reveal boxes get re-overlaid on top with the chosen animation; hide boxes stay masked.
-        bg = img.copy()
-        draw = ImageDraw.Draw(bg)
-        for (x, y, w, h, _anim, _bd) in all_box_records:
-            fill = fill_for_rect[(x, y, w, h)]
-            draw.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
+        if mode == "reveal":
+            # Reveal mode: bg = image with every box filled with its local bg color.
+            bg = img.copy()
+            draw = ImageDraw.Draw(bg)
+            for (x, y, w, h, _anim, _bd) in all_box_records:
+                fill = fill_for_rect[(x, y, w, h)]
+                draw.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
+        else:
+            # Slideshow mode: bg = flat corner-sampled color (slides cover it).
+            bg = Image.new("RGB", (W, H), (8, 8, 18))  # placeholder, replaced below
 
         def _rect_contains(outer, inner, slack=2):
             """outer / inner are (x,y,w,h). True if inner is (mostly) inside outer."""
@@ -2907,10 +2919,14 @@ def diagrams_render():
         bottom_pad = int(min(120, max(60, H * 0.10)))
         bottom_pad -= bottom_pad % 2
         canvas_bg_color = _corner_bg_color(img, patch=40)
-        bg_padded = Image.new("RGB", (W, H + bottom_pad), canvas_bg_color)
-        bg_padded.paste(bg, (0, 0))
         bg_path = work_dir / "bg.png"
-        bg_padded.save(bg_path)
+        if mode == "reveal":
+            bg_padded = Image.new("RGB", (W, H + bottom_pad), canvas_bg_color)
+            bg_padded.paste(bg, (0, 0))
+            bg_padded.save(bg_path)
+        else:
+            # Slideshow bg = flat corner color (the slides cover the whole frame).
+            Image.new("RGB", (W, H + bottom_pad), canvas_bg_color).save(bg_path)
 
         # If no reveal boxes (only hide boxes), short-circuit to a trivial render:
         # just bg.png + audio, no filter graph.
@@ -3083,37 +3099,62 @@ def diagrams_render():
             if alignment_mode in ("whisper_aligned", "gemini_audio", "evenly_distributed"):
                 alignment_mode = alignment_mode + "_with_manual"
 
-        # Generate crops NOW that we know reveal-order — so each outer-box crop
-        # can mask the regions of later-revealing inner boxes (avoids the double-
-        # reveal where the outer's crop briefly shows the inner box's content
-        # before the inner box runs its own animation).
+        # Generate the per-box overlay source. Reveal mode = cropped + inner-masked
+        # rectangle to overlay at the box's original position. Slideshow mode = the
+        # box content scaled up centered on a full 16:9 canvas (the slide IS the frame).
+        canvas_w = W
+        canvas_h = H + bottom_pad
         for i, ((x, y, w, h), anim_for_box) in enumerate(zip(box_rects, box_anims)):
-            crop = img.crop((x, y, x + w, y + h))
-            dc = ImageDraw.Draw(crop)
-            # Mask any reveal-box that is contained inside this box AND reveals later
-            for j in range(i + 1, N):
-                jx, jy, jw, jh = box_rects[j]
-                if _rect_contains((x, y, w, h), (jx, jy, jw, jh)):
-                    lx, ly = jx - x, jy - y
-                    fill = fill_for_rect.get(box_rects[j], (8, 8, 18))
-                    dc.rectangle([lx, ly, lx + jw - 1, ly + jh - 1], fill=fill)
-            # Hide boxes contained inside stay masked too
-            for hr in hide_rects:
-                if _rect_contains((x, y, w, h), hr):
-                    hx, hy, hw, hh = hr
-                    lx, ly = hx - x, hy - y
-                    fill = fill_for_rect.get(hr, (8, 8, 18))
-                    dc.rectangle([lx, ly, lx + hw - 1, ly + hh - 1], fill=fill)
-            cp = work_dir / f"crop_{i:02d}.png"
-            crop.save(cp)
-            crop_paths[i] = cp
-            if anim_for_box in ("zoom_in", "zoom_out"):
-                fdir, nf = _render_zoom_frames(
-                    work_dir / f"zoom_{i:02d}", crop, w, h, anim_for_box,
-                    zoom_dur=0.45, fade_dur=0.35, fps=FPS,
-                )
-                zoom_frame_dirs[i] = fdir
-                zoom_frame_counts[i] = nf
+            if mode == "reveal":
+                crop = img.crop((x, y, x + w, y + h))
+                dc = ImageDraw.Draw(crop)
+                for j in range(i + 1, N):
+                    jx, jy, jw, jh = box_rects[j]
+                    if _rect_contains((x, y, w, h), (jx, jy, jw, jh)):
+                        lx, ly = jx - x, jy - y
+                        fill = fill_for_rect.get(box_rects[j], (8, 8, 18))
+                        dc.rectangle([lx, ly, lx + jw - 1, ly + jh - 1], fill=fill)
+                for hr in hide_rects:
+                    if _rect_contains((x, y, w, h), hr):
+                        hx, hy, hw, hh = hr
+                        lx, ly = hx - x, hy - y
+                        fill = fill_for_rect.get(hr, (8, 8, 18))
+                        dc.rectangle([lx, ly, lx + hw - 1, ly + hh - 1], fill=fill)
+                cp = work_dir / f"crop_{i:02d}.png"
+                crop.save(cp)
+                crop_paths[i] = cp
+                if anim_for_box in ("zoom_in", "zoom_out"):
+                    fdir, nf = _render_zoom_frames(
+                        work_dir / f"zoom_{i:02d}", crop, w, h, anim_for_box,
+                        zoom_dur=0.45, fade_dur=0.35, fps=FPS,
+                    )
+                    zoom_frame_dirs[i] = fdir
+                    zoom_frame_counts[i] = nf
+            else:
+                # SLIDESHOW: the box content becomes a full 16:9 slide.
+                box_crop = img.crop((x, y, x + w, y + h))
+                margin = 0.85   # leave 15% breathing room
+                sx_ = (canvas_w * margin) / w
+                sy_ = (H * margin) / h   # vertical center within the content area (top H of canvas)
+                s = min(sx_, sy_)
+                nw = max(2, int(w * s)); nh = max(2, int(h * s))
+                nw -= nw % 2; nh -= nh % 2
+                scaled = box_crop.resize((nw, nh), Image.LANCZOS)
+                slide = Image.new("RGB", (canvas_w, canvas_h), canvas_bg_color)
+                ox = (canvas_w - nw) // 2
+                oy = (H - nh) // 2   # vertical center within top H, leaves bottom_pad clear
+                slide.paste(scaled, (ox, oy))
+                sp = work_dir / f"slide_{i:02d}.png"
+                slide.save(sp)
+                crop_paths[i] = sp
+                # Zoom in slideshow = "Ken Burns" feel on the full slide
+                if anim_for_box in ("zoom_in", "zoom_out"):
+                    fdir, nf = _render_zoom_frames(
+                        work_dir / f"zoom_{i:02d}", slide, canvas_w, canvas_h, anim_for_box,
+                        zoom_dur=0.45, fade_dur=0.35, fps=FPS,
+                    )
+                    zoom_frame_dirs[i] = fdir
+                    zoom_frame_counts[i] = nf
 
         fade_dur = 0.35
         slide_dur = 0.50
@@ -3148,15 +3189,10 @@ def diagrams_render():
                 inputs += ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(crop_paths[i])]
         inputs += ["-i", str(audio_path)]
 
-        # Mode: reveal (boxes accumulate) or slideshow (one box at a time, crossfade)
-        mode = "reveal"
-        if diagram_row:
-            try:
-                mode = (diagram_row["mode"] or "reveal").lower()
-            except (KeyError, IndexError):
-                mode = "reveal"
-            if mode not in ("reveal", "slideshow"):
-                mode = "reveal"
+        # mode was determined at the top of the render (slideshow vs reveal)
+        # Slide-distance: bigger in slideshow (slides cover the whole frame)
+        if mode == "slideshow":
+            slide_dist = int(min(220, max(60, (H + bottom_pad) * 0.10)))
 
         def _box_filter_segs(prev_lbl, in_idx, out_lbl, bx, by, bw, bh, t, anim,
                              n_zoom_frames, t_exit=None):
@@ -3219,14 +3255,18 @@ def diagrams_render():
         for i, ((bx, by, bw, bh), t) in enumerate(zip(box_rects, times)):
             anim = resolved_anims[i]
             out_label = "[vout]" if i == N - 1 else f"[v{i}]"
-            # In slideshow mode every box (except the last) fades out at the NEXT
-            # box's reveal time, so they overlap into a clean crossfade.
             t_exit = None
             if mode == "slideshow" and i + 1 < N:
                 t_exit = times[i + 1]
+            # In slideshow mode the overlay is the full 16:9 canvas, positioned at (0,0).
+            if mode == "slideshow":
+                ovx, ovy = 0, 0
+                ovw, ovh = canvas_w, canvas_h
+            else:
+                ovx, ovy, ovw, ovh = bx, by, bw, bh
             filter_parts.extend(_box_filter_segs(
                 last_label, i + 1, out_label,
-                bx, by, bw, bh, t, anim,
+                ovx, ovy, ovw, ovh, t, anim,
                 zoom_frame_counts[i], t_exit=t_exit,
             ))
             last_label = out_label
