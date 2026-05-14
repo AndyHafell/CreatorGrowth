@@ -1854,7 +1854,7 @@
                     <button onclick="openAllImages()" title="Open all images in new tabs" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">OPEN IMAGES</button>
                     <button onclick="openAllLinks()" title="Open all links in new tabs" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">OPEN LINKS</button>
                     <button onclick="openDiagrams()" title="Animate diagrams + images from script" style="font-size:11px; letter-spacing:0.5px; color:#f5b942;">DIAGRAMS</button>
-                    <button onclick="openChapters()" title="Chapter Animation studio" style="font-size:11px; letter-spacing:0.5px; color:#f5b942;">CHAPTERS</button>
+                    <button onclick="openChapters()" title="Chapter Animation studio" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">CHAPTERS</button>
                 </div>
                 <div id="modalDocEditor" class="modal-doc-editor" contenteditable="true" spellcheck="true" oninput="modalDocChanged()" style="min-height:400px; max-height:80vh; overflow-y:auto; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px; padding:16px; color:#ddd; font-size:14px; line-height:1.7; outline:none;"></div>
             </div>
@@ -2000,7 +2000,7 @@
     <div id="chaptersStudio" style="display:none; position:fixed; inset:0; background:#0a0a14; z-index:600; color:#ddd;">
         <!-- Header bar -->
         <div style="display:flex; align-items:center; gap:14px; padding:12px 22px; border-bottom:1px solid #1f1f30; background:#0d0d1a;">
-            <div style="font-weight:700; letter-spacing:2px; color:#f5b942; font-size:12px;">CHAPTERS STUDIO</div>
+            <div style="font-weight:700; letter-spacing:2px; color:#5b9bd5; font-size:12px;">CHAPTERS STUDIO</div>
             <div id="chaptersStudioTitle" style="color:#666; font-size:12px; border-left:1px solid #2a2a4a; padding-left:14px;"></div>
             <div style="flex:1;"></div>
             <span id="chaptersStudioStatus" style="color:#555; font-size:11px;"></span>
@@ -2011,7 +2011,7 @@
         <div style="display:flex; height:calc(100vh - 49px);">
             <!-- Sidebar -->
             <div style="width:230px; background:#0d0d1a; border-right:1px solid #1f1f30; padding:14px 12px; overflow-y:auto; display:flex; flex-direction:column;">
-                <button onclick="addNewChapter()" style="background:#f5b942; color:#000; border:none; border-radius:4px; padding:9px; font-size:11px; font-weight:700; letter-spacing:1px; cursor:pointer; margin-bottom:14px;">+ NEW CHAPTER</button>
+                <button onclick="addNewChapter()" style="background:#5b9bd5; color:#000; border:none; border-radius:4px; padding:9px; font-size:11px; font-weight:700; letter-spacing:1px; cursor:pointer; margin-bottom:14px;">+ NEW CHAPTER</button>
                 <div style="color:#444; font-size:10px; letter-spacing:1.5px; padding:0 4px 6px;">CHAPTERS IN THIS VIDEO</div>
                 <div id="chaptersSidebarList" style="flex:1;"></div>
                 <div style="color:#333; font-size:10px; padding:8px 4px 0; border-top:1px solid #1f1f30; margin-top:8px; letter-spacing:0.3px;">right-click to delete</div>
@@ -2024,7 +2024,7 @@
                     <div style="color:#666; font-size:10px; letter-spacing:2px; margin-bottom:10px;">IMAGE &amp; BOXES</div>
                     <div id="chaptersDropZone" style="padding:48px; border:2px dashed #2a2a4a; border-radius:6px; text-align:center; cursor:pointer; background:transparent; transition:all 0.15s;"
                          onclick="document.getElementById('chaptersFileInput').click()"
-                         ondragover="event.preventDefault(); this.style.borderColor='#f5b942';"
+                         ondragover="event.preventDefault(); this.style.borderColor='#5b9bd5';"
                          ondragleave="this.style.borderColor='#2a2a4a';"
                          ondrop="event.preventDefault(); this.style.borderColor='#2a2a4a'; handleChaptersFile(event.dataTransfer.files[0]);">
                         <div style="color:#666; font-size:13px;">Drag &amp; drop an image, or click to choose</div>
@@ -2048,16 +2048,16 @@
                         </div>
                         <div id="chaptersBoxToolbar" style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                             <button onclick="resetChaptersImage()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Replace image</button>
-                            <button onclick="enterChCropMode()" style="background:none; border:1px solid #2a2a4a; color:#f5b942; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Crop region</button>
+                            <button onclick="enterChCropMode()" style="background:none; border:1px solid #2a2a4a; color:#5b9bd5; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Crop region</button>
                             <button onclick="undoChLastBox()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Undo last box</button>
                             <button onclick="clearChBoxes()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Clear boxes</button>
-                            <span id="chaptersBoxCount" style="color:#f5b942; font-size:11px; letter-spacing:0.5px;">0 boxes</span>
+                            <span id="chaptersBoxCount" style="color:#5b9bd5; font-size:11px; letter-spacing:0.5px;">0 boxes</span>
                             <span style="color:#444; font-size:11px;">&middot; drag to draw &middot; right-click box to delete</span>
                             <span style="flex:1;"></span>
                             <button id="chaptersModeToggle" onclick="toggleChSlideshow()" title="Toggle slideshow mode (one slide at a time vs reveals)" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Slideshow mode</button>
                         </div>
                         <div id="chaptersCropToolbar" style="display:none; margin-top:10px; gap:10px; align-items:center; flex-wrap:wrap;">
-                            <button onclick="applyChCrop()" style="background:#f5b942; color:#000; border:none; border-radius:4px; padding:6px 14px; font-size:11px; font-weight:700; letter-spacing:0.5px; cursor:pointer;">Apply crop</button>
+                            <button onclick="applyChCrop()" style="background:#5b9bd5; color:#000; border:none; border-radius:4px; padding:6px 14px; font-size:11px; font-weight:700; letter-spacing:0.5px; cursor:pointer;">Apply crop</button>
                             <button onclick="exitChCropMode()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Cancel</button>
                             <span style="color:#888; font-size:11px;">Drag any region &middot; output is 16:9 with bg color padding &middot; boxes will be cleared</span>
                         </div>
@@ -2069,7 +2069,7 @@
                     <div style="color:#666; font-size:10px; letter-spacing:2px; margin-bottom:10px;">AUDIO</div>
                     <div id="chaptersAudioDropZone" style="padding:20px; border:2px dashed #2a2a4a; border-radius:6px; text-align:center; cursor:pointer; background:transparent; transition:all 0.15s;"
                          onclick="document.getElementById('chaptersAudioInput').click()"
-                         ondragover="event.preventDefault(); this.style.borderColor='#f5b942';"
+                         ondragover="event.preventDefault(); this.style.borderColor='#5b9bd5';"
                          ondragleave="this.style.borderColor='#2a2a4a';"
                          ondrop="event.preventDefault(); this.style.borderColor='#2a2a4a'; handleChaptersAudio(event.dataTransfer.files[0]);">
                         <div style="color:#666; font-size:13px;">Drag &amp; drop audio (.mp3 / .wav / .m4a), or click to choose</div>
@@ -2077,7 +2077,7 @@
                     <input type="file" id="chaptersAudioInput" accept="audio/*" style="display:none;" onchange="handleChaptersAudio(this.files[0])">
                     <div id="chaptersAudioPreview" style="display:none;">
                         <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:10px 0;">
-                            <span style="color:#f5b942; font-size:14px;">&#9835;</span>
+                            <span style="color:#5b9bd5; font-size:14px;">&#9835;</span>
                             <span id="chaptersAudioName" style="color:#ddd; font-size:12px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></span>
                             <span id="chaptersAudioDuration" style="color:#888; font-size:11px;"></span>
                             <button onclick="resetChaptersAudio()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:3px 9px; font-size:11px; cursor:pointer;">Replace</button>
@@ -2097,7 +2097,7 @@
 
                 <!-- RENDER -->
                 <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
-                    <button id="chaptersRenderBtn" onclick="renderChapter()" style="background:#f5b942; color:#000; border:none; border-radius:6px; padding:11px 26px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer;">RENDER THIS CHAPTER</button>
+                    <button id="chaptersRenderBtn" onclick="renderChapter()" style="background:#5b9bd5; color:#000; border:none; border-radius:6px; padding:11px 26px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer;">RENDER THIS CHAPTER</button>
                     <span id="chaptersRenderStatus" style="color:#555; font-size:11px;"></span>
                 </div>
 
@@ -2106,7 +2106,7 @@
                     <div style="color:#666; font-size:10px; letter-spacing:2px; margin-bottom:10px;">RESULT</div>
                     <video id="chaptersResultVideo" controls style="width:100%; max-height:60vh; background:#000; border-radius:6px;"></video>
                     <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-                        <a id="chaptersResultDownload" href="#" download style="background:none; border:1px solid #2a2a4a; color:#f5b942; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer; text-decoration:none; letter-spacing:0.5px;">DOWNLOAD MP4</a>
+                        <a id="chaptersResultDownload" href="#" download style="background:none; border:1px solid #2a2a4a; color:#5b9bd5; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer; text-decoration:none; letter-spacing:0.5px;">DOWNLOAD MP4</a>
                         <span id="chaptersResultMeta" style="color:#666; font-size:11px;"></span>
                     </div>
                 </div>
@@ -6163,7 +6163,7 @@
         if (!d) return;
         d.mode = (d.mode === 'slideshow') ? 'reveal' : 'slideshow';
         _updateChModeButtonStyle();
-        setChStudioStatus('Saving…', '#f5b942');
+        setChStudioStatus('Saving…', '#5b9bd5');
         _chApiPatch(d.id, { mode: d.mode })
             .then(function() { setChStudioStatus('Saved', '#4caf50'); })
             .catch(function(err) { setChStudioStatus('Save failed: ' + err, '#e07070'); });
@@ -6173,9 +6173,9 @@
         var d = chaptersList[activeChapterIdx];
         if (!btn || !d) return;
         var isSlideshow = (d.mode === 'slideshow');
-        btn.style.background = isSlideshow ? '#f5b942' : 'none';
+        btn.style.background = isSlideshow ? '#5b9bd5' : 'none';
         btn.style.color = isSlideshow ? '#000' : '#888';
-        btn.style.borderColor = isSlideshow ? '#f5b942' : '#2a2a4a';
+        btn.style.borderColor = isSlideshow ? '#5b9bd5' : '#2a2a4a';
         btn.style.fontWeight = isSlideshow ? '700' : '400';
         var title = document.getElementById('chaptersBoxAnimTitle');
         if (title) title.textContent = isSlideshow ? 'SLIDE ANIMATIONS' : 'BOX ANIMATIONS';
@@ -6192,7 +6192,7 @@
         _chPatchTimer = setTimeout(function() {
             var d = chaptersList[activeChapterIdx];
             if (!d) return;
-            setChStudioStatus('Saving…', '#f5b942');
+            setChStudioStatus('Saving…', '#5b9bd5');
             var payload = {
                 boxes: chapterBoxes,
                 script: document.getElementById('chaptersScript').value
@@ -6215,7 +6215,7 @@
         var t = document.getElementById('modalTitle');
         document.getElementById('chaptersStudioTitle').textContent = (t && t.textContent.trim()) || 'untitled';
 
-        setChStudioStatus('Loading…', '#f5b942');
+        setChStudioStatus('Loading…', '#5b9bd5');
         fetch('/api/videos/' + vid + '/chapters')
             .then(function(r) { return r.json(); })
             .then(function(rows) {
@@ -6253,7 +6253,7 @@
         var prevPromise = prev
             ? _chApiPatch(prev.id, { boxes: chapterBoxes, script: document.getElementById('chaptersScript').value })
             : Promise.resolve();
-        setChStudioStatus('Saving…', '#f5b942');
+        setChStudioStatus('Saving…', '#5b9bd5');
         prevPromise
             .then(function() {
                 return fetch('/api/videos/' + vid + '/chapters', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
@@ -6271,7 +6271,7 @@
     function deleteChapter(idx) {
         if (idx < 0 || idx >= chaptersList.length) return;
         var d = chaptersList[idx];
-        setChStudioStatus('Deleting…', '#f5b942');
+        setChStudioStatus('Deleting…', '#5b9bd5');
         fetch('/api/chapters/' + d.id, { method: 'DELETE' })
             .then(function(r) { return r.json(); })
             .then(function() {
@@ -6301,7 +6301,7 @@
         chaptersList.forEach(function(d, i) {
             var active = (i === activeChapterIdx);
             var item = document.createElement('div');
-            item.style.cssText = 'padding:9px 10px; background:' + (active ? '#15151f' : 'transparent') + '; border:1px solid ' + (active ? '#f5b942' : '#1f1f30') + '; border-radius:4px; margin-bottom:6px; cursor:pointer; display:flex; align-items:center; gap:9px;';
+            item.style.cssText = 'padding:9px 10px; background:' + (active ? '#15151f' : 'transparent') + '; border:1px solid ' + (active ? '#5b9bd5' : '#1f1f30') + '; border-radius:4px; margin-bottom:6px; cursor:pointer; display:flex; align-items:center; gap:9px;';
             item.onclick = function() {
                 if (i === activeChapterIdx) return;
                 // flush pending save for the chapter we're leaving
@@ -6324,7 +6324,7 @@
 
             var num = document.createElement('div');
             num.textContent = (i + 1);
-            num.style.cssText = 'background:' + (active ? '#f5b942' : '#2a2a4a') + '; color:' + (active ? '#000' : '#888') + '; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:11px; flex-shrink:0;';
+            num.style.cssText = 'background:' + (active ? '#5b9bd5' : '#2a2a4a') + '; color:' + (active ? '#000' : '#888') + '; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:11px; flex-shrink:0;';
             item.appendChild(num);
 
             var info = document.createElement('div');
@@ -6430,7 +6430,7 @@
         reader.readAsDataURL(file);
 
         // upload to server
-        setChStudioStatus('Uploading image…', '#f5b942');
+        setChStudioStatus('Uploading image…', '#5b9bd5');
         var fd = new FormData();
         fd.append('image', file, file.name);
         fetch('/api/chapters/' + d.id + '/image', { method: 'POST', body: fd })
@@ -6509,7 +6509,7 @@
         document.getElementById('chaptersCropDimR').style.cssText = dim + 'left:' + (x + w) + 'px; top:' + y + 'px; right:0; height:' + h + 'px;';
         document.getElementById('chaptersCropSel').style.cssText =
             'position:absolute; left:' + x + 'px; top:' + y + 'px; width:' + w + 'px; height:' + h + 'px; ' +
-            'border:2px dashed #f5b942; box-shadow:0 0 0 1px rgba(0,0,0,0.5); box-sizing:border-box; pointer-events:none;';
+            'border:2px dashed #5b9bd5; box-shadow:0 0 0 1px rgba(0,0,0,0.5); box-sizing:border-box; pointer-events:none;';
     }
     function _sampleChCornerBgColor(img, patch) {
         patch = patch || 40;
@@ -6577,7 +6577,7 @@
         var oy = Math.round((th - sh) / 2);
         ctx.drawImage(img, sx, sy, sw, sh, ox, oy, sw, sh);
 
-        setChStudioStatus('Saving cropped image…', '#f5b942');
+        setChStudioStatus('Saving cropped image…', '#5b9bd5');
         canvas.toBlob(function(blob) {
             var fd = new FormData();
             fd.append('image', blob, 'cropped.png');
@@ -6611,7 +6611,7 @@
         var r = layer.getBoundingClientRect();
         chapterDragStart = { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height };
         chapterActiveEl = document.createElement('div');
-        chapterActiveEl.style.cssText = 'position:absolute; border:2px dashed #f5b942; background:rgba(245,185,66,0.12); pointer-events:none;';
+        chapterActiveEl.style.cssText = 'position:absolute; border:2px dashed #5b9bd5; background:rgba(245,185,66,0.12); pointer-events:none;';
         chapterActiveEl.style.left = chapterDragStart.x + 'px';
         chapterActiveEl.style.top = chapterDragStart.y + 'px';
         chapterActiveEl.style.width = '0px';
@@ -6678,7 +6678,7 @@
         chapterBoxes.forEach(function(b, i) {
             var isHide = (b.anim === 'hide');
             var isSelected = (i === selectedBoxIdx);
-            var borderClr = isHide ? '#e07070' : '#f5b942';
+            var borderClr = isHide ? '#e07070' : '#5b9bd5';
             var bgClr = isHide ? 'rgba(224,112,112,0.18)' : 'rgba(245,185,66,0.10)';
             var d = document.createElement('div');
             d.className = 'chapter-box';
@@ -6801,10 +6801,10 @@
         if (insertBeforeIdx === null || insertBeforeIdx === undefined) return;
         if (insertBeforeIdx < c.children.length) {
             // gold line ABOVE this row
-            c.children[insertBeforeIdx].style.boxShadow = '0 -3px 0 #f5b942';
+            c.children[insertBeforeIdx].style.boxShadow = '0 -3px 0 #5b9bd5';
         } else if (c.children.length > 0) {
             // dropping past the last row — line BELOW the last
-            c.children[c.children.length - 1].style.boxShadow = '0 3px 0 #f5b942';
+            c.children[c.children.length - 1].style.boxShadow = '0 3px 0 #5b9bd5';
         }
     }
 
@@ -6817,7 +6817,7 @@
             if (isNaN(idx)) continue;
             var isSel = (idx === selectedBoxIdx);
             var isHide = chapterBoxes[idx] && chapterBoxes[idx].anim === 'hide';
-            row.style.borderColor = isSel ? '#f5b942' : (isHide ? '#3a2020' : '#1f1f30');
+            row.style.borderColor = isSel ? '#5b9bd5' : (isHide ? '#3a2020' : '#1f1f30');
             row.style.background = isSel ? '#1f1c0c' : '#15151f';
         }
     }
@@ -6950,11 +6950,11 @@
         chapterBoxes.forEach(function(b, i) {
             var isHide = (b.anim === 'hide');
             var isSelected = (i === selectedBoxIdx);
-            var accent = isHide ? '#e07070' : '#f5b942';
+            var accent = isHide ? '#e07070' : '#5b9bd5';
             var row = document.createElement('div');
             row.draggable = true;
             row.dataset.idx = i;
-            var borderClr = isSelected ? '#f5b942' : (isHide ? '#3a2020' : '#1f1f30');
+            var borderClr = isSelected ? '#5b9bd5' : (isHide ? '#3a2020' : '#1f1f30');
             var bgClr = isSelected ? '#1f1c0c' : '#15151f';
             row.style.cssText = 'margin-bottom:8px; padding:8px 10px; background:' + bgClr + '; border:1px solid ' + borderClr + '; border-radius:4px; transition:border-color 0.1s, opacity 0.1s; cursor:pointer;';
             row.onclick = function(ev) {
@@ -7104,7 +7104,7 @@
         reader.readAsDataURL(file);
 
         // upload to server (parallel with transcribe)
-        setChStudioStatus('Uploading audio…', '#f5b942');
+        setChStudioStatus('Uploading audio…', '#5b9bd5');
         var doUpload = function() {
             var fd = new FormData();
             fd.append('audio', file, file.name);
@@ -7130,7 +7130,7 @@
         var wasEmpty = ta.value.trim() === '';
         if (wasEmpty) ta.value = '';
         status.textContent = 'Transcribing…';
-        status.style.color = '#f5b942';
+        status.style.color = '#5b9bd5';
         var fd = new FormData();
         fd.append('audio', file);
         fetch('/api/chapters/transcribe', { method: 'POST', body: fd })
@@ -7191,7 +7191,7 @@
         var status = document.getElementById('chaptersRenderStatus');
 
         if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
-        status.style.color = '#f5b942';
+        status.style.color = '#5b9bd5';
         status.textContent = 'Saving…';
 
         // 1) Flush boxes + script to server, then 2) render against chapter_id
@@ -7278,7 +7278,7 @@
             activeChapterIdx = idx;
             renderChSidebar();
             loadChapter(idx);
-            status.style.color = '#f5b942';
+            status.style.color = '#5b9bd5';
             status.textContent = 'Rendering ' + (i+1) + '/' + ready.length + '…';
             _renderActiveChapter().then(function() { i++; next(); });
         }
