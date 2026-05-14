@@ -1922,11 +1922,7 @@
                             <span id="diagramsBoxCount" style="color:#f5b942; font-size:11px; letter-spacing:0.5px;">0 boxes</span>
                             <span style="color:#444; font-size:11px;">&middot; drag to draw &middot; right-click box to delete</span>
                             <span style="flex:1;"></span>
-                            <label style="color:#666; font-size:10px; letter-spacing:1.5px;">MODE</label>
-                            <select id="diagramsMode" onchange="onDiagramModeChange()" style="background:#0d0d1a; color:#ddd; border:1px solid #2a2a4a; border-radius:4px; padding:4px 8px; font-size:11px;">
-                                <option value="reveal">Reveal (accumulate)</option>
-                                <option value="slideshow">Slideshow (one at a time)</option>
-                            </select>
+                            <button id="diagramsModeToggle" onclick="toggleSlideshow()" title="Toggle slideshow mode (one slide at a time vs reveals)" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Slideshow mode</button>
                         </div>
                         <div id="diagramsCropToolbar" style="display:none; margin-top:10px; gap:10px; align-items:center; flex-wrap:wrap;">
                             <button onclick="applyCrop()" style="background:#f5b942; color:#000; border:none; border-radius:4px; padding:6px 14px; font-size:11px; font-weight:700; letter-spacing:0.5px; cursor:pointer;">Apply crop</button>
@@ -4872,15 +4868,25 @@
             mode: row.mode || 'reveal'
         };
     }
-    function onDiagramModeChange() {
+    function toggleSlideshow() {
         var d = diagramsList[activeDiagramIdx];
         if (!d) return;
-        var sel = document.getElementById('diagramsMode');
-        d.mode = sel.value;
+        d.mode = (d.mode === 'slideshow') ? 'reveal' : 'slideshow';
+        _updateModeButtonStyle();
         setStudioStatus('Saving…', '#f5b942');
         _apiPatch(d.id, { mode: d.mode })
             .then(function() { setStudioStatus('Saved', '#4caf50'); })
             .catch(function(err) { setStudioStatus('Save failed: ' + err, '#e07070'); });
+    }
+    function _updateModeButtonStyle() {
+        var btn = document.getElementById('diagramsModeToggle');
+        var d = diagramsList[activeDiagramIdx];
+        if (!btn || !d) return;
+        var isSlideshow = (d.mode === 'slideshow');
+        btn.style.background = isSlideshow ? '#f5b942' : 'none';
+        btn.style.color = isSlideshow ? '#000' : '#888';
+        btn.style.borderColor = isSlideshow ? '#f5b942' : '#2a2a4a';
+        btn.style.fontWeight = isSlideshow ? '700' : '400';
     }
     function _apiPatch(id, body) {
         return fetch('/api/diagrams/' + id, {
@@ -5090,9 +5096,8 @@
         st.textContent = '';
         st.style.color = '#555';
 
-        // mode selector
-        var modeSel = document.getElementById('diagramsMode');
-        if (modeSel) modeSel.value = d.mode || 'reveal';
+        // mode toggle button styling
+        _updateModeButtonStyle();
 
         // result video (if previously rendered)
         document.getElementById('diagramsRenderStatus').textContent = '';
