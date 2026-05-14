@@ -3334,7 +3334,11 @@ def diagrams_render():
             out_label = "[vout]" if i == N - 1 else f"[v{i}]"
             t_exit = None
             if mode == "slideshow" and i + 1 < N:
-                t_exit = times[i + 1]
+                # Force slide N's exit to fully complete BEFORE slide N+1 enters,
+                # with a small gap between them so they don't overlap on screen.
+                inter_slide_gap = 0.10
+                t_exit = times[i + 1] - fade_dur - inter_slide_gap
+                t_exit = max(t + 0.15, t_exit)
             # In slideshow mode the overlay is the full 16:9 canvas, positioned at (0,0).
             if mode == "slideshow":
                 ovx, ovy = 0, 0
