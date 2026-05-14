@@ -5366,15 +5366,18 @@
             d.style.width = (b.w * 100) + '%';
             d.style.height = (b.h * 100) + '%';
             d.oncontextmenu = function(ev) { ev.preventDefault(); ev.stopPropagation(); deleteBox(parseInt(d.dataset.idx, 10)); };
-            d.onmousedown = function(ev) { ev.stopPropagation(); };
+            // Allow left-click+drag to fall through to the layer so users can draw a NEW
+            // box inside an existing one (e.g. selecting smaller text inside a big region).
+            d.style.pointerEvents = 'none';
+            // The number badge + delete × stay clickable (their own pointer-events:auto below).
             var badge = document.createElement('div');
             badge.textContent = isHide ? '×' : (i + 1);
-            badge.style.cssText = 'position:absolute; top:-10px; left:-10px; background:' + borderClr + '; color:#000; font-weight:700; font-size:' + (isHide ? '14' : '12') + 'px; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 4px rgba(0,0,0,0.5);';
+            badge.style.cssText = 'position:absolute; top:-10px; left:-10px; background:' + borderClr + '; color:#000; font-weight:700; font-size:' + (isHide ? '14' : '12') + 'px; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 4px rgba(0,0,0,0.5); pointer-events:none;';
             d.appendChild(badge);
             var del = document.createElement('div');
             del.textContent = '×';
             del.title = 'Delete this box';
-            del.style.cssText = 'position:absolute; top:-10px; right:-10px; background:#2a2a4a; color:' + borderClr + '; font-weight:700; font-size:14px; line-height:1; width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,0.5); border:1px solid ' + borderClr + ';';
+            del.style.cssText = 'position:absolute; top:-10px; right:-10px; background:#2a2a4a; color:' + borderClr + '; font-weight:700; font-size:14px; line-height:1; width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,0.5); border:1px solid ' + borderClr + '; pointer-events:auto;';
             del.onclick = function(ev) { ev.preventDefault(); ev.stopPropagation(); deleteBox(parseInt(d.dataset.idx, 10)); };
             del.onmousedown = function(ev) { ev.stopPropagation(); };
             d.appendChild(del);
