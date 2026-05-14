@@ -3898,15 +3898,23 @@
                     loadContentList(savedPath);
                 }
             }
-            // Restore open modal
+            // Restore open modal (+ chapter studio if it was open)
             const savedModal = localStorage.getItem('cg_modal');
             if (savedModal) {
                 const checkVideos = setInterval(() => {
                     if (videos.length > 0) {
                         clearInterval(checkVideos);
                         const vid = parseInt(savedModal);
-                        if (videos.find(v => v.id === vid)) openModal(vid);
-                        else localStorage.removeItem('cg_modal');
+                        if (videos.find(v => v.id === vid)) {
+                            openModal(vid);
+                            if (localStorage.getItem('cg_chapter_open') === '1') {
+                                // Wait one tick so modalVideoId is set before chapter studio reads it
+                                setTimeout(function() { if (typeof openChapters === 'function') openChapters(); }, 50);
+                            }
+                        } else {
+                            localStorage.removeItem('cg_modal');
+                            localStorage.removeItem('cg_chapter_open');
+                        }
                     }
                 }, 200);
                 setTimeout(() => clearInterval(checkVideos), 5000);
@@ -6175,8 +6183,9 @@
         // Title in header
         var t = document.getElementById('modalTitle');
         document.getElementById('csVideoTitle').textContent = (t && t.textContent.trim()) || 'untitled';
-        // Show studio
+        // Show studio + remember it's open for hard-refresh restore
         document.getElementById('chaptersStudio').style.display = 'block';
+        try { localStorage.setItem('cg_chapter_open', '1'); } catch (e) {}
         // Fetch existing state
         csSetStatus('Loading…', '#5b9bd5');
         try {
@@ -6202,6 +6211,7 @@
     function closeChaptersStudio() {
         document.getElementById('chaptersStudio').style.display = 'none';
         window.removeEventListener('resize', csRescalePreview);
+        try { localStorage.removeItem('cg_chapter_open'); } catch (e) {}
     }
 
     function csRescalePreview() {
