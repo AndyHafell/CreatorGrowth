@@ -5383,7 +5383,13 @@
             // The number badge + delete × stay clickable (their own pointer-events:auto below).
             var badge = document.createElement('div');
             badge.textContent = isHide ? '×' : (i + 1);
-            badge.style.cssText = 'position:absolute; top:-10px; left:-10px; background:' + borderClr + '; color:#000; font-weight:700; font-size:' + (isHide ? '14' : '12') + 'px; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 4px rgba(0,0,0,0.5); pointer-events:none;';
+            badge.title = 'Click to select this box';
+            badge.style.cssText = 'position:absolute; top:-10px; left:-10px; background:' + borderClr + '; color:#000; font-weight:700; font-size:' + (isHide ? '14' : '12') + 'px; width:22px; height:22px; border-radius:50%; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 4px rgba(0,0,0,0.5); pointer-events:auto; cursor:pointer;';
+            badge.onmousedown = function(ev) { ev.stopPropagation(); };
+            badge.onclick = function(ev) {
+                ev.preventDefault(); ev.stopPropagation();
+                setSelectedBox(parseInt(d.dataset.idx, 10));
+            };
             d.appendChild(badge);
             var del = document.createElement('div');
             del.textContent = '×';
