@@ -5176,6 +5176,7 @@
     var diagramCropMode = false;
     var diagramCropStart = null;
     var diagramCropRect = null; // displayed-px coords {x,y,w,h}
+    var diagramResize = null;   // {idx, edges, startX, startY, orig:{x,y,w,h}}
 
     function enterCropMode() {
         var img = document.getElementById('diagramsImage');
@@ -5427,6 +5428,37 @@
             del.onclick = function(ev) { ev.preventDefault(); ev.stopPropagation(); deleteBox(parseInt(d.dataset.idx, 10)); };
             del.onmousedown = function(ev) { ev.stopPropagation(); };
             d.appendChild(del);
+
+            // Resize handles: 4 edges + 4 corners
+            var handles = [
+                { e: 'n',  style: 'left:10px; right:10px; top:-4px; height:8px; cursor:ns-resize;' },
+                { e: 's',  style: 'left:10px; right:10px; bottom:-4px; height:8px; cursor:ns-resize;' },
+                { e: 'w',  style: 'top:10px; bottom:10px; left:-4px; width:8px; cursor:ew-resize;' },
+                { e: 'e',  style: 'top:10px; bottom:10px; right:-4px; width:8px; cursor:ew-resize;' },
+                { e: 'nw', style: 'top:-6px; left:-6px; width:12px; height:12px; cursor:nwse-resize;' },
+                { e: 'ne', style: 'top:-6px; right:-6px; width:12px; height:12px; cursor:nesw-resize;' },
+                { e: 'sw', style: 'bottom:-6px; left:-6px; width:12px; height:12px; cursor:nesw-resize;' },
+                { e: 'se', style: 'bottom:-6px; right:-6px; width:12px; height:12px; cursor:nwse-resize;' },
+            ];
+            handles.forEach(function(hh) {
+                var hd = document.createElement('div');
+                hd.style.cssText = 'position:absolute; ' + hh.style + ' pointer-events:auto; z-index:5;';
+                (function(edges, idx) {
+                    hd.onmousedown = function(ev) {
+                        ev.preventDefault(); ev.stopPropagation();
+                        var bx = diagramBoxes[idx];
+                        if (!bx) return;
+                        diagramResize = {
+                            idx: idx,
+                            edges: edges,
+                            startX: ev.clientX, startY: ev.clientY,
+                            orig: { x: bx.x, y: bx.y, w: bx.w, h: bx.h }
+                        };
+                    };
+                })(hh.e, i);
+                d.appendChild(hd);
+            });
+
             layer.appendChild(d);
         });
         document.getElementById('diagramsBoxCount').textContent = diagramBoxes.length + ' box' + (diagramBoxes.length === 1 ? '' : 'es');
@@ -5506,16 +5538,60 @@
         renderBoxAnimList();
         if (typeof schedulePatch === 'function') schedulePatch();
     }
+    // Box resize: update geometry while dragging an edge or corner handle
+    function _applyBoxResize(cx, cy) {
+        if (!diagramResize) return;
+        var b = diagramBoxes[diagramResize.idx];
+        if (!b) return;
+        var layer = document.getElementById('diagramsBoxLayer');
+        var lr = layer.getBoundingClientRect();
+        var dxf = (cx - diagramResize.startX) / lr.width;
+        var dyf = (cy - diagramResize.startY) / lr.height;
+        var ox = diagramResize.orig.x, oy = diagramResize.orig.y;
+        var ow = diagramResize.orig.w, oh = diagramResize.orig.h;
+        var nx = ox, ny = oy, nw = ow, nh = oh;
+        var minSz = 0.01;
+        if (diagramResize.edges.indexOf('n') >= 0) {
+            nh = oh - dyf; ny = oy + dyf;
+            if (nh < minSz) { nh = minSz; ny = oy + oh - minSz; }
+        }
+        if (diagramResize.edges.indexOf('s') >= 0) {
+            nh = oh + dyf;
+            if (nh < minSz) nh = minSz;
+        }
+        if (diagramResize.edges.indexOf('w') >= 0) {
+            nw = ow - dxf; nx = ox + dxf;
+            if (nw < minSz) { nw = minSz; nx = ox + ow - minSz; }
+        }
+        if (diagramResize.edges.indexOf('e') >= 0) {
+            nw = ow + dxf;
+            if (nw < minSz) nw = minSz;
+        }
+        if (nx < 0) { nw += nx; nx = 0; }
+        if (ny < 0) { nh += ny; ny = 0; }
+        if (nx + nw > 1) nw = 1 - nx;
+        if (ny + nh > 1) nh = 1 - ny;
+        b.x = nx; b.y = ny; b.w = nw; b.h = nh;
+        renderBoxes();
+    }
+
     // Catch mouseup anywhere on the page so an in-progress box-drag commits even when
     // the cursor leaves the image area.
     document.addEventListener('mousemove', function(ev) {
+        if (diagramResize) {
+            _applyBoxResize(ev.clientX, ev.clientY);
+            return;
+        }
         if (diagramDragStart || diagramCropStart) {
-            // bubble through to the layer's move logic so the rect tracks the cursor
-            // even when it's outside the image bounds (we already clamp inside).
             boxLayerMove(ev);
         }
     });
     document.addEventListener('mouseup', function(ev) {
+        if (diagramResize) {
+            diagramResize = null;
+            if (typeof schedulePatch === 'function') schedulePatch();
+            return;
+        }
         if (diagramDragStart || diagramCropStart) {
             boxLayerUp(ev);
         }
