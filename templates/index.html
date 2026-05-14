@@ -1905,8 +1905,7 @@
                             <div id="diagramsBoxLayer" style="position:absolute; inset:0; cursor:crosshair;"
                                  onmousedown="boxLayerDown(event)"
                                  onmousemove="boxLayerMove(event)"
-                                 onmouseup="boxLayerUp(event)"
-                                 onmouseleave="boxLayerUp(event)"></div>
+                                 onmouseup="boxLayerUp(event)"></div>
                             <div id="diagramsCropOverlay" style="display:none; position:absolute; inset:0; pointer-events:none;">
                                 <div id="diagramsCropDimT"></div>
                                 <div id="diagramsCropDimB"></div>
@@ -5453,6 +5452,21 @@
         renderBoxAnimList();
         if (typeof schedulePatch === 'function') schedulePatch();
     }
+    // Catch mouseup anywhere on the page so an in-progress box-drag commits even when
+    // the cursor leaves the image area.
+    document.addEventListener('mousemove', function(ev) {
+        if (diagramDragStart || diagramCropStart) {
+            // bubble through to the layer's move logic so the rect tracks the cursor
+            // even when it's outside the image bounds (we already clamp inside).
+            boxLayerMove(ev);
+        }
+    });
+    document.addEventListener('mouseup', function(ev) {
+        if (diagramDragStart || diagramCropStart) {
+            boxLayerUp(ev);
+        }
+    });
+
     document.addEventListener('keydown', function(ev) {
         var studio = document.getElementById('diagramsStudio');
         if (!studio || studio.style.display !== 'block') return;
