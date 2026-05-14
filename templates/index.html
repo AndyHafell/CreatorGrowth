@@ -1865,6 +1865,41 @@
         </div>
     </div>
 
+    <div class="modal-overlay" id="diagramsOverlay" onclick="if(event.target===this)closeDiagrams()" style="z-index:600;">
+        <div class="modal-card" style="max-width:780px;">
+            <button class="modal-close" onclick="closeDiagrams()">&times;</button>
+            <div class="modal-title" style="color:#f5b942;">DIAGRAMS</div>
+            <div class="modal-meta">Image + script &rarr; animated MP4. Iteration 1: upload + script chunk.</div>
+
+            <div id="diagramsDropZone" style="margin-top:18px; padding:32px; border:2px dashed #3a3a5a; border-radius:8px; text-align:center; cursor:pointer; background:#0d0d1a; transition:all 0.15s;"
+                 onclick="document.getElementById('diagramsFileInput').click()"
+                 ondragover="event.preventDefault(); this.style.borderColor='#f5b942'; this.style.background='#15151f';"
+                 ondragleave="this.style.borderColor='#3a3a5a'; this.style.background='#0d0d1a';"
+                 ondrop="event.preventDefault(); this.style.borderColor='#3a3a5a'; this.style.background='#0d0d1a'; handleDiagramsFile(event.dataTransfer.files[0]);">
+                <div style="color:#888; font-size:13px;">Drag &amp; drop an image here, or click to choose</div>
+            </div>
+            <input type="file" id="diagramsFileInput" accept="image/*" style="display:none;" onchange="handleDiagramsFile(this.files[0])">
+
+            <div id="diagramsPreview" style="display:none; margin-top:18px;">
+                <img id="diagramsImage" style="max-width:100%; border-radius:6px; border:1px solid #2a2a4a; display:block;">
+                <div style="margin-top:8px; display:flex; gap:10px; align-items:center;">
+                    <button onclick="resetDiagramsImage()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:4px 10px; font-size:11px; cursor:pointer;">Replace</button>
+                    <span style="color:#555; font-size:11px;">Box-drawing UI lands in iteration 2.</span>
+                </div>
+            </div>
+
+            <div style="margin-top:18px;">
+                <label style="display:block; color:#888; font-size:11px; letter-spacing:0.5px; margin-bottom:6px;">SCRIPT CHUNK (narration that plays over this diagram)</label>
+                <textarea id="diagramsScript" style="width:100%; min-height:120px; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px; padding:12px; color:#ddd; font-size:13px; line-height:1.6; resize:vertical; font-family:inherit;" placeholder="Paste the section of script that this diagram appears under..."></textarea>
+            </div>
+
+            <div style="margin-top:18px; display:flex; gap:12px; align-items:center;">
+                <button onclick="renderDiagram()" style="background:#f5b942; color:#000; border:none; border-radius:6px; padding:10px 22px; font-size:13px; font-weight:700; letter-spacing:0.5px; cursor:pointer;">RENDER</button>
+                <span style="color:#555; font-size:11px;">Render pipeline lands in iteration 3.</span>
+            </div>
+        </div>
+    </div>
+
     <div id="teleprompterOverlay" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:#000; z-index:99999; overflow-y:auto;">
         <div id="tpToolbar" style="position:fixed; top:0; left:0; right:0; display:flex; align-items:center; gap:6px; padding:8px 16px; background:rgba(0,0,0,0.85); border-bottom:1px solid #222; z-index:100000; opacity:0; transition:opacity 0.2s;" onmouseenter="this.style.opacity=1" onmouseleave="this.style.opacity=0">
             <button onclick="tpExec('bold')" style="background:none; border:1px solid #333; color:#aaa; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:13px;" title="Bold"><b>B</b></button>
@@ -4708,7 +4743,34 @@
     }
 
     function openDiagrams() {
-        alert('Diagrams tab — coming soon.\n\nUpload image → human-box cuts → paste script chunk → animated MP4 with timed reveals.');
+        document.getElementById('diagramsOverlay').classList.add('open');
+    }
+    function closeDiagrams() {
+        document.getElementById('diagramsOverlay').classList.remove('open');
+    }
+    function handleDiagramsFile(file) {
+        if (!file || !file.type || !file.type.startsWith('image/')) return;
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            document.getElementById('diagramsImage').src = e.target.result;
+            document.getElementById('diagramsPreview').style.display = 'block';
+            document.getElementById('diagramsDropZone').style.display = 'none';
+        };
+        reader.readAsDataURL(file);
+    }
+    function resetDiagramsImage() {
+        document.getElementById('diagramsImage').src = '';
+        document.getElementById('diagramsPreview').style.display = 'none';
+        document.getElementById('diagramsDropZone').style.display = 'block';
+        document.getElementById('diagramsFileInput').value = '';
+    }
+    function renderDiagram() {
+        var src = document.getElementById('diagramsImage').src || '';
+        var hasImage = src && src.indexOf('data:image') === 0;
+        var script = document.getElementById('diagramsScript').value.trim();
+        if (!hasImage) { alert('Upload an image first.'); return; }
+        if (!script) { alert('Paste the script chunk first.'); return; }
+        alert('Render pipeline lands in iteration 3.\n\nImage: ✓\nScript: ' + script.length + ' chars');
     }
     </script>
     <script>
