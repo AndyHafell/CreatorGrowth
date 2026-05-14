@@ -5602,29 +5602,14 @@
                     row.appendChild(desc);
                 }
 
-                // Time row: −  @4.50s  +    AI/Manual
+                // Time row: @4.50s  (click to type override)    AI / Manual·reset
                 var timeRow = document.createElement('div');
-                timeRow.style.cssText = 'display:flex; align-items:center; gap:6px; margin-top:6px; padding-left:28px;';
-
-                var btnStyle = 'background:#0d0d1a; border:1px solid #2a2a4a; color:#888; border-radius:3px; padding:1px 7px; cursor:pointer; font-size:12px; line-height:1; font-weight:700;';
-
-                var minus = document.createElement('button');
-                minus.textContent = '−';
-                minus.title = 'Nudge 0.1s earlier';
-                minus.style.cssText = btnStyle;
-                minus.onclick = function(ev) {
-                    ev.stopPropagation();
-                    var base = (manualT !== null) ? manualT : (renderedT !== null ? renderedT : 0);
-                    b.time_override = Math.max(0, Math.round((base - 0.1) * 100) / 100);
-                    if (typeof schedulePatch === 'function') schedulePatch();
-                    renderBoxAnimList();
-                };
-                timeRow.appendChild(minus);
+                timeRow.style.cssText = 'display:flex; align-items:center; gap:8px; margin-top:6px; padding-left:28px;';
 
                 var timeLabel = document.createElement('span');
                 timeLabel.textContent = (displayT !== null) ? ('@' + displayT.toFixed(2) + 's') : '@—';
-                timeLabel.style.cssText = 'color:' + (manualT !== null ? '#f5b942' : (renderedT !== null ? '#aaa' : '#555')) + '; min-width:62px; text-align:center; cursor:pointer; font-variant-numeric:tabular-nums; font-size:11px;';
-                timeLabel.title = 'Click to type exact time';
+                timeLabel.style.cssText = 'color:' + (manualT !== null ? '#f5b942' : (renderedT !== null ? '#aaa' : '#555')) + '; cursor:pointer; font-variant-numeric:tabular-nums; font-size:11px;';
+                timeLabel.title = 'Click to type an exact reveal time';
                 timeLabel.onclick = function(ev) {
                     ev.stopPropagation();
                     var promptDefault = (displayT !== null) ? displayT.toFixed(2) : '';
@@ -5637,19 +5622,6 @@
                     renderBoxAnimList();
                 };
                 timeRow.appendChild(timeLabel);
-
-                var plus = document.createElement('button');
-                plus.textContent = '+';
-                plus.title = 'Nudge 0.1s later';
-                plus.style.cssText = btnStyle;
-                plus.onclick = function(ev) {
-                    ev.stopPropagation();
-                    var base = (manualT !== null) ? manualT : (renderedT !== null ? renderedT : 0);
-                    b.time_override = Math.round((base + 0.1) * 100) / 100;
-                    if (typeof schedulePatch === 'function') schedulePatch();
-                    renderBoxAnimList();
-                };
-                timeRow.appendChild(plus);
 
                 var modeBadge = document.createElement('span');
                 if (manualT !== null) {
@@ -5665,8 +5637,6 @@
                 } else if (renderedT !== null) {
                     modeBadge.textContent = 'AI';
                     modeBadge.style.cssText = 'color:#555; font-size:10px; letter-spacing:0.3px;';
-                } else {
-                    modeBadge.textContent = '';
                 }
                 timeRow.appendChild(modeBadge);
 
