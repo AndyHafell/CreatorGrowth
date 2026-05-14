@@ -2141,10 +2141,10 @@
         }
         .cs-style-blue-glass .cs-card {
             position: relative;
-            width: min(78%, 1400px);
+            width: min(86%, 1660px);
             background: linear-gradient(165deg, #c4ebff 0%, #7cc2ff 60%, #5aa8ee 100%);
             border-radius: 36px;
-            padding: 70px 90px;
+            padding: 60px 80px;
             box-shadow:
                 0 0 1px 1px rgba(255,255,255,0.6) inset,
                 0 0 40px 4px rgba(140,200,255,0.55),
@@ -2171,6 +2171,7 @@
             color: #0d2a8a;
             text-transform: uppercase;
             text-shadow: 0 1px 0 rgba(255,255,255,0.3);
+            white-space: nowrap;
         }
         .cs-style-blue-glass .cs-items > li.cs-blur {
             filter: blur(14px);
@@ -6180,6 +6181,46 @@
         if (csState.numbering === 'step')   return 'STEP ' + (i + 1) + ' - ';
         return '';
     }
+
+    // Auto-fit: pick the largest font size (within [32, 80]) such that
+    // (a) the longest rendered line fits in the card's content width without wrapping
+    // (b) all N items stack vertically inside the card's content height.
+    // Returns { fontPx, gapPx } for the canvas state.
+    var _csMeasureCanvas = null;
+    function csComputeFit(items) {
+        if (!_csMeasureCanvas) _csMeasureCanvas = document.createElement('canvas');
+        var ctx = _csMeasureCanvas.getContext('2d');
+        // Capture-target dimensions (1920×1080) and card geometry from the CSS above:
+        //   card width = min(86%, 1660px) → assume 1660 ceiling
+        //   horizontal padding = 80px each side
+        //   dot width + flex gap = 28 + 30 = 58px
+        var cardW = Math.min(1660, 1920 * 0.86);
+        var contentW = cardW - 80 * 2 - (28 + 30);   // text-available width
+        var cardMaxH = 1080 - 90 * 2;                // page padding ~90 top/bottom
+        var contentH = cardMaxH - 60 * 2;            // card vertical padding
+
+        // Longest line text (uppercased to match CSS text-transform)
+        var rendered = items.map(function(t, i) { return (csPrefix(i) + (t || '')).toUpperCase(); });
+        var longest = rendered.reduce(function(a, b) { return b.length > a.length ? b : a; }, '');
+
+        // Use canvas to measure: bold 900 Montserrat at ref size, scale
+        var ref = 80;
+        ctx.font = '900 ' + ref + 'px Montserrat, "Helvetica Neue", sans-serif';
+        var measured = Math.max(1, ctx.measureText(longest).width);
+        var widthLimited = (contentW / measured) * ref;
+
+        // Vertical fit: each row height ≈ font × 1.05 (line-height), gap ≈ font × 0.55
+        var N = items.length || 1;
+        // total = N*font*1.05 + (N-1)*font*0.55 = font * (1.6N - 0.55)
+        var rowFactor = 1.6 * N - 0.55;
+        var heightLimited = contentH / Math.max(0.5, rowFactor);
+
+        var fontPx = Math.min(widthLimited, heightLimited, 80);
+        fontPx = Math.max(32, fontPx);
+        // Gap scales with font for visual rhythm
+        var gapPx = Math.max(14, Math.min(50, fontPx * 0.55));
+        return { fontPx: Math.round(fontPx), gapPx: Math.round(gapPx) };
+    }
     var _csSaveTimer = null;
     var _csVid = null;
 
@@ -6369,13 +6410,11 @@
             li.appendChild(t);
             ul.appendChild(li);
         });
-        // Dynamic font size: ~80px @ 2-3 items down to ~32px @ 12+ items.
-        var n = visible.length || 1;
-        var fontPx = Math.max(32, Math.min(80, 92 - n * 6));
-        var gapPx = Math.max(14, Math.min(46, 56 - n * 3));
+        // Auto-fit font + gap so the longest line fits without wrapping
+        var fit = csComputeFit(visible);
         var preview = document.getElementById('csPreview');
-        preview.style.setProperty('--cs-fontsize', fontPx + 'px');
-        preview.style.setProperty('--cs-gap', gapPx + 'px');
+        preview.style.setProperty('--cs-fontsize', fit.fontPx + 'px');
+        preview.style.setProperty('--cs-gap', fit.gapPx + 'px');
     }
 
     function csAddRow() {
@@ -6464,11 +6503,10 @@
         // Build the capture DOM (off-screen sibling at full 1920×1080)
         var cap = document.getElementById('csCapture');
         cap.className = 'cs-style-blue-glass';
-        // Match dynamic font size to preview
-        var fontPx = Math.max(32, Math.min(80, 92 - N * 6));
-        var gapPx = Math.max(14, Math.min(46, 56 - N * 3));
-        cap.style.setProperty('--cs-fontsize', fontPx + 'px');
-        cap.style.setProperty('--cs-gap', gapPx + 'px');
+        // Use the same auto-fit as the preview so capture matches what user sees
+        var fit = csComputeFit(items);
+        cap.style.setProperty('--cs-fontsize', fit.fontPx + 'px');
+        cap.style.setProperty('--cs-gap', fit.gapPx + 'px');
 
         var capUl = document.getElementById('csCaptureItems');
         capUl.innerHTML = '';
