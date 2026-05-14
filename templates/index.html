@@ -1963,6 +1963,12 @@
 
                 <!-- RENDER -->
                 <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                    <label style="color:#666; font-size:10px; letter-spacing:2px;">MODE</label>
+                    <select id="diagramsMode" onchange="onDiagramModeChange()" style="background:#0d0d1a; color:#ddd; border:1px solid #2a2a4a; border-radius:4px; padding:6px 10px; font-size:12px;">
+                        <option value="reveal">Reveal (boxes accumulate)</option>
+                        <option value="slideshow">Slideshow (one at a time)</option>
+                    </select>
+                    <span style="flex:0 0 12px;"></span>
                     <button id="diagramsRenderBtn" onclick="renderDiagram()" style="background:#f5b942; color:#000; border:none; border-radius:6px; padding:11px 26px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer;">RENDER THIS DIAGRAM</button>
                     <button id="diagramsRenderAllBtn" onclick="renderAllDiagrams()" style="background:transparent; border:1px solid #f5b942; color:#f5b942; border-radius:6px; padding:11px 22px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer;">RENDER ALL</button>
                     <span id="diagramsRenderStatus" style="color:#555; font-size:11px;"></span>
@@ -4863,8 +4869,19 @@
             script: row.script || '',
             scriptStatus: '',
             resultUrl: row.result_url || '',
-            resultMeta: row.result_meta || null
+            resultMeta: row.result_meta || null,
+            mode: row.mode || 'reveal'
         };
+    }
+    function onDiagramModeChange() {
+        var d = diagramsList[activeDiagramIdx];
+        if (!d) return;
+        var sel = document.getElementById('diagramsMode');
+        d.mode = sel.value;
+        setStudioStatus('Saving…', '#f5b942');
+        _apiPatch(d.id, { mode: d.mode })
+            .then(function() { setStudioStatus('Saved', '#4caf50'); })
+            .catch(function(err) { setStudioStatus('Save failed: ' + err, '#e07070'); });
     }
     function _apiPatch(id, body) {
         return fetch('/api/diagrams/' + id, {
@@ -5073,6 +5090,10 @@
         var st = document.getElementById('diagramsScriptStatus');
         st.textContent = '';
         st.style.color = '#555';
+
+        // mode selector
+        var modeSel = document.getElementById('diagramsMode');
+        if (modeSel) modeSel.value = d.mode || 'reveal';
 
         // result video (if previously rendered)
         document.getElementById('diagramsRenderStatus').textContent = '';
