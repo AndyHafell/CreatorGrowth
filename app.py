@@ -215,6 +215,10 @@ def init_db():
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_diagrams_video ON diagrams(video_id, position)")
+    try:
+        conn.execute("ALTER TABLE diagrams ADD COLUMN mode TEXT DEFAULT 'reveal'")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -2604,6 +2608,11 @@ def diagrams_patch(diagram_id):
         fields.append("boxes_json=?"); values.append(json.dumps(payload["boxes"]))
     if "script" in payload:
         fields.append("script=?"); values.append(payload["script"])
+    if "mode" in payload:
+        mode_v = (payload.get("mode") or "reveal").lower()
+        if mode_v not in ("reveal", "slideshow"):
+            mode_v = "reveal"
+        fields.append("mode=?"); values.append(mode_v)
     if not fields:
         return jsonify({"error": "no fields to update"}), 400
     fields.append("updated_at=?")
@@ -3139,32 +3148,50 @@ def diagrams_render():
                 inputs += ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(crop_paths[i])]
         inputs += ["-i", str(audio_path)]
 
-        def _box_filter_segs(prev_lbl, in_idx, out_lbl, bx, by, bw, bh, t, anim, n_zoom_frames):
-            """Return list of filter-graph segments for one box's entrance animation."""
+        # Mode: reveal (boxes accumulate) or slideshow (one box at a time, crossfade)
+        mode = "reveal"
+        if diagram_row:
+            try:
+                mode = (diagram_row["mode"] or "reveal").lower()
+            except (KeyError, IndexError):
+                mode = "reveal"
+            if mode not in ("reveal", "slideshow"):
+                mode = "reveal"
+
+        def _box_filter_segs(prev_lbl, in_idx, out_lbl, bx, by, bw, bh, t, anim,
+                             n_zoom_frames, t_exit=None):
+            """Return filter-graph segments for one box's entrance (+ optional exit fade).
+            When t_exit is set, an alpha fade-out is added starting at t_exit, and the
+            overlay's enable gate becomes 'between(t, t, t_exit + fade_dur)'."""
             src = f"[s{in_idx}]"
             segs = []
+            exit_filter = (f",fade=t=out:st={t_exit:.3f}:d={fade_dur:.3f}:alpha=1"
+                           if t_exit is not None else "")
             if anim in ("zoom_in", "zoom_out"):
-                # The image sequence has fade + scale baked in (n_zoom_frames at FPS).
-                # We need to: shift its pts to start at t, then clone the last frame
-                # for the remainder of the video.
                 zoom_clip_len = n_zoom_frames / FPS
                 stop_extra = max(0.0, duration - t - zoom_clip_len)
                 segs.append(
                     f"[{in_idx}:v]format=rgba,"
                     f"setpts=PTS+{t:.3f}/TB,"
-                    f"tpad=stop_mode=clone:stop_duration={stop_extra:.3f}{src}"
+                    f"tpad=stop_mode=clone:stop_duration={stop_extra:.3f}"
+                    f"{exit_filter}{src}"
                 )
                 x_expr, y_expr = str(bx), str(by)
             elif anim == "fade":
-                segs.append(f"[{in_idx}:v]format=rgba,fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1{src}")
+                segs.append(
+                    f"[{in_idx}:v]format=rgba,"
+                    f"fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1"
+                    f"{exit_filter}{src}"
+                )
                 x_expr, y_expr = str(bx), str(by)
             else:
-                # slide variants — always include crossfade, eased
                 p = f"min(1,max(0,(t-{t:.3f})/{slide_dur:.3f}))"
                 ease = f"({p}*{p}*(3-2*{p}))"
                 remaining = f"(1-{ease})"
                 segs.append(
-                    f"[{in_idx}:v]format=rgba,fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1{src}"
+                    f"[{in_idx}:v]format=rgba,"
+                    f"fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1"
+                    f"{exit_filter}{src}"
                 )
                 if anim == "from_right":
                     x_expr = f"{bx}+{slide_dist}*{remaining}"; y_expr = str(by)
@@ -3176,9 +3203,14 @@ def diagrams_render():
                     x_expr = str(bx); y_expr = f"{by}-{slide_dist}*{remaining}"
                 else:
                     x_expr, y_expr = str(bx), str(by)
+            if t_exit is not None:
+                # The overlay is enabled from reveal through fade-out completion.
+                enable_expr = f"between(t,{t:.3f},{(t_exit + fade_dur):.3f})"
+            else:
+                enable_expr = f"gte(t,{t:.3f})"
             segs.append(
                 f"{prev_lbl}{src}overlay=x='{x_expr}':y='{y_expr}':"
-                f"enable='gte(t,{t:.3f})'{out_lbl}"
+                f"enable='{enable_expr}'{out_lbl}"
             )
             return segs
 
@@ -3187,7 +3219,16 @@ def diagrams_render():
         for i, ((bx, by, bw, bh), t) in enumerate(zip(box_rects, times)):
             anim = resolved_anims[i]
             out_label = "[vout]" if i == N - 1 else f"[v{i}]"
-            filter_parts.extend(_box_filter_segs(last_label, i + 1, out_label, bx, by, bw, bh, t, anim, zoom_frame_counts[i]))
+            # In slideshow mode every box (except the last) fades out at the NEXT
+            # box's reveal time, so they overlap into a clean crossfade.
+            t_exit = None
+            if mode == "slideshow" and i + 1 < N:
+                t_exit = times[i + 1]
+            filter_parts.extend(_box_filter_segs(
+                last_label, i + 1, out_label,
+                bx, by, bw, bh, t, anim,
+                zoom_frame_counts[i], t_exit=t_exit,
+            ))
             last_label = out_label
 
         filter_complex = ";".join(filter_parts)
@@ -3234,6 +3275,7 @@ def diagrams_render():
             "content_size": (W, H),
             "bottom_pad": bottom_pad,
             "anims": resolved_anims,
+            "mode": mode,
         }
 
         if diagram_row:
