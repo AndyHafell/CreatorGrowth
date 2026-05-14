@@ -2876,14 +2876,14 @@ def diagrams_render():
         # Pre-sample bg-fill color per box rect — reused for both bg.png and for
         # masking nested inner-box regions inside outer-box crops.
         fill_for_rect = {}  # (x,y,w,h) -> (r,g,b)
-        for (x, y, w, h, _anim) in all_box_records:
+        for (x, y, w, h, _anim, _bd) in all_box_records:
             fill_for_rect[(x, y, w, h)] = _ring_median_color(img, x, y, w, h, pad=8, ring=24)
 
         # Background = image with EVERY box filled with the LOCAL background color.
         # Reveal boxes get re-overlaid on top with the chosen animation; hide boxes stay masked.
         bg = img.copy()
         draw = ImageDraw.Draw(bg)
-        for (x, y, w, h, _anim) in all_box_records:
+        for (x, y, w, h, _anim, _bd) in all_box_records:
             fill = fill_for_rect[(x, y, w, h)]
             draw.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
 
