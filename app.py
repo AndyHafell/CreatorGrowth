@@ -2704,9 +2704,40 @@ def diagrams_upload_audio(diagram_id):
     return jsonify({"audio_path": rel, "audio_path_url": "/" + rel, "audio_name": f.filename, "audio_duration": duration})
 
 
+def _render_zoom_frames(frames_dir, crop_img, bw, bh, anim, zoom_dur, fade_dur, fps=30):
+    """Pre-render PNG frames for a zoom intro animation. Each frame is a (bw, bh)
+    RGBA canvas with the box content scaled per smoothstep ease + alpha fade baked in.
+    Returns (frames_dir, n_frames). ffmpeg consumes via image2 input."""
+    from PIL import Image as _Image
+    start_s = 0.5 if anim == "zoom_in" else 1.3
+    end_s = 1.0
+    n_frames = max(2, int(round(zoom_dur * fps)))
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    base = crop_img.convert("RGBA")
+    for i in range(n_frames):
+        p = i / max(1, n_frames - 1)
+        ease = p * p * (3 - 2 * p)
+        s = start_s + (end_s - start_s) * ease
+        nw = max(1, int(round(bw * s)))
+        nh = max(1, int(round(bh * s)))
+        scaled = base.resize((nw, nh), _Image.LANCZOS)
+        canvas = _Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+        canvas.paste(scaled, ((bw - nw) // 2, (bh - nh) // 2), scaled)
+        # Bake the alpha fade-in into the frame
+        frame_t = i / fps
+        a = min(1.0, frame_t / fade_dur) if fade_dur > 0 else 1.0
+        if a < 1.0:
+            alpha = canvas.split()[3].point(lambda v, mult=a: int(v * mult))
+            canvas.putalpha(alpha)
+        canvas.save(frames_dir / f"f{i:04d}.png")
+    return frames_dir, n_frames
+
+
 @app.route("/api/diagrams/render", methods=["POST"])
 def diagrams_render():
     """Render image + boxes + audio -> MP4 with timed fade-in reveals.
+    Box `anim` field controls each box's entrance: fade, slide directions, zoom_in/out,
+    or `hide` (the box stays masked permanently — no reveal).
     Accepts either:
       - form field `diagram_id` (uses persisted image+audio+boxes+script), or
       - inline files (legacy): image, audio, boxes JSON, script."""
@@ -2800,8 +2831,9 @@ def diagrams_render():
         if duration <= 0.1 or duration > 600:
             return jsonify({"error": f"audio duration out of range ({duration:.1f}s, max 600s)"}), 400
 
-        # Compute box rects in image pixels (even-aligned, clamped)
-        box_rects = []
+        # Compute box rects + kind (reveal vs hide) + anim style
+        all_box_records = []   # every box for masking: (x, y, w, h, anim)
+        reveal_indices = []     # indices into all_box_records that are reveal-type
         for b in boxes:
             try:
                 bx = float(b["x"]); by = float(b["y"]); bw = float(b["w"]); bh = float(b["h"])
@@ -2815,17 +2847,28 @@ def diagrams_render():
             w -= (w % 2); h -= (h % 2)
             if w < 2 or h < 2:
                 continue
-            box_rects.append((x, y, w, h))
-        if not box_rects:
+            anim_val = (b.get("anim") or "fade").lower() if isinstance(b, dict) else "fade"
+            all_box_records.append((x, y, w, h, anim_val))
+            if anim_val != "hide":
+                reveal_indices.append(len(all_box_records) - 1)
+        if not all_box_records:
             return jsonify({"error": "no valid boxes after normalization"}), 400
+
+        # Reveal boxes are the ones that animate in. Hide boxes only mask the bg permanently.
+        box_rects = [(r[0], r[1], r[2], r[3]) for i, r in enumerate(all_box_records) if i in reveal_indices]
+        box_anims = [all_box_records[i][4] for i in reveal_indices]
+        hide_rects = [(r[0], r[1], r[2], r[3]) for i, r in enumerate(all_box_records) if i not in reveal_indices]
+
+        if not box_rects and not hide_rects:
+            return jsonify({"error": "no boxes after kind split"}), 400
 
         N = len(box_rects)
 
-        # Background = image with each box filled with the LOCAL background color
-        # (median of a ring of pixels outside the box) so the masked area blends in.
+        # Background = image with EVERY box filled with the LOCAL background color.
+        # Reveal boxes get re-overlaid on top with the chosen animation; hide boxes stay masked.
         bg = img.copy()
         draw = ImageDraw.Draw(bg)
-        for (x, y, w, h) in box_rects:
+        for (x, y, w, h, _anim) in all_box_records:
             fill = _ring_median_color(img, x, y, w, h, pad=8, ring=24)
             draw.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
 
@@ -2838,13 +2881,69 @@ def diagrams_render():
         bg_path = work_dir / "bg.png"
         bg_padded.save(bg_path)
 
-        # Crop each box
+        # If no reveal boxes (only hide boxes), short-circuit to a trivial render:
+        # just bg.png + audio, no filter graph.
+        if N == 0:
+            out_path = work_dir / "out.mp4"
+            simple_cmd = [
+                "ffmpeg", "-y",
+                "-loop", "1", "-t", f"{duration:.3f}", "-i", str(bg_path),
+                "-i", str(audio_path),
+                "-map", "0:v", "-map", "1:a",
+                "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k",
+                "-r", "30", "-shortest",
+                str(out_path),
+            ]
+            r = subprocess.run(simple_cmd, capture_output=True, text=True, timeout=240)
+            if r.returncode != 0:
+                return jsonify({"error": "ffmpeg failed (hide-only)", "stderr": r.stderr[-1500:]}), 500
+            # Persist + return
+            if diagram_row:
+                vid = diagram_row["video_id"]
+                out_dir = _diagram_dir(vid, diagram_id)
+                final_path = out_dir / "result.mp4"
+                shutil.move(str(out_path), str(final_path))
+                rel = str(final_path.relative_to(Path(app.root_path)))
+                result_url = "/" + rel
+            else:
+                out_dir = Path(app.root_path) / "static" / "uploads" / "diagrams"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                final_path = out_dir / f"{job_id}.mp4"
+                shutil.move(str(out_path), str(final_path))
+                result_url = f"/static/uploads/diagrams/{job_id}.mp4"
+            payload = {
+                "url": result_url, "duration": round(duration, 2),
+                "boxes": 0, "hidden_boxes": len(hide_rects),
+                "reveal_times": [], "alignment": "hide_only",
+                "descriptions": [], "size": (W, H + bottom_pad),
+                "content_size": (W, H), "bottom_pad": bottom_pad,
+            }
+            if diagram_row:
+                conn = get_db()
+                conn.execute("UPDATE diagrams SET result_url=?, result_meta_json=?, updated_at=? WHERE id=?",
+                             (result_url, json.dumps(payload), datetime.now(timezone.utc).isoformat(), diagram_id))
+                conn.commit()
+                conn.close()
+            return jsonify(payload)
+
+        # Crop each reveal box (also pre-render zoom frames where needed)
+        FPS = 30
         crop_paths = []
-        for i, (x, y, w, h) in enumerate(box_rects):
+        zoom_frame_dirs = [None] * N   # parallel to box_rects, set for zoom boxes
+        zoom_frame_counts = [0] * N
+        for i, ((x, y, w, h), anim_for_box) in enumerate(zip(box_rects, box_anims)):
             crop = img.crop((x, y, x + w, y + h))
             cp = work_dir / f"crop_{i:02d}.png"
             crop.save(cp)
             crop_paths.append(cp)
+            if anim_for_box in ("zoom_in", "zoom_out"):
+                fdir, nf = _render_zoom_frames(
+                    work_dir / f"zoom_{i:02d}", crop, w, h, anim_for_box,
+                    zoom_dur=0.45, fade_dur=0.35, fps=FPS,
+                )
+                zoom_frame_dirs[i] = fdir
+                zoom_frame_counts[i] = nf
 
         # ---- Reveal times: AI-aligned if possible, else evenly distributed ----
         first_t = min(0.5, max(0.3, duration * 0.05))
@@ -2945,45 +3044,59 @@ def diagrams_render():
             times = even_times
 
         fade_dur = 0.35
-
-        # Build ffmpeg command
-        inputs = ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(bg_path)]
-        for cp in crop_paths:
-            inputs += ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(cp)]
-        inputs += ["-i", str(audio_path)]
-
-        # Per-box animation builder — slides + zoom all carry a crossfade,
-        # all motion uses ease-in-out (smoothstep p^2(3-2p)).
         slide_dur = 0.50
         zoom_dur = 0.45
-        # Subtle nudge distance: ~4% of canvas height, clamped 22-60px
         slide_dist = int(min(60, max(22, (H + bottom_pad) * 0.04)))
 
-        def _box_filter_segs(prev_lbl, in_idx, out_lbl, bx, by, bw, bh, t, anim):
+        # Legacy alias map. Zoom is now working again via pre-rendered frames.
+        LEGACY_ANIM_MAP = {
+            "from_right_fade": "from_right",
+            "from_left_fade": "from_left",
+            "from_above_fade": "from_above",
+            "from_below_fade": "from_below",
+        }
+        valid_anims = {"fade", "from_right", "from_left", "from_above", "from_below",
+                       "zoom_in", "zoom_out"}
+
+        # Resolve each reveal box's effective anim
+        resolved_anims = []
+        for i in range(N):
+            raw = (box_anims[i] or "fade").lower()
+            a = LEGACY_ANIM_MAP.get(raw, raw)
+            resolved_anims.append(a if a in valid_anims else "fade")
+
+        # Build ffmpeg inputs
+        inputs = ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(bg_path)]
+        for i in range(N):
+            if resolved_anims[i] in ("zoom_in", "zoom_out"):
+                # image sequence input (fade is baked into the PNG frames)
+                inputs += ["-framerate", f"{FPS}",
+                           "-i", str(zoom_frame_dirs[i] / "f%04d.png")]
+            else:
+                inputs += ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(crop_paths[i])]
+        inputs += ["-i", str(audio_path)]
+
+        def _box_filter_segs(prev_lbl, in_idx, out_lbl, bx, by, bw, bh, t, anim, n_zoom_frames):
             """Return list of filter-graph segments for one box's entrance animation."""
             src = f"[s{in_idx}]"
             segs = []
-            # Build smoothstep eased progress: ease in [0,1], "remaining" in [1,0]
-            # Used for x/y offset interpolation.
             if anim in ("zoom_in", "zoom_out"):
-                p = f"min(1,max(0,(t-{t:.3f})/{zoom_dur:.3f}))"
-                ease = f"({p}*{p}*(3-2*{p}))"
-                start_s = 0.5 if anim == "zoom_in" else 1.3
-                end_s = 1.0
-                scale_expr = f"({start_s}+({end_s}-{start_s})*{ease})"
+                # The image sequence has fade + scale baked in (n_zoom_frames at FPS).
+                # We need to: shift its pts to start at t, then clone the last frame
+                # for the remainder of the video.
+                zoom_clip_len = n_zoom_frames / FPS
+                stop_extra = max(0.0, duration - t - zoom_clip_len)
                 segs.append(
                     f"[{in_idx}:v]format=rgba,"
-                    f"scale=w='{bw}*{scale_expr}':h='{bh}*{scale_expr}':eval=frame,"
-                    f"fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1{src}"
+                    f"setpts=PTS+{t:.3f}/TB,"
+                    f"tpad=stop_mode=clone:stop_duration={stop_extra:.3f}{src}"
                 )
-                # center the scaled crop on the original box's center
-                x_expr = f"{bx}+({bw}-w)/2"
-                y_expr = f"{by}+({bh}-h)/2"
+                x_expr, y_expr = str(bx), str(by)
             elif anim == "fade":
                 segs.append(f"[{in_idx}:v]format=rgba,fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1{src}")
                 x_expr, y_expr = str(bx), str(by)
             else:
-                # slide variants — always include crossfade
+                # slide variants — always include crossfade, eased
                 p = f"min(1,max(0,(t-{t:.3f})/{slide_dur:.3f}))"
                 ease = f"({p}*{p}*(3-2*{p}))"
                 remaining = f"(1-{ease})"
@@ -3006,27 +3119,12 @@ def diagrams_render():
             )
             return segs
 
-        # Legacy alias: pre-merge "*_fade" variants now resolve to the base direction
-        # (which carries fade by default). Zoom is temporarily stubbed to fade —
-        # ffmpeg's scale=eval=frame can't produce variable output dims, needs a
-        # pre-rendered intro-clip approach (TODO).
-        LEGACY_ANIM_MAP = {
-            "from_right_fade": "from_right",
-            "from_left_fade": "from_left",
-            "from_above_fade": "from_above",
-            "from_below_fade": "from_below",
-            "zoom_in": "fade",
-            "zoom_out": "fade",
-        }
-        valid_anims = {"fade", "from_right", "from_left", "from_above", "from_below"}
         filter_parts = []
         last_label = "[0:v]"
         for i, ((bx, by, bw, bh), t) in enumerate(zip(box_rects, times)):
-            raw_anim = (boxes[i].get("anim") if i < len(boxes) and isinstance(boxes[i], dict) else None) or "fade"
-            anim = LEGACY_ANIM_MAP.get(raw_anim, raw_anim)
-            anim = anim if anim in valid_anims else "fade"
+            anim = resolved_anims[i]
             out_label = "[vout]" if i == N - 1 else f"[v{i}]"
-            filter_parts.extend(_box_filter_segs(last_label, i + 1, out_label, bx, by, bw, bh, t, anim))
+            filter_parts.extend(_box_filter_segs(last_label, i + 1, out_label, bx, by, bw, bh, t, anim, zoom_frame_counts[i]))
             last_label = out_label
 
         filter_complex = ";".join(filter_parts)
@@ -3064,12 +3162,14 @@ def diagrams_render():
             "url": result_url,
             "duration": round(duration, 2),
             "boxes": N,
+            "hidden_boxes": len(hide_rects),
             "reveal_times": [round(t, 2) for t in times],
             "alignment": alignment_mode,
             "descriptions": alignment_descs,
             "size": (W, H + bottom_pad),
             "content_size": (W, H),
             "bottom_pad": bottom_pad,
+            "anims": resolved_anims,
         }
 
         if diagram_row:
