@@ -3217,7 +3217,8 @@ def diagrams_render():
                     zoom_frame_dirs[i] = fdir
                     zoom_frame_counts[i] = nf
 
-        fade_dur = 0.35
+        fade_dur = 0.35           # entrance fade duration
+        exit_fade_dur = 0.55      # exit fade — longer so fade-only exits don't feel abrupt
         slide_dur = 0.50
         zoom_dur = 0.45
         slide_dist = int(min(60, max(22, (H + bottom_pad) * 0.04)))
@@ -3259,10 +3260,10 @@ def diagrams_render():
                              n_zoom_frames, t_exit=None):
             """Return filter-graph segments for one box's entrance (+ optional exit fade).
             When t_exit is set, an alpha fade-out is added starting at t_exit, and the
-            overlay's enable gate becomes 'between(t, t, t_exit + fade_dur)'."""
+            overlay's enable gate becomes 'between(t, t, t_exit + exit_fade_dur)'."""
             src = f"[s{in_idx}]"
             segs = []
-            exit_filter = (f",fade=t=out:st={t_exit:.3f}:d={fade_dur:.3f}:alpha=1"
+            exit_filter = (f",fade=t=out:st={t_exit:.3f}:d={exit_fade_dur:.3f}:alpha=1"
                            if t_exit is not None else "")
             if anim in ("zoom_in", "zoom_out"):
                 zoom_clip_len = n_zoom_frames / FPS
@@ -3318,7 +3319,7 @@ def diagrams_render():
                     x_expr, y_expr = str(bx), str(by)
             if t_exit is not None:
                 # The overlay is enabled from reveal through fade-out completion.
-                enable_expr = f"between(t,{t:.3f},{(t_exit + fade_dur):.3f})"
+                enable_expr = f"between(t,{t:.3f},{(t_exit + exit_fade_dur):.3f})"
             else:
                 enable_expr = f"gte(t,{t:.3f})"
             segs.append(
@@ -3337,7 +3338,7 @@ def diagrams_render():
                 # Force slide N's exit to fully complete BEFORE slide N+1 enters,
                 # with a small gap between them so they don't overlap on screen.
                 inter_slide_gap = 0.10
-                t_exit = times[i + 1] - fade_dur - inter_slide_gap
+                t_exit = times[i + 1] - exit_fade_dur - inter_slide_gap
                 t_exit = max(t + 0.15, t_exit)
             # In slideshow mode the overlay is the full 16:9 canvas, positioned at (0,0).
             if mode == "slideshow":
@@ -4078,7 +4079,8 @@ def chapters_render():
                     zoom_frame_dirs[i] = fdir
                     zoom_frame_counts[i] = nf
 
-        fade_dur = 0.35
+        fade_dur = 0.35           # entrance fade duration
+        exit_fade_dur = 0.55      # exit fade — longer so fade-only exits don't feel abrupt
         slide_dur = 0.50
         zoom_dur = 0.45
         slide_dist = int(min(60, max(22, (H + bottom_pad) * 0.04)))
@@ -4120,10 +4122,10 @@ def chapters_render():
                              n_zoom_frames, t_exit=None):
             """Return filter-graph segments for one box's entrance (+ optional exit fade).
             When t_exit is set, an alpha fade-out is added starting at t_exit, and the
-            overlay's enable gate becomes 'between(t, t, t_exit + fade_dur)'."""
+            overlay's enable gate becomes 'between(t, t, t_exit + exit_fade_dur)'."""
             src = f"[s{in_idx}]"
             segs = []
-            exit_filter = (f",fade=t=out:st={t_exit:.3f}:d={fade_dur:.3f}:alpha=1"
+            exit_filter = (f",fade=t=out:st={t_exit:.3f}:d={exit_fade_dur:.3f}:alpha=1"
                            if t_exit is not None else "")
             if anim in ("zoom_in", "zoom_out"):
                 zoom_clip_len = n_zoom_frames / FPS
@@ -4179,7 +4181,7 @@ def chapters_render():
                     x_expr, y_expr = str(bx), str(by)
             if t_exit is not None:
                 # The overlay is enabled from reveal through fade-out completion.
-                enable_expr = f"between(t,{t:.3f},{(t_exit + fade_dur):.3f})"
+                enable_expr = f"between(t,{t:.3f},{(t_exit + exit_fade_dur):.3f})"
             else:
                 enable_expr = f"gte(t,{t:.3f})"
             segs.append(
