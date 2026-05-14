@@ -1921,6 +1921,12 @@
                             <button onclick="clearBoxes()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Clear boxes</button>
                             <span id="diagramsBoxCount" style="color:#f5b942; font-size:11px; letter-spacing:0.5px;">0 boxes</span>
                             <span style="color:#444; font-size:11px;">&middot; drag to draw &middot; right-click box to delete</span>
+                            <span style="flex:1;"></span>
+                            <label style="color:#666; font-size:10px; letter-spacing:1.5px;">MODE</label>
+                            <select id="diagramsMode" onchange="onDiagramModeChange()" style="background:#0d0d1a; color:#ddd; border:1px solid #2a2a4a; border-radius:4px; padding:4px 8px; font-size:11px;">
+                                <option value="reveal">Reveal (accumulate)</option>
+                                <option value="slideshow">Slideshow (one at a time)</option>
+                            </select>
                         </div>
                         <div id="diagramsCropToolbar" style="display:none; margin-top:10px; gap:10px; align-items:center; flex-wrap:wrap;">
                             <button onclick="applyCrop()" style="background:#f5b942; color:#000; border:none; border-radius:4px; padding:6px 14px; font-size:11px; font-weight:700; letter-spacing:0.5px; cursor:pointer;">Apply crop</button>
@@ -1963,12 +1969,6 @@
 
                 <!-- RENDER -->
                 <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
-                    <label style="color:#666; font-size:10px; letter-spacing:2px;">MODE</label>
-                    <select id="diagramsMode" onchange="onDiagramModeChange()" style="background:#0d0d1a; color:#ddd; border:1px solid #2a2a4a; border-radius:4px; padding:6px 10px; font-size:12px;">
-                        <option value="reveal">Reveal (boxes accumulate)</option>
-                        <option value="slideshow">Slideshow (one at a time)</option>
-                    </select>
-                    <span style="flex:0 0 12px;"></span>
                     <button id="diagramsRenderBtn" onclick="renderDiagram()" style="background:#f5b942; color:#000; border:none; border-radius:6px; padding:11px 26px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer;">RENDER THIS DIAGRAM</button>
                     <span id="diagramsRenderStatus" style="color:#555; font-size:11px;"></span>
                 </div>
