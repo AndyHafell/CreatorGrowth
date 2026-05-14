@@ -2864,13 +2864,26 @@ def diagrams_render():
 
         N = len(box_rects)
 
+        # Pre-sample bg-fill color per box rect — reused for both bg.png and for
+        # masking nested inner-box regions inside outer-box crops.
+        fill_for_rect = {}  # (x,y,w,h) -> (r,g,b)
+        for (x, y, w, h, _anim) in all_box_records:
+            fill_for_rect[(x, y, w, h)] = _ring_median_color(img, x, y, w, h, pad=8, ring=24)
+
         # Background = image with EVERY box filled with the LOCAL background color.
         # Reveal boxes get re-overlaid on top with the chosen animation; hide boxes stay masked.
         bg = img.copy()
         draw = ImageDraw.Draw(bg)
         for (x, y, w, h, _anim) in all_box_records:
-            fill = _ring_median_color(img, x, y, w, h, pad=8, ring=24)
+            fill = fill_for_rect[(x, y, w, h)]
             draw.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
+
+        def _rect_contains(outer, inner, slack=2):
+            """outer / inner are (x,y,w,h). True if inner is (mostly) inside outer."""
+            ox, oy, ow, oh = outer
+            ix, iy, iw, ih = inner
+            return (ix >= ox - slack and iy >= oy - slack and
+                    (ix + iw) <= (ox + ow) + slack and (iy + ih) <= (oy + oh) + slack)
 
         # Pad the bottom so the HTML5 video player's control gradient sits over empty bg
         bottom_pad = int(min(120, max(60, H * 0.10)))
@@ -2927,23 +2940,12 @@ def diagrams_render():
                 conn.close()
             return jsonify(payload)
 
-        # Crop each reveal box (also pre-render zoom frames where needed)
+        # Crop preparation is deferred until AFTER the times are computed below,
+        # so that nested inner boxes can be masked inside their outer crops.
         FPS = 30
-        crop_paths = []
-        zoom_frame_dirs = [None] * N   # parallel to box_rects, set for zoom boxes
+        crop_paths = [None] * N
+        zoom_frame_dirs = [None] * N
         zoom_frame_counts = [0] * N
-        for i, ((x, y, w, h), anim_for_box) in enumerate(zip(box_rects, box_anims)):
-            crop = img.crop((x, y, x + w, y + h))
-            cp = work_dir / f"crop_{i:02d}.png"
-            crop.save(cp)
-            crop_paths.append(cp)
-            if anim_for_box in ("zoom_in", "zoom_out"):
-                fdir, nf = _render_zoom_frames(
-                    work_dir / f"zoom_{i:02d}", crop, w, h, anim_for_box,
-                    zoom_dur=0.45, fade_dur=0.35, fps=FPS,
-                )
-                zoom_frame_dirs[i] = fdir
-                zoom_frame_counts[i] = nf
 
         # ---- Reveal times: AI-aligned if possible, else evenly distributed ----
         first_t = min(0.5, max(0.3, duration * 0.05))
@@ -3042,6 +3044,38 @@ def diagrams_render():
             alignment_descs = ai_result["descs"]
         else:
             times = even_times
+
+        # Generate crops NOW that we know reveal-order — so each outer-box crop
+        # can mask the regions of later-revealing inner boxes (avoids the double-
+        # reveal where the outer's crop briefly shows the inner box's content
+        # before the inner box runs its own animation).
+        for i, ((x, y, w, h), anim_for_box) in enumerate(zip(box_rects, box_anims)):
+            crop = img.crop((x, y, x + w, y + h))
+            dc = ImageDraw.Draw(crop)
+            # Mask any reveal-box that is contained inside this box AND reveals later
+            for j in range(i + 1, N):
+                jx, jy, jw, jh = box_rects[j]
+                if _rect_contains((x, y, w, h), (jx, jy, jw, jh)):
+                    lx, ly = jx - x, jy - y
+                    fill = fill_for_rect.get(box_rects[j], (8, 8, 18))
+                    dc.rectangle([lx, ly, lx + jw - 1, ly + jh - 1], fill=fill)
+            # Hide boxes contained inside stay masked too
+            for hr in hide_rects:
+                if _rect_contains((x, y, w, h), hr):
+                    hx, hy, hw, hh = hr
+                    lx, ly = hx - x, hy - y
+                    fill = fill_for_rect.get(hr, (8, 8, 18))
+                    dc.rectangle([lx, ly, lx + hw - 1, ly + hh - 1], fill=fill)
+            cp = work_dir / f"crop_{i:02d}.png"
+            crop.save(cp)
+            crop_paths[i] = cp
+            if anim_for_box in ("zoom_in", "zoom_out"):
+                fdir, nf = _render_zoom_frames(
+                    work_dir / f"zoom_{i:02d}", crop, w, h, anim_for_box,
+                    zoom_dur=0.45, fade_dur=0.35, fps=FPS,
+                )
+                zoom_frame_dirs[i] = fdir
+                zoom_frame_counts[i] = nf
 
         fade_dur = 0.35
         slide_dur = 0.50
