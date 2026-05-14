@@ -3221,22 +3221,38 @@ def diagrams_render():
                 )
                 x_expr, y_expr = str(bx), str(by)
             else:
-                p = f"min(1,max(0,(t-{t:.3f})/{slide_dur:.3f}))"
-                ease = f"({p}*{p}*(3-2*{p}))"
-                remaining = f"(1-{ease})"
+                # Slide variants — eased entrance, optionally eased exit in the same
+                # direction (only when t_exit is set, i.e. slideshow inter-slide transitions).
+                p_in = f"min(1,max(0,(t-{t:.3f})/{slide_dur:.3f}))"
+                ease_in = f"({p_in}*{p_in}*(3-2*{p_in}))"
+                remaining_in = f"(1-{ease_in})"
+                if t_exit is not None:
+                    p_out = f"min(1,max(0,(t-{t_exit:.3f})/{slide_dur:.3f}))"
+                    ease_out = f"({p_out}*{p_out}*(3-2*{p_out}))"
+                    exit_offset = f"({slide_dist}*{ease_out})"
+                else:
+                    exit_offset = "0"
                 segs.append(
                     f"[{in_idx}:v]format=rgba,"
                     f"fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1"
                     f"{exit_filter}{src}"
                 )
                 if anim == "from_right":
-                    x_expr = f"{bx}+{slide_dist}*{remaining}"; y_expr = str(by)
+                    # enters from right (x = bx + slide_dist), moves left; exit continues left.
+                    x_expr = f"{bx}+{slide_dist}*{remaining_in}-{exit_offset}"
+                    y_expr = str(by)
                 elif anim == "from_left":
-                    x_expr = f"{bx}-{slide_dist}*{remaining}"; y_expr = str(by)
+                    # enters from left, moves right; exit continues right.
+                    x_expr = f"{bx}-{slide_dist}*{remaining_in}+{exit_offset}"
+                    y_expr = str(by)
                 elif anim == "from_below":
-                    x_expr = str(bx); y_expr = f"{by}+{slide_dist}*{remaining}"
+                    # enters from below, moves up; exit continues up.
+                    x_expr = str(bx)
+                    y_expr = f"{by}+{slide_dist}*{remaining_in}-{exit_offset}"
                 elif anim == "from_above":
-                    x_expr = str(bx); y_expr = f"{by}-{slide_dist}*{remaining}"
+                    # enters from above, moves down; exit continues down.
+                    x_expr = str(bx)
+                    y_expr = f"{by}-{slide_dist}*{remaining_in}+{exit_offset}"
                 else:
                     x_expr, y_expr = str(bx), str(by)
             if t_exit is not None:
