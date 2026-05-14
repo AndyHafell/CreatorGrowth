@@ -1950,10 +1950,20 @@
                 </div>
 
                 <!-- RENDER -->
-                <div style="display:flex; gap:12px; align-items:center;">
-                    <button onclick="renderDiagram()" style="background:#f5b942; color:#000; border:none; border-radius:6px; padding:11px 26px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer;">RENDER THIS DIAGRAM</button>
-                    <button onclick="renderAllDiagrams()" style="background:transparent; border:1px solid #f5b942; color:#f5b942; border-radius:6px; padding:11px 22px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer;">RENDER ALL</button>
-                    <span style="color:#444; font-size:11px;">Render pipeline ships next iteration.</span>
+                <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+                    <button id="diagramsRenderBtn" onclick="renderDiagram()" style="background:#f5b942; color:#000; border:none; border-radius:6px; padding:11px 26px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer;">RENDER THIS DIAGRAM</button>
+                    <button id="diagramsRenderAllBtn" onclick="renderAllDiagrams()" style="background:transparent; border:1px solid #f5b942; color:#f5b942; border-radius:6px; padding:11px 22px; font-size:12px; font-weight:700; letter-spacing:1.5px; cursor:pointer;">RENDER ALL</button>
+                    <span id="diagramsRenderStatus" style="color:#555; font-size:11px;"></span>
+                </div>
+
+                <!-- RESULT -->
+                <div id="diagramsResult" style="display:none; margin-top:28px; padding-top:24px; border-top:1px solid #1f1f30;">
+                    <div style="color:#666; font-size:10px; letter-spacing:2px; margin-bottom:10px;">RESULT</div>
+                    <video id="diagramsResultVideo" controls style="width:100%; max-height:60vh; background:#000; border-radius:6px;"></video>
+                    <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                        <a id="diagramsResultDownload" href="#" download style="background:none; border:1px solid #2a2a4a; color:#f5b942; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer; text-decoration:none; letter-spacing:0.5px;">DOWNLOAD MP4</a>
+                        <span id="diagramsResultMeta" style="color:#666; font-size:11px;"></span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -4973,6 +4983,14 @@
         var st = document.getElementById('diagramsScriptStatus');
         st.textContent = d.scriptStatus || '';
         st.style.color = '#555';
+
+        // result video (if previously rendered)
+        document.getElementById('diagramsRenderStatus').textContent = '';
+        if (d.resultUrl && d.resultMeta) {
+            showDiagramResult(d.resultMeta);
+        } else {
+            hideDiagramResult();
+        }
     }
     function refreshSidebarMeta() {
         // called by UI mutations to keep sidebar metadata fresh without re-saving
@@ -5174,6 +5192,15 @@
         renderSidebar();
     }
 
+    function dataUrlToBlob(dataUrl) {
+        var parts = dataUrl.split(',');
+        var mime = (parts[0].match(/data:(.*?);/) || [])[1] || 'image/png';
+        var bin = atob(parts[1]);
+        var arr = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        return new Blob([arr], { type: mime });
+    }
+
     function renderDiagram() {
         var src = document.getElementById('diagramsImage').src || '';
         var hasImage = src && src.indexOf('data:image') === 0;
@@ -5181,8 +5208,110 @@
         if (!hasImage) { alert('Upload an image first.'); return; }
         if (diagramBoxes.length === 0) { alert('Draw at least one box on the image (click & drag).'); return; }
         if (!diagramsAudioFile) { alert('Upload the audio clip.'); return; }
-        if (!script) { alert('Paste the script chunk first.'); return; }
-        alert('Render pipeline lands in iteration 3.\n\nImage: ✓\nBoxes: ' + diagramBoxes.length + '\nAudio: ' + diagramsAudioFile.name + '\nScript: ' + script.length + ' chars');
+        // script is optional for v1 — reveals are time-distributed, not phrase-aligned yet
+        return _renderActiveDiagram();
+    }
+
+    function _renderActiveDiagram() {
+        var btn = document.getElementById('diagramsRenderBtn');
+        var btnAll = document.getElementById('diagramsRenderAllBtn');
+        var status = document.getElementById('diagramsRenderStatus');
+        var src = document.getElementById('diagramsImage').src;
+        var imageBlob = dataUrlToBlob(src);
+        var ext = ((src.match(/data:image\/(\w+)/) || [])[1] || 'png').toLowerCase();
+        if (ext === 'jpeg') ext = 'jpg';
+        var fd = new FormData();
+        fd.append('image', imageBlob, 'image.' + ext);
+        fd.append('audio', diagramsAudioFile, diagramsAudioFile.name);
+        fd.append('boxes', JSON.stringify(diagramBoxes));
+        fd.append('script', document.getElementById('diagramsScript').value);
+
+        btn.disabled = true; btnAll.disabled = true;
+        btn.style.opacity = '0.5'; btnAll.style.opacity = '0.5';
+        status.style.color = '#f5b942';
+        status.textContent = 'Rendering…';
+        var t0 = Date.now();
+
+        return fetch('/api/diagrams/render', { method: 'POST', body: fd })
+            .then(function(r) { return r.json().then(function(j) { return { ok: r.ok, body: j }; }); })
+            .then(function(res) {
+                if (!res.ok) {
+                    status.style.color = '#e07070';
+                    status.textContent = 'Render failed: ' + (res.body.error || 'unknown');
+                    console.error('render error', res.body);
+                    return null;
+                }
+                var dt = ((Date.now() - t0) / 1000).toFixed(1);
+                status.style.color = '#4caf50';
+                status.textContent = 'Rendered in ' + dt + 's';
+                showDiagramResult(res.body);
+                // persist on active diagram
+                if (activeDiagramIdx >= 0 && activeDiagramIdx < diagramsList.length) {
+                    diagramsList[activeDiagramIdx].resultUrl = res.body.url;
+                    diagramsList[activeDiagramIdx].resultMeta = res.body;
+                    renderSidebar();
+                }
+                return res.body;
+            })
+            .catch(function(err) {
+                status.style.color = '#e07070';
+                status.textContent = 'Render error: ' + err;
+                return null;
+            })
+            .finally(function() {
+                btn.disabled = false; btnAll.disabled = false;
+                btn.style.opacity = '1'; btnAll.style.opacity = '1';
+            });
+    }
+
+    function showDiagramResult(meta) {
+        var box = document.getElementById('diagramsResult');
+        var vid = document.getElementById('diagramsResultVideo');
+        var dl = document.getElementById('diagramsResultDownload');
+        var m = document.getElementById('diagramsResultMeta');
+        // cache-bust so re-renders refresh the video
+        var bust = meta.url + (meta.url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now();
+        vid.src = bust;
+        dl.href = meta.url;
+        var sz = meta.size ? (meta.size[0] + '×' + meta.size[1]) : '';
+        m.textContent = meta.duration + 's · ' + meta.boxes + ' reveals · ' + sz + ' · reveals at ' + (meta.reveal_times || []).map(function(t){return t+'s';}).join(', ');
+        box.style.display = 'block';
+        box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function hideDiagramResult() {
+        document.getElementById('diagramsResult').style.display = 'none';
+        document.getElementById('diagramsResultVideo').src = '';
+    }
+
+    function renderAllDiagrams() {
+        saveActiveDiagramState();
+        var ready = [];
+        diagramsList.forEach(function(d, i) {
+            if (d.imageSrc && d.boxes.length > 0 && d.audioFile) ready.push(i);
+        });
+        if (ready.length === 0) {
+            alert('No diagrams are fully set up. Each needs: image + ≥1 box + audio.');
+            return;
+        }
+        var status = document.getElementById('diagramsRenderStatus');
+        var i = 0;
+        function next() {
+            if (i >= ready.length) {
+                status.style.color = '#4caf50';
+                status.textContent = 'Rendered ' + ready.length + ' diagrams.';
+                return;
+            }
+            var idx = ready[i];
+            saveActiveDiagramState();
+            activeDiagramIdx = idx;
+            renderSidebar();
+            loadDiagram(idx);
+            status.style.color = '#f5b942';
+            status.textContent = 'Rendering ' + (i+1) + '/' + ready.length + '…';
+            _renderActiveDiagram().then(function() { i++; next(); });
+        }
+        next();
     }
     </script>
     <script>
