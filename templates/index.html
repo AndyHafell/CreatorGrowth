@@ -1988,8 +1988,8 @@
                     <span style="color:#666;">W/A/S/D</span> &nbsp;slide directions<br>
                     <span style="color:#666;">Q/E</span> &nbsp;zoom in / out<br>
                     <span style="color:#666;">C</span> &nbsp;crossfade &middot; <span style="color:#666;">H</span> &nbsp;hide<br>
-                    <span style="color:#666;">1-9</span> &nbsp;jump to box &middot; <span style="color:#666;">↑↓</span> &nbsp;nav<br>
-                    drag rows to reorder reveal order
+                    <span style="color:#666;">1-9</span> &nbsp;move selected to that slot<br>
+                    <span style="color:#666;">↑↓</span> &nbsp;nav between boxes
                 </div>
             </div>
         </div>
@@ -5510,11 +5510,17 @@
             return;
         }
         if (k >= '1' && k <= '9') {
-            var n = parseInt(k, 10) - 1;
-            if (n < diagramBoxes.length) {
-                ev.preventDefault();
-                setSelectedBox(n);
-            }
+            // Number = move the SELECTED box to that position (not select)
+            var target = parseInt(k, 10) - 1;
+            if (selectedBoxIdx < 0 || selectedBoxIdx >= diagramBoxes.length) return;
+            if (target >= diagramBoxes.length || target === selectedBoxIdx) return;
+            ev.preventDefault();
+            var moved = diagramBoxes.splice(selectedBoxIdx, 1)[0];
+            diagramBoxes.splice(target, 0, moved);
+            selectedBoxIdx = target;
+            renderBoxes();
+            renderBoxAnimList();
+            if (typeof schedulePatch === 'function') schedulePatch();
             return;
         }
         if (k === 'ArrowUp') {
