@@ -2916,10 +2916,10 @@ def diagrams_render():
             for i in range(N):
                 if ai_times[i] is None:
                     ai_times[i] = even_times[i]
-            # Apply 0.15s lead time (reveal slightly before the word) when whisper-aligned
-            lead = 0.15 if alignment_mode == "whisper_aligned" else 0.0
+            # Reveal at the exact word start (no lead) — the 0.35s fade-in naturally
+            # finishes ~as the descriptor word completes, which feels right.
             for i in range(N):
-                ai_times[i] = max(0.3, float(ai_times[i]) - lead)
+                ai_times[i] = max(0.3, float(ai_times[i]))
             # Clamp + enforce strictly increasing (min step 0.25s)
             min_step = 0.25
             for i in range(N):
