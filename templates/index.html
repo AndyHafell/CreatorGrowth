@@ -5347,6 +5347,8 @@
         if (w > 8 && h > 8) {
             diagramBoxes.push({ x: x / r.width, y: y / r.height, w: w / r.width, h: h / r.height });
             renderBoxes();
+            // Auto-select the just-drawn box so the user can immediately hit W/A/S/D/Q/E/C/H
+            if (typeof setSelectedBox === 'function') setSelectedBox(diagramBoxes.length - 1);
             if (typeof schedulePatch === 'function') schedulePatch();
         }
     }
@@ -5420,10 +5422,29 @@
         h: 'hide',
     };
     var selectedBoxIdx = -1;
-    function setSelectedBox(idx) {
+    function setSelectedBox(idx, opts) {
+        opts = opts || {};
         selectedBoxIdx = (idx >= 0 && idx < diagramBoxes.length) ? idx : -1;
-        if (typeof renderBoxAnimList === 'function') renderBoxAnimList();
+        if (opts.silent) {
+            // update CSS in place — preserves open dropdown / focus
+            _highlightSelectedRow();
+        } else {
+            if (typeof renderBoxAnimList === 'function') renderBoxAnimList();
+        }
         if (typeof renderBoxes === 'function') renderBoxes();
+    }
+    function _highlightSelectedRow() {
+        var c = document.getElementById('diagramsBoxList');
+        if (!c) return;
+        for (var k = 0; k < c.children.length; k++) {
+            var row = c.children[k];
+            var idx = parseInt(row.dataset.idx, 10);
+            if (isNaN(idx)) continue;
+            var isSel = (idx === selectedBoxIdx);
+            var isHide = diagramBoxes[idx] && diagramBoxes[idx].anim === 'hide';
+            row.style.borderColor = isSel ? '#f5b942' : (isHide ? '#3a2020' : '#1f1f30');
+            row.style.background = isSel ? '#1f1c0c' : '#15151f';
+        }
     }
     function applyAnimToSelected(animKey) {
         if (selectedBoxIdx < 0 || selectedBoxIdx >= diagramBoxes.length) return;
@@ -5545,10 +5566,19 @@
                 if (curAnim === o[0]) opt.selected = true;
                 sel.appendChild(opt);
             });
+            // Stop the dropdown's click/mousedown from bubbling to row.onclick (which
+            // would re-render and close the open native picker). Still mark the box as
+            // selected — but silently, so the DOM stays intact.
+            sel.onmousedown = function(ev) {
+                ev.stopPropagation();
+                setSelectedBox(i, { silent: true });
+            };
+            sel.onclick = function(ev) { ev.stopPropagation(); };
             sel.onchange = function() {
                 b.anim = sel.value;
                 if (typeof schedulePatch === 'function') schedulePatch();
-                renderBoxes();  // box visual changes (gold↔red) — re-render
+                renderBoxes();
+                renderBoxAnimList();  // hide vs reveal layout differs; rebuild
             };
             head.appendChild(sel);
             row.appendChild(head);
