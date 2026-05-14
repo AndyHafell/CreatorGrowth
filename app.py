@@ -43,8 +43,17 @@ CONTENT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def get_db():
-    conn = sqlite3.connect(str(DB_PATH))
+    # 30s busy timeout — wait instead of erroring when another connection holds the lock
+    conn = sqlite3.connect(str(DB_PATH), timeout=30.0)
     conn.row_factory = sqlite3.Row
+    # WAL mode lets readers + writers proceed concurrently. PRAGMA is sticky on the db file
+    # but we re-issue it cheaply per connection — it's a no-op once already enabled.
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
 
