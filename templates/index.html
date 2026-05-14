@@ -5274,7 +5274,8 @@
         vid.src = bust;
         dl.href = meta.url;
         var sz = meta.size ? (meta.size[0] + '×' + meta.size[1]) : '';
-        m.textContent = meta.duration + 's · ' + meta.boxes + ' reveals · ' + sz + ' · reveals at ' + (meta.reveal_times || []).map(function(t){return t+'s';}).join(', ');
+        var alignLabel = meta.alignment === 'ai_aligned' ? 'AI-aligned' : 'Time-distributed';
+        m.textContent = alignLabel + ' · ' + meta.duration + 's · ' + meta.boxes + ' reveals · ' + sz + ' · reveals at ' + (meta.reveal_times || []).map(function(t){return t+'s';}).join(', ');
         box.style.display = 'block';
         box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
