@@ -1917,7 +1917,7 @@
                         </div>
                         <div id="diagramsBoxToolbar" style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                             <button onclick="resetDiagramsImage()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Replace image</button>
-                            <button onclick="enterCropMode()" style="background:none; border:1px solid #2a2a4a; color:#f5b942; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Crop region (16:9)</button>
+                            <button onclick="enterCropMode()" style="background:none; border:1px solid #2a2a4a; color:#f5b942; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Crop region</button>
                             <button onclick="undoLastBox()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Undo last box</button>
                             <button onclick="clearBoxes()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Clear boxes</button>
                             <span id="diagramsBoxCount" style="color:#f5b942; font-size:11px; letter-spacing:0.5px;">0 boxes</span>
@@ -1926,7 +1926,7 @@
                         <div id="diagramsCropToolbar" style="display:none; margin-top:10px; gap:10px; align-items:center; flex-wrap:wrap;">
                             <button onclick="applyCrop()" style="background:#f5b942; color:#000; border:none; border-radius:4px; padding:6px 14px; font-size:11px; font-weight:700; letter-spacing:0.5px; cursor:pointer;">Apply crop</button>
                             <button onclick="exitCropMode()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Cancel</button>
-                            <span style="color:#888; font-size:11px;">Drag to select &middot; 16:9 locked &middot; existing boxes will be cleared</span>
+                            <span style="color:#888; font-size:11px;">Drag any region &middot; output is 16:9 with bg color padding &middot; boxes will be cleared</span>
                         </div>
                     </div>
                 </div>
@@ -5145,11 +5145,9 @@
         document.getElementById('diagramsCropOverlay').style.display = 'block';
         document.getElementById('diagramsBoxToolbar').style.display = 'none';
         document.getElementById('diagramsCropToolbar').style.display = 'flex';
-        // initial selection: centered 16:9 at 80% width
+        // initial selection: centered, 50% of image
         var r = layer.getBoundingClientRect();
-        var w = r.width * 0.8;
-        var h = w * 9 / 16;
-        if (h > r.height * 0.9) { h = r.height * 0.9; w = h * 16 / 9; }
+        var w = r.width * 0.5, h = r.height * 0.5;
         updateCropRect((r.width - w) / 2, (r.height - h) / 2, w, h);
     }
     function exitCropMode() {
@@ -5164,11 +5162,13 @@
     function updateCropRect(x, y, w, h) {
         var layer = document.getElementById('diagramsBoxLayer');
         var r = layer.getBoundingClientRect();
-        // Clamp position keeping 16:9: shrink uniformly if outside
-        if (w > r.width) { w = r.width; h = w * 9 / 16; }
-        if (h > r.height) { h = r.height; w = h * 16 / 9; }
-        x = Math.max(0, Math.min(r.width - w, x));
-        y = Math.max(0, Math.min(r.height - h, y));
+        // Free aspect — just clamp inside the image bounds
+        if (x < 0) { w += x; x = 0; }
+        if (y < 0) { h += y; y = 0; }
+        if (w < 0) w = 0;
+        if (h < 0) h = 0;
+        if (x + w > r.width) w = r.width - x;
+        if (y + h > r.height) h = r.height - y;
         diagramCropRect = { x: x, y: y, w: w, h: h };
         var dim = 'background:rgba(0,0,0,0.55); position:absolute; pointer-events:none;';
         document.getElementById('diagramsCropDimT').style.cssText = dim + 'left:0; top:0; width:100%; height:' + y + 'px;';
@@ -5179,6 +5179,31 @@
             'position:absolute; left:' + x + 'px; top:' + y + 'px; width:' + w + 'px; height:' + h + 'px; ' +
             'border:2px dashed #f5b942; box-shadow:0 0 0 1px rgba(0,0,0,0.5); box-sizing:border-box; pointer-events:none;';
     }
+    function _sampleCornerBgColor(img, patch) {
+        patch = patch || 40;
+        var W = img.naturalWidth, H = img.naturalHeight;
+        var tc = document.createElement('canvas');
+        tc.width = W; tc.height = H;
+        var tctx = tc.getContext('2d');
+        tctx.drawImage(img, 0, 0);
+        var rs = [], gs = [], bs = [];
+        [[0,0], [W-patch,0], [0,H-patch], [W-patch,H-patch]].forEach(function(c) {
+            var cx = Math.max(0, c[0]), cy = Math.max(0, c[1]);
+            var cw = Math.min(patch, W - cx), ch = Math.min(patch, H - cy);
+            if (cw <= 0 || ch <= 0) return;
+            var d = tctx.getImageData(cx, cy, cw, ch).data;
+            for (var i = 0; i < d.length; i += 4) {
+                rs.push(d[i]); gs.push(d[i+1]); bs.push(d[i+2]);
+            }
+        });
+        if (!rs.length) return [8, 8, 18];
+        rs.sort(function(a,b){return a-b;});
+        gs.sort(function(a,b){return a-b;});
+        bs.sort(function(a,b){return a-b;});
+        var m = rs.length >> 1;
+        return [rs[m], gs[m], bs[m]];
+    }
+
     function applyCrop() {
         if (!diagramCropRect || diagramCropRect.w < 12 || diagramCropRect.h < 12) {
             alert('Selection too small.'); return;
@@ -5195,10 +5220,31 @@
         var sw = Math.round(diagramCropRect.w * scaleX);
         var sh = Math.round(diagramCropRect.h * scaleY);
         sw -= sw % 2; sh -= sh % 2;
+        if (sw < 4 || sh < 4) { alert('Selection too small.'); return; }
+
+        // Sample bg color from corners of the ORIGINAL image
+        var bg = _sampleCornerBgColor(img, 40);
+
+        // Compute 16:9 canvas that fits the selection (selection centered, rest = bg color)
+        var tw, th;
+        if (sw / sh >= 16 / 9) {
+            tw = sw;
+            th = Math.round(sw * 9 / 16);
+        } else {
+            th = sh;
+            tw = Math.round(sh * 16 / 9);
+        }
+        tw -= tw % 2; th -= th % 2;
+
         var canvas = document.createElement('canvas');
-        canvas.width = sw; canvas.height = sh;
+        canvas.width = tw; canvas.height = th;
         var ctx = canvas.getContext('2d');
-        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+        ctx.fillStyle = 'rgb(' + bg[0] + ',' + bg[1] + ',' + bg[2] + ')';
+        ctx.fillRect(0, 0, tw, th);
+        var ox = Math.round((tw - sw) / 2);
+        var oy = Math.round((th - sh) / 2);
+        ctx.drawImage(img, sx, sy, sw, sh, ox, oy, sw, sh);
+
         setStudioStatus('Saving cropped image…', '#f5b942');
         canvas.toBlob(function(blob) {
             var fd = new FormData();
@@ -5250,14 +5296,9 @@
             cx = Math.max(0, Math.min(cx, r.width));
             cy = Math.max(0, Math.min(cy, r.height));
             var sx = diagramCropStart.x, sy = diagramCropStart.y;
-            var dx = cx - sx, dy = cy - sy;
-            var sw = Math.abs(dx);
-            var sh = sw * 9 / 16;
-            if (sh > r.height) { sh = r.height; sw = sh * 16 / 9; }
-            if (sw > r.width) { sw = r.width; sh = sw * 9 / 16; }
-            var nx = dx >= 0 ? sx : sx - sw;
-            var ny = dy >= 0 ? sy : sy - sh;
-            updateCropRect(nx, ny, sw, sh);
+            var x = Math.min(sx, cx), y = Math.min(sy, cy);
+            var w = Math.abs(cx - sx), h = Math.abs(cy - sy);
+            updateCropRect(x, y, w, h);
             return;
         }
         if (!diagramDragStart || !diagramActiveEl) return;
