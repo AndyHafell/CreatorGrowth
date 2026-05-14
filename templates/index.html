@@ -1853,6 +1853,7 @@
                     <button onclick="openTeleprompter()" title="Teleprompter mode" style="font-size:11px; letter-spacing:0.5px;">TELEPROMPTER</button>
                     <button onclick="openAllImages()" title="Open all images in new tabs" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">OPEN IMAGES</button>
                     <button onclick="openAllLinks()" title="Open all links in new tabs" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">OPEN LINKS</button>
+                    <button onclick="openDiagrams()" title="Animate diagrams + images from script" style="font-size:11px; letter-spacing:0.5px; color:#f5b942;">DIAGRAMS</button>
                 </div>
                 <div id="modalDocEditor" class="modal-doc-editor" contenteditable="true" spellcheck="true" oninput="modalDocChanged()" style="min-height:400px; max-height:80vh; overflow-y:auto; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px; padding:16px; color:#ddd; font-size:14px; line-height:1.7; outline:none;"></div>
             </div>
@@ -4704,6 +4705,10 @@
         if (opened < hrefs.length) {
             alert('Browser blocked ' + (hrefs.length - opened) + ' of ' + hrefs.length + ' popups.\nAllow popups for this site, then click OPEN LINKS again.');
         }
+    }
+
+    function openDiagrams() {
+        alert('Diagrams tab — coming soon.\n\nUpload image → human-box cuts → paste script chunk → animated MP4 with timed reveals.');
     }
     </script>
     <script>
