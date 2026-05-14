@@ -5383,13 +5383,12 @@
         ['from_left', 'Slide → (from left)'],
         ['from_above', 'Slide ↓ (from above)'],
         ['from_below', 'Slide ↑ (from below)'],
-        ['from_right_fade', 'Slide ← + Fade'],
-        ['from_left_fade', 'Slide → + Fade'],
-        ['from_above_fade', 'Slide ↓ + Fade'],
-        ['from_below_fade', 'Slide ↑ + Fade'],
         ['zoom_in', 'Zoom in'],
         ['zoom_out', 'Zoom out'],
     ];
+    // Legacy aliases — collapse pre-merge "_fade" suffixes onto their base.
+    var LEGACY_ANIM = { from_right_fade:'from_right', from_left_fade:'from_left',
+                        from_above_fade:'from_above', from_below_fade:'from_below' };
     function renderBoxAnimList() {
         var c = document.getElementById('diagramsBoxList');
         if (!c) return;
@@ -5415,10 +5414,11 @@
             head.appendChild(num);
             var sel = document.createElement('select');
             sel.style.cssText = 'flex:1; min-width:0; background:#0d0d1a; color:#ddd; border:1px solid #2a2a4a; border-radius:4px; padding:4px 6px; font-size:11px;';
+            var curAnim = LEGACY_ANIM[b.anim] || b.anim || 'fade';
             ANIM_OPTIONS.forEach(function(o) {
                 var opt = document.createElement('option');
                 opt.value = o[0]; opt.textContent = o[1];
-                if ((b.anim || 'fade') === o[0]) opt.selected = true;
+                if (curAnim === o[0]) opt.selected = true;
                 sel.appendChild(opt);
             });
             sel.onchange = function() {
