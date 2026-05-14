@@ -2782,7 +2782,8 @@ def _render_zoom_frames(frames_dir, crop_img, bw, bh, anim, zoom_dur, fade_dur, 
     base = crop_img.convert("RGBA")
     for i in range(n_frames):
         p = i / max(1, n_frames - 1)
-        ease = p * p * (3 - 2 * p)
+        # smootherstep: zero first + second derivative at ends → ultra-soft onset/offset
+        ease = p * p * p * (p * (6 * p - 15) + 10)
         s = start_s + (end_s - start_s) * ease
         nw = max(1, int(round(bw * s)))
         nh = max(1, int(round(bh * s)))
