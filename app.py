@@ -3544,9 +3544,19 @@ def _chapter_row_to_dict(row):
     return d
 
 
-_CS_BOX_VALUES = {"auto", "70", "80", "90", "95", "100"}
-_CS_TEXT_VALUES = {"auto", "40", "50", "60", "70", "80", "90", "100"}
 _CS_WRAP_VALUES = {"off", "on"}
+
+
+def _cs_clamp_size(val, lo, hi, default="auto"):
+    """Accept 'auto' or an integer string in [lo, hi]. Returns the canonical string."""
+    if val == "auto" or val is None:
+        return "auto"
+    try:
+        n = int(val)
+    except (TypeError, ValueError):
+        return default
+    n = max(lo, min(hi, n))
+    return str(n)
 
 
 @app.route("/api/videos/<int:vid>/chapter", methods=["GET"])
@@ -3577,10 +3587,8 @@ def chapter_put(vid):
     numbering = (payload.get("numbering") or "none")
     if numbering not in ("none", "number", "step"):
         numbering = "none"
-    box_size = (payload.get("box_size") or "auto")
-    if box_size not in _CS_BOX_VALUES: box_size = "auto"
-    text_size = (payload.get("text_size") or "auto")
-    if text_size not in _CS_TEXT_VALUES: text_size = "auto"
+    box_size = _cs_clamp_size(payload.get("box_size"), 50, 100)
+    text_size = _cs_clamp_size(payload.get("text_size"), 24, 120)
     wrap_mode = (payload.get("wrap_mode") or "off")
     if wrap_mode not in _CS_WRAP_VALUES: wrap_mode = "off"
     now = datetime.now(timezone.utc).isoformat()
