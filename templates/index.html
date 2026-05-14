@@ -5590,10 +5590,6 @@
             } else {
                 revealIdxCounter += 1;
                 var revealOrdinal = revealIdxCounter;
-                var renderedT = (typeof revealTimes[revealOrdinal] === 'number') ? revealTimes[revealOrdinal] : null;
-                var manualT = (typeof b.time_override === 'number') ? b.time_override : null;
-                var displayT = (manualT !== null) ? manualT : renderedT;
-
                 if (descs[revealOrdinal]) {
                     var desc = document.createElement('div');
                     desc.textContent = descs[revealOrdinal];
@@ -5601,46 +5597,6 @@
                     desc.title = descs[revealOrdinal];
                     row.appendChild(desc);
                 }
-
-                // Time row: @4.50s  (click to type override)    AI / Manual·reset
-                var timeRow = document.createElement('div');
-                timeRow.style.cssText = 'display:flex; align-items:center; gap:8px; margin-top:6px; padding-left:28px;';
-
-                var timeLabel = document.createElement('span');
-                timeLabel.textContent = (displayT !== null) ? ('@' + displayT.toFixed(2) + 's') : '@—';
-                timeLabel.style.cssText = 'color:' + (manualT !== null ? '#f5b942' : (renderedT !== null ? '#aaa' : '#555')) + '; cursor:pointer; font-variant-numeric:tabular-nums; font-size:11px;';
-                timeLabel.title = 'Click to type an exact reveal time';
-                timeLabel.onclick = function(ev) {
-                    ev.stopPropagation();
-                    var promptDefault = (displayT !== null) ? displayT.toFixed(2) : '';
-                    var input = prompt('Reveal time (seconds):', promptDefault);
-                    if (input === null) return;
-                    var n = parseFloat(input);
-                    if (isNaN(n) || n < 0) return;
-                    b.time_override = Math.round(n * 100) / 100;
-                    if (typeof schedulePatch === 'function') schedulePatch();
-                    renderBoxAnimList();
-                };
-                timeRow.appendChild(timeLabel);
-
-                var modeBadge = document.createElement('span');
-                if (manualT !== null) {
-                    modeBadge.textContent = 'Manual · reset';
-                    modeBadge.style.cssText = 'color:#f5b942; font-size:10px; cursor:pointer; letter-spacing:0.3px;';
-                    modeBadge.title = 'Clear manual override and use AI time';
-                    modeBadge.onclick = function(ev) {
-                        ev.stopPropagation();
-                        delete b.time_override;
-                        if (typeof schedulePatch === 'function') schedulePatch();
-                        renderBoxAnimList();
-                    };
-                } else if (renderedT !== null) {
-                    modeBadge.textContent = 'AI';
-                    modeBadge.style.cssText = 'color:#555; font-size:10px; letter-spacing:0.3px;';
-                }
-                timeRow.appendChild(modeBadge);
-
-                row.appendChild(timeRow);
             }
             c.appendChild(row);
         });
