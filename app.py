@@ -2243,11 +2243,99 @@ def twitter_feed():
     return jsonify([dict(r) for r in rows])
 
 
+def _ring_avg_color(img, x, y, w, h, ring=12):
+    """Average RGB of pixels in a ring just outside the box rect — used to
+    fill the masked area with the actual local background color instead of black."""
+    px = img.load()
+    W, H = img.size
+    samples = []
+    for yy in range(max(0, y - ring), y):
+        for xx in range(max(0, x - ring), min(W, x + w + ring)):
+            samples.append(px[xx, yy])
+    for yy in range(min(H, y + h), min(H, y + h + ring)):
+        for xx in range(max(0, x - ring), min(W, x + w + ring)):
+            samples.append(px[xx, yy])
+    for xx in range(max(0, x - ring), x):
+        for yy in range(y, min(H, y + h)):
+            samples.append(px[xx, yy])
+    for xx in range(min(W, x + w), min(W, x + w + ring)):
+        for yy in range(y, min(H, y + h)):
+            samples.append(px[xx, yy])
+    if not samples:
+        return (8, 8, 18)
+    n = len(samples)
+    r = sum(p[0] for p in samples) // n
+    g = sum(p[1] for p in samples) // n
+    b = sum(p[2] for p in samples) // n
+    return (r, g, b)
+
+
+def _gemini_align_boxes(image_with_boxes_bytes, audio_bytes, audio_mime, transcript, n_boxes, duration):
+    """Ask Gemini 2.5 Flash to assign a reveal time (s) to each numbered box,
+    based on the image, audio, and transcript. Returns list[float|None] of length n_boxes."""
+    import base64
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return None
+    img_b64 = base64.b64encode(image_with_boxes_bytes).decode("ascii")
+    aud_b64 = base64.b64encode(audio_bytes).decode("ascii")
+    prompt = (
+        "You are aligning visual reveals to spoken audio for a diagram animation.\n\n"
+        f"The image shows a diagram with {n_boxes} gold-outlined boxes, each labeled with a number 1..{n_boxes} on a gold circle. "
+        "Each box covers a distinct visual element (a title, a card, a label, etc.).\n\n"
+        f"The audio is the narration that plays over the diagram. Total duration: {duration:.2f} seconds.\n\n"
+        f"Transcript (may have minor errors): {transcript or '(no transcript provided)'}\n\n"
+        f"For each numbered box (in order 1..{n_boxes}), identify which visual element it covers, "
+        "then determine the moment in seconds when that element is verbally referenced or becomes thematically relevant in the audio. "
+        "Constraints: every time must be >= 0.3 and <= duration; times must be strictly increasing in box order "
+        "(box 1 first, box N last); if an element is not directly mentioned, place it at a natural pause near a related phrase.\n\n"
+        "Return ONLY a single valid JSON object — no markdown fences, no preamble — in this exact shape:\n"
+        '{"boxes":[{"box":1,"describes":"<short element description>","time":0.5},'
+        '{"box":2,"describes":"...","time":2.1}]}'
+    )
+    body = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": "image/png", "data": img_b64}},
+                {"inline_data": {"mime_type": audio_mime, "data": aud_b64}},
+            ]
+        }],
+        "generationConfig": {"response_mime_type": "application/json", "temperature": 0.2}
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(url, data=json.dumps(body).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=90) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        parsed = json.loads(text)
+        entries = parsed.get("boxes", []) if isinstance(parsed, dict) else []
+        out = [None] * n_boxes
+        descs = [None] * n_boxes
+        for e in entries:
+            try:
+                idx = int(e.get("box", 0)) - 1
+                t = float(e.get("time", 0))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < n_boxes and 0.0 < t <= duration:
+                out[idx] = t
+                descs[idx] = (e.get("describes") or "")[:80]
+        return {"times": out, "descs": descs}
+    except (HTTPError, URLError, KeyError, IndexError, ValueError, TypeError):
+        return None
+
+
 @app.route("/api/diagrams/render", methods=["POST"])
 def diagrams_render():
     """Render image + boxes + audio -> MP4 with timed fade-in reveals."""
     import tempfile, subprocess, shutil
-    from PIL import Image, ImageDraw
+    from io import BytesIO
+    from PIL import Image, ImageDraw, ImageFont
 
     image_file = request.files.get("image")
     audio_file = request.files.get("audio")
@@ -2319,11 +2407,13 @@ def diagrams_render():
 
         N = len(box_rects)
 
-        # Background = image with each box filled with near-black (so reveals "appear")
+        # Background = image with each box filled with the LOCAL background color
+        # (sampled from a ring just outside the box) so the masked area blends in.
         bg = img.copy()
         draw = ImageDraw.Draw(bg)
         for (x, y, w, h) in box_rects:
-            draw.rectangle([x, y, x + w - 1, y + h - 1], fill=(8, 8, 18))
+            fill = _ring_avg_color(img, x, y, w, h, ring=14)
+            draw.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
         bg_path = work_dir / "bg.png"
         bg.save(bg_path)
 
@@ -2335,14 +2425,84 @@ def diagrams_render():
             crop.save(cp)
             crop_paths.append(cp)
 
-        # Reveal times: first box ~0.5s, last box ~75% of duration, evenly between
-        first_t = min(0.5, max(0.1, duration * 0.05))
+        # ---- Reveal times: AI-aligned if possible, else evenly distributed ----
+        first_t = min(0.5, max(0.3, duration * 0.05))
         last_t = max(first_t + 0.5, duration * 0.75)
         if N == 1:
-            times = [first_t]
+            even_times = [first_t]
         else:
             step = (last_t - first_t) / (N - 1)
-            times = [first_t + i * step for i in range(N)]
+            even_times = [first_t + i * step for i in range(N)]
+
+        alignment_mode = "evenly_distributed"
+        alignment_descs = [None] * N
+
+        # Build a Gemini-friendly image with numbered boxes drawn on top
+        align_img = img.copy()
+        d2 = ImageDraw.Draw(align_img)
+        # font for badge numbers (try common paths, fall back to default)
+        font = None
+        badge_radius = max(14, min(28, int(min(W, H) * 0.025)))
+        font_size = int(badge_radius * 1.3)
+        for fp in (
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+        ):
+            try:
+                font = ImageFont.truetype(fp, font_size)
+                break
+            except OSError:
+                continue
+        if font is None:
+            font = ImageFont.load_default()
+        for i, (x, y, w, h) in enumerate(box_rects):
+            d2.rectangle([x, y, x + w - 1, y + h - 1], outline=(245, 185, 66), width=4)
+            cx, cy = x + badge_radius + 4, y + badge_radius + 4
+            d2.ellipse([cx - badge_radius, cy - badge_radius, cx + badge_radius, cy + badge_radius], fill=(245, 185, 66))
+            label = str(i + 1)
+            bbox_ascent = 0
+            try:
+                bb = d2.textbbox((0, 0), label, font=font)
+                tw, th = bb[2] - bb[0], bb[3] - bb[1]
+                bbox_ascent = bb[1]
+            except AttributeError:
+                if hasattr(font, "getsize"):
+                    tw, th = font.getsize(label)
+                else:
+                    tw, th = 10, 12
+            d2.text((cx - tw / 2, cy - th / 2 - bbox_ascent), label, fill=(0, 0, 0), font=font)
+
+        buf = BytesIO()
+        align_img.save(buf, format="PNG")
+        align_bytes = buf.getvalue()
+
+        script = (request.form.get("script") or "").strip()
+        audio_mime = audio_file.mimetype or "audio/mpeg"
+        audio_bytes = Path(audio_path).read_bytes()
+        ai_result = _gemini_align_boxes(align_bytes, audio_bytes, audio_mime, script, N, duration) if N <= 12 and duration <= 120 else None
+
+        if ai_result and any(t is not None for t in ai_result["times"]):
+            # Merge AI times with fallback for any None, then enforce monotonic + bounds
+            ai_times = ai_result["times"][:]
+            for i in range(N):
+                if ai_times[i] is None:
+                    ai_times[i] = even_times[i]
+            # Clamp + enforce strictly increasing (min step 0.25s)
+            min_step = 0.25
+            for i in range(N):
+                t = max(0.3, min(duration - 0.1, float(ai_times[i])))
+                if i > 0 and t < ai_times[i - 1] + min_step:
+                    t = ai_times[i - 1] + min_step
+                if t > duration - 0.05:
+                    t = duration - 0.05
+                ai_times[i] = t
+            times = ai_times
+            alignment_mode = "ai_aligned"
+            alignment_descs = ai_result["descs"]
+        else:
+            times = even_times
+
         fade_dur = 0.35
 
         # Build ffmpeg command
@@ -2390,6 +2550,8 @@ def diagrams_render():
             "duration": round(duration, 2),
             "boxes": N,
             "reveal_times": [round(t, 2) for t in times],
+            "alignment": alignment_mode,
+            "descriptions": alignment_descs,
             "size": (W, H),
         })
     except Exception as e:
