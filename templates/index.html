@@ -5438,6 +5438,23 @@
         }
         if (typeof renderBoxes === 'function') renderBoxes();
     }
+    var _dragInsertBefore = null;
+    function _setDragInsertIndicator(insertBeforeIdx) {
+        var c = document.getElementById('diagramsBoxList');
+        if (!c) return;
+        for (var k = 0; k < c.children.length; k++) {
+            c.children[k].style.boxShadow = '';
+        }
+        if (insertBeforeIdx === null || insertBeforeIdx === undefined) return;
+        if (insertBeforeIdx < c.children.length) {
+            // gold line ABOVE this row
+            c.children[insertBeforeIdx].style.boxShadow = '0 -3px 0 #f5b942';
+        } else if (c.children.length > 0) {
+            // dropping past the last row — line BELOW the last
+            c.children[c.children.length - 1].style.boxShadow = '0 3px 0 #f5b942';
+        }
+    }
+
     function _highlightSelectedRow() {
         var c = document.getElementById('diagramsBoxList');
         if (!c) return;
@@ -5546,22 +5563,31 @@
                 ev.dataTransfer.setData('text/plain', String(i));
                 row.style.opacity = '0.45';
             };
-            row.ondragend = function() { row.style.opacity = '1'; };
+            row.ondragend = function() {
+                row.style.opacity = '1';
+                _setDragInsertIndicator(null);
+                _dragInsertBefore = null;
+            };
             row.ondragover = function(ev) {
                 ev.preventDefault();
                 ev.dataTransfer.dropEffect = 'move';
-                row.style.borderColor = '#f5b942';
-            };
-            row.ondragleave = function() {
-                row.style.borderColor = isHide ? '#3a2020' : '#1f1f30';
+                // insert above the row if cursor is in upper half, below if lower half
+                var rect = row.getBoundingClientRect();
+                var insertBefore = (ev.clientY < rect.top + rect.height / 2) ? i : (i + 1);
+                _dragInsertBefore = insertBefore;
+                _setDragInsertIndicator(insertBefore);
             };
             row.ondrop = function(ev) {
                 ev.preventDefault();
-                row.style.borderColor = isHide ? '#3a2020' : '#1f1f30';
                 var src = parseInt(ev.dataTransfer.getData('text/plain'), 10);
-                var dst = parseInt(row.dataset.idx, 10);
-                if (isNaN(src) || isNaN(dst) || src === dst) return;
+                var dst = _dragInsertBefore;
+                _setDragInsertIndicator(null);
+                _dragInsertBefore = null;
+                if (isNaN(src) || dst === null || dst === undefined) return;
+                // no-op: dropping right above its own index or right below
+                if (src === dst || src === dst - 1) return;
                 var moved = diagramBoxes.splice(src, 1)[0];
+                if (src < dst) dst -= 1;   // we removed an item before the target
                 diagramBoxes.splice(dst, 0, moved);
                 renderBoxes();
                 if (typeof schedulePatch === 'function') schedulePatch();
