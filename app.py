@@ -2831,9 +2831,9 @@ def diagrams_render():
         if duration <= 0.1 or duration > 600:
             return jsonify({"error": f"audio duration out of range ({duration:.1f}s, max 600s)"}), 400
 
-        # Compute box rects + kind (reveal vs hide) + anim style
-        all_box_records = []   # every box for masking: (x, y, w, h, anim)
-        reveal_indices = []     # indices into all_box_records that are reveal-type
+        # Compute box rects + kind (reveal vs hide) + anim style + time_override
+        all_box_records = []   # each: (x, y, w, h, anim, original_box_dict)
+        reveal_indices = []
         for b in boxes:
             try:
                 bx = float(b["x"]); by = float(b["y"]); bw = float(b["w"]); bh = float(b["h"])
@@ -2848,7 +2848,7 @@ def diagrams_render():
             if w < 2 or h < 2:
                 continue
             anim_val = (b.get("anim") or "fade").lower() if isinstance(b, dict) else "fade"
-            all_box_records.append((x, y, w, h, anim_val))
+            all_box_records.append((x, y, w, h, anim_val, b if isinstance(b, dict) else {}))
             if anim_val != "hide":
                 reveal_indices.append(len(all_box_records) - 1)
         if not all_box_records:
@@ -2858,6 +2858,15 @@ def diagrams_render():
         box_rects = [(r[0], r[1], r[2], r[3]) for i, r in enumerate(all_box_records) if i in reveal_indices]
         box_anims = [all_box_records[i][4] for i in reveal_indices]
         hide_rects = [(r[0], r[1], r[2], r[3]) for i, r in enumerate(all_box_records) if i not in reveal_indices]
+        # Manual time overrides per reveal box (None if not set)
+        box_overrides = []
+        for idx in reveal_indices:
+            bd = all_box_records[idx][5]
+            ov = bd.get("time_override")
+            try:
+                box_overrides.append(float(ov) if ov is not None else None)
+            except (TypeError, ValueError):
+                box_overrides.append(None)
 
         if not box_rects and not hide_rects:
             return jsonify({"error": "no boxes after kind split"}), 400
@@ -3045,6 +3054,26 @@ def diagrams_render():
         else:
             times = even_times
 
+        # Apply manual time overrides (per box) AFTER AI alignment, BEFORE monotonic clamp.
+        # Manual times are absolute — no lead time applied.
+        manual_count = 0
+        for i in range(N):
+            if box_overrides[i] is not None:
+                times[i] = max(0.3, min(duration - 0.05, box_overrides[i]))
+                manual_count += 1
+        # Re-enforce monotonic if overrides scrambled order (overrides win; AI shifts around them)
+        if manual_count > 0:
+            min_step = 0.25
+            for i in range(N):
+                t = max(0.3, min(duration - 0.05, float(times[i])))
+                if i > 0 and t < times[i - 1] + min_step:
+                    t = times[i - 1] + min_step
+                if t > duration - 0.05:
+                    t = duration - 0.05
+                times[i] = t
+            if alignment_mode in ("whisper_aligned", "gemini_audio", "evenly_distributed"):
+                alignment_mode = alignment_mode + "_with_manual"
+
         # Generate crops NOW that we know reveal-order — so each outer-box crop
         # can mask the regions of later-revealing inner boxes (avoids the double-
         # reveal where the outer's crop briefly shows the inner box's content
@@ -3198,6 +3227,7 @@ def diagrams_render():
             "boxes": N,
             "hidden_boxes": len(hide_rects),
             "reveal_times": [round(t, 2) for t in times],
+            "manual_flags": [box_overrides[i] is not None for i in range(N)],
             "alignment": alignment_mode,
             "descriptions": alignment_descs,
             "size": (W, H + bottom_pad),
