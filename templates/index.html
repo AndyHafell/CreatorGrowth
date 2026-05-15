@@ -2315,48 +2315,52 @@
         }
         .cs-style-blue-glass .cs-items > li .cs-text { flex: 1 1 auto; min-width: 0; }
         .cs-style-blue-glass .cs-items > li .cs-dot { margin-top: 0.32em; }
-        /* Per-reveal-style "before" appearance + transition property.
-           .cs-blur class marks an item that's in the "before" (un-revealed) state. */
+        /* UNIVERSAL passive "before" visual — ANY blurred item that is not actively
+           being revealed in the current clip stays as a soft blur, regardless of
+           which reveal_style is selected. */
+        .cs-style-blue-glass .cs-items > li.cs-blur { filter: blur(14px); }
 
-        /* Blur fade (default) */
-        .cs-reveal-blur_fade .cs-items > li.cs-blur { filter: blur(14px); }
+        /* Per-reveal-style ACTIVE-before visual + transition. Only applies to the
+           single item being revealed (.cs-blur.cs-active-reveal). */
+
+        /* Blur fade — no extra effect, just the universal blur transitioning out */
         .cs-reveal-blur_fade.cs-animated .cs-items > li { transition: filter 1s ease-out; }
 
-        /* Dissolve (pure alpha crossfade) */
-        .cs-reveal-dissolve .cs-items > li.cs-blur { opacity: 0; }
-        .cs-reveal-dissolve.cs-animated .cs-items > li { transition: opacity 1s ease-out; }
+        /* Dissolve (opacity drop on active item only) */
+        .cs-reveal-dissolve .cs-items > li.cs-blur.cs-active-reveal { opacity: 0; }
+        .cs-reveal-dissolve.cs-animated .cs-items > li { transition: opacity 1s ease-out, filter 1s ease-out; }
 
         /* Wipe left→right (clipped from right edge, sweeps in from left) */
         .cs-reveal-wipe_lr .cs-items > li { clip-path: inset(0 0 0 0); }
-        .cs-reveal-wipe_lr .cs-items > li.cs-blur { clip-path: inset(0 100% 0 0); }
-        .cs-reveal-wipe_lr.cs-animated .cs-items > li { transition: clip-path 1s ease-out; }
+        .cs-reveal-wipe_lr .cs-items > li.cs-blur.cs-active-reveal { clip-path: inset(0 100% 0 0); }
+        .cs-reveal-wipe_lr.cs-animated .cs-items > li { transition: clip-path 1s ease-out, filter 1s ease-out; }
 
         /* Wipe right→left */
         .cs-reveal-wipe_rl .cs-items > li { clip-path: inset(0 0 0 0); }
-        .cs-reveal-wipe_rl .cs-items > li.cs-blur { clip-path: inset(0 0 0 100%); }
-        .cs-reveal-wipe_rl.cs-animated .cs-items > li { transition: clip-path 1s ease-out; }
+        .cs-reveal-wipe_rl .cs-items > li.cs-blur.cs-active-reveal { clip-path: inset(0 0 0 100%); }
+        .cs-reveal-wipe_rl.cs-animated .cs-items > li { transition: clip-path 1s ease-out, filter 1s ease-out; }
 
         /* Slide in from left */
         .cs-reveal-slide_left .cs-items > li { transform: translateX(0); opacity: 1; }
-        .cs-reveal-slide_left .cs-items > li.cs-blur { transform: translateX(-120px); opacity: 0; }
+        .cs-reveal-slide_left .cs-items > li.cs-blur.cs-active-reveal { transform: translateX(-120px); opacity: 0; }
         .cs-reveal-slide_left.cs-animated .cs-items > li {
-            transition: transform 1s ease-out, opacity 0.9s ease-out;
+            transition: transform 1s ease-out, opacity 0.9s ease-out, filter 1s ease-out;
         }
 
         /* Slide in from right */
         .cs-reveal-slide_right .cs-items > li { transform: translateX(0); opacity: 1; }
-        .cs-reveal-slide_right .cs-items > li.cs-blur { transform: translateX(120px); opacity: 0; }
+        .cs-reveal-slide_right .cs-items > li.cs-blur.cs-active-reveal { transform: translateX(120px); opacity: 0; }
         .cs-reveal-slide_right.cs-animated .cs-items > li {
-            transition: transform 1s ease-out, opacity 0.9s ease-out;
+            transition: transform 1s ease-out, opacity 0.9s ease-out, filter 1s ease-out;
         }
 
         /* Circle open (radial reveal from item's vertical center) */
         .cs-reveal-circle_open .cs-items > li { clip-path: circle(100% at 0% 50%); }
-        .cs-reveal-circle_open .cs-items > li.cs-blur { clip-path: circle(0% at 0% 50%); }
-        .cs-reveal-circle_open.cs-animated .cs-items > li { transition: clip-path 1s ease-out; }
+        .cs-reveal-circle_open .cs-items > li.cs-blur.cs-active-reveal { clip-path: circle(0% at 0% 50%); }
+        .cs-reveal-circle_open.cs-animated .cs-items > li { transition: clip-path 1s ease-out, filter 1s ease-out; }
 
-        /* Pixelize approx (heavy blur, no color blur, snaps to crisp) */
-        .cs-reveal-pixelize .cs-items > li.cs-blur { filter: blur(22px) contrast(1.4); }
+        /* Pixelize (heavy blur + contrast snaps to crisp) */
+        .cs-reveal-pixelize .cs-items > li.cs-blur.cs-active-reveal { filter: blur(22px) contrast(1.4); }
         .cs-reveal-pixelize.cs-animated .cs-items > li { transition: filter 1s steps(8, end); }
         .cs-style-blue-glass .cs-dot {
             width: 28px;
@@ -6543,11 +6547,16 @@
         _csPreviewTimers = [];
     }
 
-    function _csApplyBlurState(crispCount) {
+    function _csApplyBlurState(crispCount, activeIdx) {
+        // crispCount: how many items (from top) are crisp/revealed.
+        // activeIdx: 0-indexed item currently being revealed (gets .cs-active-reveal).
+        // Pass -1 for activeIdx when there's no active reveal (e.g. FINAL FRAME).
         var lis = document.querySelectorAll('#csPreviewItems > li');
         lis.forEach(function(li, i) {
             if (i < crispCount) li.classList.remove('cs-blur');
             else li.classList.add('cs-blur');
+            if (i === activeIdx) li.classList.add('cs-active-reveal');
+            else li.classList.remove('cs-active-reveal');
         });
     }
 
@@ -6561,15 +6570,17 @@
         var N = visible.length;
         if (k === 0 || N === 0) {
             lbl.textContent = 'Final frame';
-            _csApplyBlurState(N);
+            _csApplyBlurState(N, -1);
             return;
         }
         lbl.textContent = 'Clip ' + k + ' of ' + N + ' — looping';
-        // Loop: before state for 4.5s → flip class (CSS transitions over 1s) → after state for 4.5s → repeat
+        // The item being revealed in clip K is at 0-indexed position k-1.
+        var activeIdx = k - 1;
+        // Loop: before state 4.5s → toggle .cs-blur off (CSS transitions 1s) → after 4.5s → repeat
         function runOnce() {
-            _csApplyBlurState(k - 1); // before: items 1..k-1 crisp
+            _csApplyBlurState(k - 1, activeIdx); // before: items 0..k-2 crisp, k-1 = active-blur, k..N-1 = blur
             _csPreviewTimers.push(setTimeout(function() {
-                _csApplyBlurState(k); // after: items 1..k crisp (item k unblurs with CSS transition)
+                _csApplyBlurState(k, activeIdx); // after: items 0..k-1 crisp; active-reveal stays on (harmless w/o cs-blur)
             }, 4500));
             _csPreviewTimers.push(setTimeout(runOnce, 10000));
         }
@@ -6761,7 +6772,7 @@
         // Apply blur state only if we rebuilt the DOM (otherwise the running animation
         // owns the class state and we shouldn't stomp on it).
         if (countChanged) {
-            if (_csPreviewClip === 0) _csApplyBlurState(N);
+            if (_csPreviewClip === 0) _csApplyBlurState(N, -1);
             else csSetPreviewClip(_csPreviewClip);  // restart loop for new item count
         }
     }
@@ -6956,11 +6967,12 @@
             capLis.push(li);
         });
 
-        function applyBlurState(crispCount) {
-            // First `crispCount` items are crisp; the rest are blurred.
+        function applyBlurState(crispCount, activeIdx) {
             capLis.forEach(function(li, i) {
                 if (i < crispCount) li.classList.remove('cs-blur');
                 else li.classList.add('cs-blur');
+                if (i === activeIdx) li.classList.add('cs-active-reveal');
+                else li.classList.remove('cs-active-reveal');
             });
         }
 
@@ -6980,20 +6992,21 @@
             var fd = new FormData();
             fd.append('count', String(N));
             for (var k = 1; k <= N; k++) {
+                var activeIdx = k - 1;
                 statusEl.textContent = 'Capturing clip ' + k + '/' + N + ' (before)…';
-                applyBlurState(k - 1); // items 1..k-1 crisp, k..N blurred
+                applyBlurState(k - 1, activeIdx); // items 0..k-2 crisp, k-1 active-blur, rest blur
                 await new Promise(function(r) { requestAnimationFrame(function() { setTimeout(r, 30); }); });
                 var beforeBlob = await captureBlob();
                 fd.append('clip_' + k + '_before', beforeBlob, 'before_' + k + '.png');
 
                 statusEl.textContent = 'Capturing clip ' + k + '/' + N + ' (after)…';
-                applyBlurState(k);     // items 1..k crisp, k+1..N blurred
+                applyBlurState(k, -1); // items 0..k-1 crisp, k..N-1 blurred, no active
                 await new Promise(function(r) { requestAnimationFrame(function() { setTimeout(r, 30); }); });
                 var afterBlob = await captureBlob();
                 fd.append('clip_' + k + '_after', afterBlob, 'after_' + k + '.png');
             }
             // Reset capture div state
-            applyBlurState(N);
+            applyBlurState(N, -1);
 
             statusEl.textContent = 'Rendering ' + N + ' clips on server…';
             var resp = await fetch('/api/videos/' + _csVid + '/chapter/render', {
