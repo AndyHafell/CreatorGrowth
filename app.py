@@ -4508,27 +4508,90 @@ _DIAGRAM_DARK_PREFIX = (
 _DIAGRAM_GEMINI_MODEL = "gemini-2.0-flash-preview-image-generation"
 
 
-_STEP_RE = re.compile(
-    r"^\s*(?:#{2,4}\s+)?Step\s+\d+\s*[-–—:]\s*(.+?)(?:\s*[✅✓☑])?\s*$",
-    re.MULTILINE | re.IGNORECASE,
-)
+# Several patterns Andy's docs use for step headers — we try them in order
+# and keep whichever yields the most matches.
+_STEP_PATTERNS = [
+    # content-doc style: `### Step 1 - Title` / `## Step 1 — Title` / `Step 1: Title`
+    re.compile(
+        r"^\s*(?:#{2,4}\s+)?Step\s+\d+\s*[-–—:]\s*(.+?)(?:\s*[✅✓☑])?\s*$",
+        re.MULTILINE | re.IGNORECASE,
+    ),
+    # show-doc style: `========== STEP 1 — TITLE ==========` or just `STEP 1 — TITLE`
+    re.compile(
+        r"^\s*={2,}\s*STEP\s+\d+\s*[-–—:]\s*(.+?)\s*={2,}\s*$",
+        re.MULTILINE,
+    ),
+    re.compile(
+        r"^\s*STEP\s+\d+\s*[-–—:]\s*(.+?)\s*$",
+        re.MULTILINE,
+    ),
+    # part-style: `Part one: …` / `Part 1 — …`
+    re.compile(
+        r"^\s*Part\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s*[-–—:]\s*(.+?)\s*$",
+        re.MULTILINE | re.IGNORECASE,
+    ),
+    # Last-resort: Say-doc prose like "let's get into Step 2 — The 2-Minute Setup."
+    # Captures from `Step N -` to the next sentence end. Permissive — only used
+    # if every line-anchored pattern above produced nothing.
+    re.compile(
+        r"Step\s+\d+\s*[-–—:]\s*([A-Z][^.!?\n]{2,80}?)(?=[.!?\n])",
+        re.IGNORECASE,
+    ),
+]
 
 
 def _extract_steps_from_text(text):
-    """Pull step titles from a content/show-doc style markdown string."""
+    """Pull step titles. Tries multiple patterns; picks the one with the most hits."""
     if not text:
         return []
+    best = []
+    for pat in _STEP_PATTERNS:
+        matches = [m.strip() for m in pat.findall(text) if m.strip()]
+        if len(matches) > len(best):
+            best = matches
     items, seen = [], set()
-    for m in _STEP_RE.findall(text):
-        t = m.strip()
-        if not t:
-            continue
+    for t in best:
         k = t.lower()
         if k in seen:
             continue
         seen.add(k)
         items.append(t)
     return items
+
+
+def _briefs_diagnostic(vid):
+    """Counts for each fallback source — used in the 400-error body so the UI can tell the user what to fix."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM chapters WHERE video_id=?", (vid,)).fetchone()
+    chapters = 0
+    if row:
+        try:
+            chapters = len(json.loads(row["items_json"] or "[]"))
+        except (TypeError, ValueError):
+            chapters = 0
+    drow = conn.execute(
+        "SELECT custom_fields FROM video_details WHERE video_id=?", (vid,)
+    ).fetchone()
+    conn.close()
+    try:
+        fields = json.loads(drow["custom_fields"]) if drow and drow["custom_fields"] else []
+    except (TypeError, ValueError):
+        fields = []
+    content_steps = len(_extract_steps_from_text(
+        _read_doc_field(fields, "Content Doc").get("text", "")
+    ))
+    bullet_steps = len(_extract_steps_from_text(
+        _read_doc_field(fields, "Bullet Doc").get("text", "")
+    ))
+    conn2 = get_db()
+    conn2.row_factory = sqlite3.Row
+    vrow = conn2.execute("SELECT vocal_doc FROM videos WHERE id=?", (vid,)).fetchone()
+    conn2.close()
+    say_steps = len(_extract_steps_from_text(
+        (vrow["vocal_doc"] or "") if vrow else ""
+    ))
+    return {"chapters": chapters, "content": content_steps, "bullet": bullet_steps, "say": say_steps}
 
 
 def _derive_diagram_briefs(vid):
@@ -4560,6 +4623,12 @@ def _derive_diagram_briefs(vid):
             if extracted:
                 items = extracted
                 break
+        if not items:
+            # Last resort: try the vocal/say doc (stored in videos.vocal_doc).
+            vrow = conn.execute("SELECT vocal_doc FROM videos WHERE id=?", (vid,)).fetchone()
+            extracted = _extract_steps_from_text((vrow["vocal_doc"] or "") if vrow else "")
+            if extracted:
+                items = extracted
     conn.close()
     if not items:
         return []
@@ -4615,9 +4684,16 @@ def diagrams_generate_batch(vid):
     briefs = body.get("briefs") or _derive_diagram_briefs(vid)
     briefs = [b for b in briefs if isinstance(b, dict) and (b.get("brief") or "").strip()]
     if not briefs:
+        # Give the UI a useful diagnostic so the user knows WHICH fallback failed.
+        diag = _briefs_diagnostic(vid)
         return jsonify({
-            "error": "no briefs supplied and no chapter items on this video. "
-                     "Generate chapters from the content doc first."
+            "error": (
+                "No steps found to generate diagrams from. "
+                "Looked in: chapters ({chapters}), Content Doc ({content}), "
+                "Bullet Doc ({bullet}), Say Doc ({say}). "
+                "Add `Step N - Title` / `STEP N — TITLE` headers, or populate chapters."
+            ).format(**diag),
+            "diagnostic": diag,
         }), 400
     if len(briefs) > 12:
         briefs = briefs[:12]
