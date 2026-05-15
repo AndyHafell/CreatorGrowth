@@ -4171,14 +4171,21 @@
                         clearInterval(checkVideos);
                         const vid = parseInt(savedModal);
                         if (videos.find(v => v.id === vid)) {
-                            openModal(vid);
-                            if (localStorage.getItem('cg_chapter_open') === '1') {
-                                // Wait one tick so modalVideoId is set before chapter studio reads it
-                                setTimeout(function() { if (typeof openChapters === 'function') openChapters(); }, 50);
-                            }
+                            const p = openModal(vid);
+                            const restoreStudios = () => {
+                                if (localStorage.getItem('cg_chapter_open') === '1' && typeof openChapters === 'function') {
+                                    openChapters();
+                                }
+                                if (localStorage.getItem('cg_editor_open') === '1' && typeof openEditor === 'function') {
+                                    openEditor();
+                                }
+                            };
+                            if (p && typeof p.then === 'function') p.then(restoreStudios);
+                            else setTimeout(restoreStudios, 50);
                         } else {
                             localStorage.removeItem('cg_modal');
                             localStorage.removeItem('cg_chapter_open');
+                            localStorage.removeItem('cg_editor_open');
                         }
                     }
                 }, 200);
@@ -7166,6 +7173,7 @@
         var vid = (typeof modalVideoId !== 'undefined' && modalVideoId) ? modalVideoId : null;
         if (!vid) { alert('Open a video first.'); return; }
         editorVideoId = vid;
+        try { localStorage.setItem('cg_editor_open', '1'); } catch (e) {}
         document.getElementById('editorStudio').style.display = 'block';
         var t = document.getElementById('modalTitle');
         document.getElementById('editorStudioTitle').textContent = (t && t.textContent.trim()) || 'untitled';
@@ -7198,6 +7206,7 @@
 
     function closeEditor() {
         saveEditorState();
+        try { localStorage.removeItem('cg_editor_open'); } catch (e) {}
         document.getElementById('editorStudio').style.display = 'none';
     }
 
