@@ -9,6 +9,8 @@ import re
 import json
 import sqlite3
 import subprocess
+import threading
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.request import urlopen, Request
@@ -231,6 +233,22 @@ def init_db():
         conn.execute("ALTER TABLE videos ADD COLUMN voiceover_state TEXT")
     except sqlite3.OperationalError:
         pass
+
+    # Background TTS jobs — async synthesis with progress tracking
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tts_jobs (
+            id TEXT PRIMARY KEY,
+            video_id INTEGER,
+            status TEXT,
+            chunks_done INTEGER DEFAULT 0,
+            chunks_total INTEGER DEFAULT 0,
+            generation_json TEXT,
+            error TEXT,
+            detail TEXT,
+            started_at REAL,
+            updated_at REAL
+        )
+    """)
 
     # Chapter Studio: one list of chapter items per video, rendered to N MP4 clips.
     # One-shot migration: the cloned-from-diagrams schema had `boxes_json`. If that
@@ -4113,16 +4131,137 @@ def delete_say_voiceover(vid, idx):
     return jsonify(state)
 
 
+def _tts_job_set(job_id, **fields):
+    fields["updated_at"] = time.time()
+    keys = list(fields.keys())
+    set_clause = ", ".join(f"{k}=?" for k in keys)
+    vals = [fields[k] for k in keys] + [job_id]
+    conn = get_db()
+    conn.execute(f"UPDATE tts_jobs SET {set_clause} WHERE id=?", vals)
+    conn.commit()
+    conn.close()
+
+
+def _tts_job_get(job_id):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM tts_jobs WHERE id=?", (job_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _tts_run(job_id, vid, text, voice_id, model_id, api_key):
+    """Background worker — synthesize chunks via ElevenLabs, stitch, save, update voiceover_state."""
+    from urllib.error import HTTPError, URLError
+    try:
+        chunks = _split_text_for_tts(text, max_chars=9500)
+        _tts_job_set(job_id, status="synthesizing", chunks_total=len(chunks))
+
+        base_voice_settings = {
+            "stability": 0.45,
+            "similarity_boost": 0.75,
+            "style": 0.0,
+            "use_speaker_boost": True,
+        }
+        chunk_audio = []
+        prev_ids = []
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+        for i, chunk in enumerate(chunks):
+            payload = {
+                "text": chunk,
+                "model_id": model_id,
+                "voice_settings": base_voice_settings,
+            }
+            if prev_ids:
+                payload["previous_request_ids"] = prev_ids[-3:]
+            req = Request(url, data=json.dumps(payload).encode("utf-8"), method="POST",
+                          headers={
+                              "xi-api-key": api_key,
+                              "Content-Type": "application/json",
+                              "Accept": "audio/mpeg",
+                          })
+            try:
+                with urlopen(req, timeout=180) as resp:
+                    chunk_audio.append(resp.read())
+                    rid = resp.getheader("request-id") or resp.getheader("x-request-id") or ""
+                    if rid:
+                        prev_ids.append(rid)
+            except HTTPError as e:
+                detail = e.read().decode("utf-8", "ignore")[:600]
+                _tts_job_set(job_id, status="error",
+                             error=f"elevenlabs http {e.code}", detail=detail)
+                return
+            except URLError as e:
+                _tts_job_set(job_id, status="error",
+                             error=f"elevenlabs network: {e.reason}")
+                return
+            _tts_job_set(job_id, chunks_done=i + 1)
+
+        _tts_job_set(job_id, status="stitching")
+
+        out_dir = Path(app.root_path) / "static" / "uploads" / "voiceover"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_id = uuid.uuid4().hex[:10]
+        out_path = out_dir / f"v{vid}_{out_id}.mp3"
+
+        if len(chunk_audio) == 1:
+            out_path.write_bytes(chunk_audio[0])
+            audio_bytes = chunk_audio[0]
+        else:
+            import tempfile, shutil
+            work = Path(tempfile.mkdtemp(prefix=f"tts_stitch_{out_id}_"))
+            try:
+                parts = []
+                for k, b in enumerate(chunk_audio):
+                    p = work / f"part_{k}.mp3"
+                    p.write_bytes(b)
+                    parts.append(p)
+                list_file = work / "concat.txt"
+                list_file.write_text("\n".join(
+                    "file '" + str(p).replace("'", "'\\''") + "'" for p in parts
+                ))
+                cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                       "-i", str(list_file), "-c", "copy", str(out_path)]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+                if r.returncode != 0:
+                    _tts_job_set(job_id, status="error",
+                                 error="ffmpeg concat failed",
+                                 detail=r.stderr[-1500:])
+                    return
+                audio_bytes = out_path.read_bytes()
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+
+        rel = str(out_path.relative_to(Path(app.root_path)))
+        audio_url = "/" + rel
+
+        generation = {
+            "url": audio_url,
+            "voice_id": voice_id,
+            "model_id": model_id,
+            "words": len(text.split()),
+            "chars": len(text),
+            "bytes": len(audio_bytes),
+            "chunks": len(chunks),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "preview": text[:140] + ("…" if len(text) > 140 else ""),
+        }
+        state = _load_voiceover_state(vid)
+        state.setdefault("generations", []).append(generation)
+        _save_voiceover_state(vid, state)
+
+        _tts_job_set(job_id, status="done", generation_json=json.dumps(generation))
+    except Exception as e:
+        _tts_job_set(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+
 @app.route("/api/videos/<int:vid>/say/synthesize", methods=["POST"])
 def synthesize_say(vid):
-    """Send (a subset of) the SAY doc to ElevenLabs, save MP3, return URL.
+    """Kick off an async ElevenLabs synthesis. Returns {job_id} immediately;
+    client polls /status/<job_id> for progress and final result.
 
-    Body: {text?: str, max_words?: int (default 200), voice_id?: str, model_id?: str}
-    If text omitted, falls back to the stored vocal_doc with === markers stripped.
+    Body: {text?, max_words?: int (default 200), voice_id?, model_id?}
     """
-    from urllib.request import urlopen, Request
-    from urllib.error import HTTPError, URLError
-
     api_key = os.environ.get("ELEVENLABS_API_KEY", "")
     if not api_key:
         return jsonify({"error": "ELEVENLABS_API_KEY not set on server"}), 500
@@ -4147,99 +4286,55 @@ def synthesize_say(vid):
             text = " ".join(words[:max_words])
 
     voice_id = (body.get("voice_id") or os.environ.get("ELEVENLABS_VOICE_ID")
-                or "21m00Tcm4TlvDq8ikWAM").strip()  # fallback: Rachel
+                or "21m00Tcm4TlvDq8ikWAM").strip()
     model_id = (body.get("model_id") or os.environ.get("ELEVENLABS_MODEL_ID")
                 or "eleven_multilingual_v2").strip()
 
-    chunks = _split_text_for_tts(text, max_chars=9500)
-    base_voice_settings = {
-        "stability": 0.45,
-        "similarity_boost": 0.75,
-        "style": 0.0,
-        "use_speaker_boost": True,
+    job_id = uuid.uuid4().hex[:12]
+    now = time.time()
+    conn = get_db()
+    conn.execute("""
+        INSERT INTO tts_jobs (id, video_id, status, chunks_done, chunks_total, started_at, updated_at)
+        VALUES (?, ?, 'queued', 0, 0, ?, ?)
+    """, (job_id, vid, now, now))
+    conn.commit()
+    conn.close()
+
+    t = threading.Thread(target=_tts_run,
+                         args=(job_id, vid, text, voice_id, model_id, api_key),
+                         daemon=True)
+    t.start()
+
+    return jsonify({
+        "job_id": job_id,
+        "status": "queued",
+        "text_chars": len(text),
+        "text_words": len(text.split()),
+    })
+
+
+@app.route("/api/videos/<int:vid>/say/synthesize/status/<job_id>", methods=["GET"])
+def synthesize_status(vid, job_id):
+    job = _tts_job_get(job_id)
+    if not job:
+        return jsonify({"error": "job not found"}), 404
+    out = {
+        "status": job.get("status"),
+        "chunks_done": job.get("chunks_done") or 0,
+        "chunks_total": job.get("chunks_total") or 0,
+        "error": job.get("error"),
+        "detail": job.get("detail"),
+        "started_at": job.get("started_at"),
+        "updated_at": job.get("updated_at"),
     }
-    chunk_audio = []
-    prev_ids = []
-    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    for chunk in chunks:
-        payload = {
-            "text": chunk,
-            "model_id": model_id,
-            "voice_settings": base_voice_settings,
-        }
-        if prev_ids:
-            # Chain to keep prosody/tone consistent across stitched chunks. API accepts up to 3.
-            payload["previous_request_ids"] = prev_ids[-3:]
-        req = Request(url, data=json.dumps(payload).encode("utf-8"), method="POST",
-                      headers={
-                          "xi-api-key": api_key,
-                          "Content-Type": "application/json",
-                          "Accept": "audio/mpeg",
-                      })
+    if job.get("status") == "done" and job.get("generation_json"):
         try:
-            with urlopen(req, timeout=180) as resp:
-                chunk_audio.append(resp.read())
-                rid = resp.getheader("request-id") or resp.getheader("x-request-id") or ""
-                if rid:
-                    prev_ids.append(rid)
-        except HTTPError as e:
-            detail = e.read().decode("utf-8", "ignore")[:600]
-            return jsonify({"error": f"elevenlabs http {e.code}",
-                            "detail": detail,
-                            "completed_chunks": len(chunk_audio),
-                            "total_chunks": len(chunks)}), 502
-        except URLError as e:
-            return jsonify({"error": f"elevenlabs network: {e.reason}"}), 502
-
-    out_dir = Path(app.root_path) / "static" / "uploads" / "voiceover"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    job_id = uuid.uuid4().hex[:10]
-    out_path = out_dir / f"v{vid}_{job_id}.mp3"
-
-    if len(chunk_audio) == 1:
-        out_path.write_bytes(chunk_audio[0])
-        audio_bytes = chunk_audio[0]
-    else:
-        # Stitch chunks with ffmpeg (stream copy — all chunks share ElevenLabs encode params)
-        import tempfile, subprocess, shutil
-        work = Path(tempfile.mkdtemp(prefix=f"tts_stitch_{job_id}_"))
-        try:
-            parts = []
-            for i, b in enumerate(chunk_audio):
-                p = work / f"part_{i}.mp3"
-                p.write_bytes(b)
-                parts.append(p)
-            list_file = work / "concat.txt"
-            list_file.write_text("\n".join(
-                "file '" + str(p).replace("'", "'\\''") + "'" for p in parts
-            ))
-            cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                   "-i", str(list_file), "-c", "copy", str(out_path)]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-            if r.returncode != 0:
-                return jsonify({"error": "ffmpeg concat failed",
-                                "stderr": r.stderr[-1500:]}), 500
-            audio_bytes = out_path.read_bytes()
-        finally:
-            shutil.rmtree(work, ignore_errors=True)
-    rel = str(out_path.relative_to(Path(app.root_path)))
-    audio_url = "/" + rel
-
-    generation = {
-        "url": audio_url,
-        "voice_id": voice_id,
-        "model_id": model_id,
-        "words": len(text.split()),
-        "chars": len(text),
-        "bytes": len(audio_bytes),
-        "chunks": len(chunks),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "preview": text[:140] + ("…" if len(text) > 140 else ""),
-    }
-    state = _load_voiceover_state(vid)
-    state.setdefault("generations", []).append(generation)
-    _save_voiceover_state(vid, state)
-    return jsonify({"generation": generation, "generations": state["generations"]})
+            out["generation"] = json.loads(job["generation_json"])
+        except Exception:
+            pass
+        state = _load_voiceover_state(vid)
+        out["generations"] = state.get("generations", [])
+    return jsonify(out)
 
 
 # ── Editor (CapCut-style timeline) ───────────────────────────────────────
