@@ -4765,6 +4765,118 @@ def diagrams_generate_batch(vid):
     })
 
 
+def _gemini_image_call(parts_payload, api_key, model, tag):
+    """Shared Gemini image-gen REST call. parts_payload is a list of v1beta parts
+    (each {text:...} or {inline_data:{mime_type,data}}). Returns PNG bytes or None."""
+    from urllib.error import HTTPError, URLError
+    import base64
+    payload = {
+        "contents": [{"parts": parts_payload}],
+        "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
+    }
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{model}:generateContent?key={api_key}")
+    req = Request(url, data=json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "ignore")[:500]
+        except Exception:
+            pass
+        app.logger.warning(f"{tag}: gemini http {e.code}: {detail}")
+        return None
+    except URLError as e:
+        app.logger.warning(f"{tag}: gemini network: {e.reason}")
+        return None
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError):
+        app.logger.warning(f"{tag}: malformed gemini response: {str(data)[:300]}")
+        return None
+    for p in parts:
+        inline = p.get("inlineData") or p.get("inline_data")
+        if inline and inline.get("data"):
+            try:
+                return base64.b64decode(inline["data"])
+            except Exception as e:
+                app.logger.warning(f"{tag}: b64 decode failed: {e}")
+                return None
+    app.logger.warning(f"{tag}: no image part in response")
+    return None
+
+
+_DIAGRAM_PIXEL_PROMPT = (
+    "Transform this diagram into 16-bit SNES pixel art. Keep every box, arrow, "
+    "label, and the overall layout EXACTLY where they are — do not rearrange "
+    "anything. Render everything with chunky visible pixels, a flat limited "
+    "color palette, no anti-aliasing, no smoothing, no photorealism — pure "
+    "retro pixel art aesthetic.\n\n"
+    "Color palette (pixel art version of the dark-mode diagram colors): "
+    "muted blue fills (#1e3a5f) with light blue borders (#74b9ff), muted amber "
+    "(#5c4813 / #ffec99), muted green (#1e4d2b / #8ce99a), muted red (#5c1a1a "
+    "/ #ff8787), muted purple (#3b2d6b / #b197fc). Background is a flat dark "
+    "navy (#121212). Text is blocky white (#f8f9fa) pixel font. Shape borders "
+    "are wobbly 2-3px pixel outlines.\n\n"
+    "Sprinkle a few pixel sparkles scattered around the diagram for that "
+    "16-bit game-screenshot feel. Output 16:9 aspect ratio (1920x1080)."
+)
+
+
+@app.route("/api/diagrams/<diagram_id>/pixel-art", methods=["POST"])
+def diagram_pixel_art(diagram_id):
+    """Transform the diagram's current image into 16-bit pixel art via Nano Banana Pro
+    (`gemini-3-pro-image-preview`). Replaces image_path with the new pixel version."""
+    import base64
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "diagram not found"}), 404
+    img_rel = row["image_path"]
+    if not img_rel:
+        conn.close()
+        return jsonify({"error": "diagram has no source image — generate one first"}), 400
+    img_path = Path(app.root_path) / img_rel
+    if not img_path.exists():
+        conn.close()
+        return jsonify({"error": f"image file missing on disk: {img_rel}"}), 404
+    src_bytes = img_path.read_bytes()
+    parts_payload = [
+        {"inline_data": {
+            "mime_type": "image/png",
+            "data": base64.b64encode(src_bytes).decode("ascii"),
+        }},
+        {"text": _DIAGRAM_PIXEL_PROMPT},
+    ]
+    new_bytes = _gemini_image_call(parts_payload, api_key,
+                                   "gemini-3-pro-image-preview",
+                                   "diagrams.pixel")
+    if not new_bytes:
+        conn.close()
+        return jsonify({"error": "pixel-art generation failed (see server logs)"}), 502
+    vid = row["video_id"]
+    out_root = UPLOAD_DIR / "diagrams" / str(vid)
+    out_root.mkdir(parents=True, exist_ok=True)
+    out_path = out_root / f"{diagram_id}_pixel.png"
+    out_path.write_bytes(new_bytes)
+    rel = str(out_path.relative_to(Path(app.root_path)))
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute("UPDATE diagrams SET image_path=?, updated_at=? WHERE id=?",
+                 (rel, now, diagram_id))
+    conn.commit()
+    row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    conn.close()
+    return jsonify(_diagram_row_to_dict(row))
+
+
 @app.route("/api/videos/<int:vid>/editor-bootstrap", methods=["GET"])
 def editor_bootstrap(vid):
     """Single payload the OpenCut bridge page needs to seed a new project:
