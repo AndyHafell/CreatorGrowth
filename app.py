@@ -4632,9 +4632,14 @@ def _derive_diagram_briefs(vid):
     conn.close()
     if not items:
         return []
-    return [{"name": (t or "").strip() or f"Diagram {i+1}",
-             "brief": (t or "").strip()}
-            for i, t in enumerate(items)]
+    out = []
+    for i, t in enumerate(items):
+        title = (t or "").strip()
+        out.append({
+            "name": f"Step {i+1}: {title}" if title else f"Step {i+1}",
+            "brief": title,
+        })
+    return out
 
 
 def _gemini_generate_diagram_image(brief, api_key):
