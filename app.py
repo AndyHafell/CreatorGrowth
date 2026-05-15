@@ -227,6 +227,10 @@ def init_db():
         conn.execute("ALTER TABLE videos ADD COLUMN vocal_doc TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE videos ADD COLUMN voiceover_state TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # Chapter Studio: one list of chapter items per video, rendered to N MP4 clips.
     # One-shot migration: the cloned-from-diagrams schema had `boxes_json`. If that
@@ -3981,6 +3985,125 @@ def generate_vocal_doc(vid):
     conn.commit()
     conn.close()
     return jsonify({"vocal_doc": text})
+
+
+def _strip_say_markers(text):
+    """Drop === HOOK / STEP N / CLOSING === lines and collapse blank runs."""
+    out = []
+    for line in (text or "").split("\n"):
+        if re.match(r"^\s*=+\s*[A-Z0-9].*=+\s*$", line):
+            continue
+        out.append(line)
+    cleaned = "\n".join(out)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+@app.route("/api/videos/<int:vid>/say/voiceover", methods=["GET"])
+def get_say_voiceover(vid):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT voiceover_state FROM videos WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "video not found"}), 404
+    raw = row["voiceover_state"]
+    if not raw:
+        return jsonify({})
+    try:
+        return jsonify(json.loads(raw))
+    except Exception:
+        return jsonify({})
+
+
+@app.route("/api/videos/<int:vid>/say/synthesize", methods=["POST"])
+def synthesize_say(vid):
+    """Send (a subset of) the SAY doc to ElevenLabs, save MP3, return URL.
+
+    Body: {text?: str, max_words?: int (default 200), voice_id?: str, model_id?: str}
+    If text omitted, falls back to the stored vocal_doc with === markers stripped.
+    """
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+
+    api_key = os.environ.get("ELEVENLABS_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "ELEVENLABS_API_KEY not set on server"}), 500
+
+    body = request.get_json(force=True, silent=True) or {}
+    text = (body.get("text") or "").strip()
+    if not text:
+        conn = get_db()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT vocal_doc FROM videos WHERE id=?", (vid,)).fetchone()
+        conn.close()
+        text = _strip_say_markers((row["vocal_doc"] or "") if row else "")
+    else:
+        text = _strip_say_markers(text)
+    if not text:
+        return jsonify({"error": "no SAY text to synthesize"}), 400
+
+    max_words = int(body.get("max_words") or 200)
+    if max_words > 0:
+        words = text.split()
+        if len(words) > max_words:
+            text = " ".join(words[:max_words])
+
+    voice_id = (body.get("voice_id") or os.environ.get("ELEVENLABS_VOICE_ID")
+                or "21m00Tcm4TlvDq8ikWAM").strip()  # fallback: Rachel
+    model_id = (body.get("model_id") or os.environ.get("ELEVENLABS_MODEL_ID")
+                or "eleven_multilingual_v2").strip()
+
+    payload = {
+        "text": text,
+        "model_id": model_id,
+        "voice_settings": {
+            "stability": 0.45,
+            "similarity_boost": 0.75,
+            "style": 0.0,
+            "use_speaker_boost": True,
+        },
+    }
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    req = Request(url, data=json.dumps(payload).encode("utf-8"), method="POST",
+                  headers={
+                      "xi-api-key": api_key,
+                      "Content-Type": "application/json",
+                      "Accept": "audio/mpeg",
+                  })
+    try:
+        with urlopen(req, timeout=180) as resp:
+            audio_bytes = resp.read()
+    except HTTPError as e:
+        detail = e.read().decode("utf-8", "ignore")[:600]
+        return jsonify({"error": f"elevenlabs http {e.code}", "detail": detail}), 502
+    except URLError as e:
+        return jsonify({"error": f"elevenlabs network: {e.reason}"}), 502
+
+    out_dir = Path(app.root_path) / "static" / "uploads" / "voiceover"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    job_id = uuid.uuid4().hex[:10]
+    out_path = out_dir / f"v{vid}_{job_id}.mp3"
+    with out_path.open("wb") as f:
+        f.write(audio_bytes)
+    rel = str(out_path.relative_to(Path(app.root_path)))
+    audio_url = "/" + rel
+
+    state = {
+        "url": audio_url,
+        "voice_id": voice_id,
+        "model_id": model_id,
+        "words": len(text.split()),
+        "chars": len(text),
+        "bytes": len(audio_bytes),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    conn = get_db()
+    conn.execute("UPDATE videos SET voiceover_state=? WHERE id=?",
+                 (json.dumps(state), vid))
+    conn.commit()
+    conn.close()
+    return jsonify(state)
 
 
 # ── Editor (CapCut-style timeline) ───────────────────────────────────────

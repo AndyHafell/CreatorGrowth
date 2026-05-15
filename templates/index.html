@@ -2170,12 +2170,14 @@
             <!-- Script panel (production source of truth) -->
             <div id="editorScriptCol" style="width:420px; background:#0d0d1a; display:flex; flex-direction:column; position:relative; flex-shrink:0; border-right:1px solid #1f1f30;">
                 <div style="display:flex; align-items:center; padding:14px 14px 8px; border-bottom:1px solid #15151f; gap:8px;">
-                    <!-- View toggle: Content / Say -->
+                    <!-- View toggle: Content / Say / Audio -->
                     <div style="display:inline-flex; border:1px solid #2a2a4a; border-radius:4px; overflow:hidden;">
                         <button id="editorScriptTabContent" onclick="setEditorScriptMode('content')"
                                 style="background:#1c1c2e; color:#c8c8d0; border:none; padding:4px 10px; font-size:10px; letter-spacing:1.5px; cursor:pointer;">CONTENT</button>
                         <button id="editorScriptTabVocal" onclick="setEditorScriptMode('vocal')"
                                 style="background:none; color:#666; border:none; border-left:1px solid #2a2a4a; padding:4px 10px; font-size:10px; letter-spacing:1.5px; cursor:pointer;">SAY</button>
+                        <button id="editorScriptTabAudio" onclick="setEditorScriptMode('audio')"
+                                style="background:none; color:#666; border:none; border-left:1px solid #2a2a4a; padding:4px 10px; font-size:10px; letter-spacing:1.5px; cursor:pointer;">AUDIO</button>
                     </div>
                     <button id="editorVocalGenBtn" onclick="generateVocalDoc()"
                             title="Extract ElevenLabs-ready narration text (every word Andy says, no codes, no markdown)"
@@ -2198,6 +2200,22 @@
                      oninput="editorVocalChanged()"
                      placeholder="Click → SAY above to extract every word you'll narrate. Output is plain text ready to paste into ElevenLabs."
                      style="display:none; flex:1; width:100%; box-sizing:border-box; padding:16px 22px 24px 18px; background:#0d0d1a; color:#d0d0d8; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; font-size:14px; line-height:1.75; border:none; outline:none; resize:none;"></textarea>
+                <!-- AUDIO mode: ElevenLabs synthesis player -->
+                <div id="editorAudioPanel" style="display:none; flex:1; overflow-y:auto; padding:18px 20px;">
+                    <div style="color:#888; font-size:11px; line-height:1.6; margin-bottom:14px;">
+                        Synthesizes from the SAY tab via ElevenLabs. Markers (=== …===) are stripped automatically.
+                    </div>
+                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap;">
+                        <label style="color:#666; font-size:11px; letter-spacing:0.5px;">WORDS</label>
+                        <input id="editorAudioMaxWords" type="number" min="20" max="5000" value="200"
+                               style="width:80px; background:#15151f; color:#ddd; border:1px solid #2a2a4a; border-radius:4px; padding:4px 8px; font-size:12px;">
+                        <button id="editorAudioSynthBtn" onclick="synthesizeSayAudio()"
+                                style="background:#7ad17a; color:#000; border:none; padding:6px 14px; font-size:11px; letter-spacing:1px; font-weight:700; border-radius:4px; cursor:pointer;">SYNTHESIZE</button>
+                        <span id="editorAudioStatus" style="color:#666; font-size:11px;"></span>
+                    </div>
+                    <audio id="editorAudioPlayer" controls style="display:none; width:100%; margin-top:6px;"></audio>
+                    <div id="editorAudioMeta" style="color:#555; font-size:10.5px; line-height:1.6; margin-top:10px;"></div>
+                </div>
                 <!-- Drag handle to resize column -->
                 <div id="editorScriptResize"
                      onmousedown="editorScriptStartResize(event)"
@@ -7183,9 +7201,10 @@
         document.getElementById('editorStudio').style.display = 'none';
     }
 
-    var editorScriptMode = 'content'; // 'content' | 'vocal'
+    var editorScriptMode = 'content'; // 'content' | 'vocal' | 'audio'
     var editorVocalDoc = '';
     var _editorVocalSaveTimer = null;
+    var editorAudioState = null;
 
     function loadEditorScript() {
         var panel = document.getElementById('editorScriptPanel');
@@ -7205,44 +7224,113 @@
             panel.dataset.empty = '';
         }
         refreshEditorScriptStats();
-        // Fetch any stored vocal doc for this video
+        // Fetch any stored vocal doc + voiceover state for this video
         editorVocalDoc = '';
+        editorAudioState = null;
         if (editorVideoId) {
-            fetch('/api/videos/' + editorVideoId + '/vocal-doc')
-                .then(function(r){ return r.json(); })
-                .then(function(d) {
-                    editorVocalDoc = (d && d.vocal_doc) || '';
-                    var ta = document.getElementById('editorVocalPanel');
-                    if (ta) ta.value = editorVocalDoc;
-                    // Restore last-used mode for this video
-                    var savedMode = localStorage.getItem('editorScriptMode_' + editorVideoId);
-                    if (savedMode === 'vocal' && editorVocalDoc) setEditorScriptMode('vocal');
-                    else setEditorScriptMode('content');
-                })
-                .catch(function(){ setEditorScriptMode('content'); });
+            Promise.all([
+                fetch('/api/videos/' + editorVideoId + '/vocal-doc').then(function(r){return r.json();}),
+                fetch('/api/videos/' + editorVideoId + '/say/voiceover').then(function(r){return r.json();})
+            ]).then(function(arr) {
+                editorVocalDoc = (arr[0] && arr[0].vocal_doc) || '';
+                var ta = document.getElementById('editorVocalPanel');
+                if (ta) ta.value = editorVocalDoc;
+                editorAudioState = (arr[1] && arr[1].url) ? arr[1] : null;
+                renderAudioPanel();
+                // Restore last-used mode for this video
+                var savedMode = localStorage.getItem('editorScriptMode_' + editorVideoId);
+                if (savedMode === 'audio' && editorAudioState) setEditorScriptMode('audio');
+                else if (savedMode === 'vocal' && editorVocalDoc) setEditorScriptMode('vocal');
+                else setEditorScriptMode('content');
+            }).catch(function(){ setEditorScriptMode('content'); });
+        }
+    }
+
+    function renderAudioPanel() {
+        var player = document.getElementById('editorAudioPlayer');
+        var meta = document.getElementById('editorAudioMeta');
+        if (!player || !meta) return;
+        if (editorAudioState && editorAudioState.url) {
+            player.src = editorAudioState.url;
+            player.style.display = 'block';
+            var when = editorAudioState.generated_at || '';
+            try { when = new Date(when).toLocaleString(); } catch(e) {}
+            var kb = editorAudioState.bytes ? Math.round(editorAudioState.bytes / 1024) + ' KB' : '';
+            meta.innerHTML = (editorAudioState.words || 0) + ' words &middot; ' + kb +
+                             ' &middot; ' + (editorAudioState.model_id || '') +
+                             ' &middot; voice ' + (editorAudioState.voice_id || '').slice(0,8) +
+                             '<br>generated ' + when;
+        } else {
+            player.style.display = 'none'; player.removeAttribute('src');
+            meta.innerHTML = '<span style="color:#555;">No voiceover yet. Set a word budget and click SYNTHESIZE.</span>';
         }
     }
 
     function setEditorScriptMode(mode) {
-        editorScriptMode = (mode === 'vocal') ? 'vocal' : 'content';
-        var cBtn = document.getElementById('editorScriptTabContent');
-        var vBtn = document.getElementById('editorScriptTabVocal');
-        var cPanel = document.getElementById('editorScriptPanel');
-        var vPanel = document.getElementById('editorVocalPanel');
-        if (!cBtn || !vBtn || !cPanel || !vPanel) return;
-        if (editorScriptMode === 'vocal') {
-            cBtn.style.background = 'none'; cBtn.style.color = '#666';
-            vBtn.style.background = '#1c1c2e'; vBtn.style.color = '#c8c8d0';
-            cPanel.style.display = 'none';
-            vPanel.style.display = 'block';
-        } else {
-            cBtn.style.background = '#1c1c2e'; cBtn.style.color = '#c8c8d0';
-            vBtn.style.background = 'none'; vBtn.style.color = '#666';
-            cPanel.style.display = 'block';
-            vPanel.style.display = 'none';
-        }
+        if (mode !== 'vocal' && mode !== 'audio') mode = 'content';
+        editorScriptMode = mode;
+        var tabs = {
+            content: document.getElementById('editorScriptTabContent'),
+            vocal:   document.getElementById('editorScriptTabVocal'),
+            audio:   document.getElementById('editorScriptTabAudio'),
+        };
+        var panels = {
+            content: document.getElementById('editorScriptPanel'),
+            vocal:   document.getElementById('editorVocalPanel'),
+            audio:   document.getElementById('editorAudioPanel'),
+        };
+        Object.keys(tabs).forEach(function(k) {
+            var t = tabs[k], p = panels[k];
+            if (!t || !p) return;
+            if (k === mode) {
+                t.style.background = '#1c1c2e'; t.style.color = '#c8c8d0';
+                p.style.display = (k === 'content' || k === 'audio') ? 'block' : 'block';
+            } else {
+                t.style.background = 'none'; t.style.color = '#666';
+                p.style.display = 'none';
+            }
+        });
         if (editorVideoId) localStorage.setItem('editorScriptMode_' + editorVideoId, editorScriptMode);
+        if (mode === 'audio') renderAudioPanel();
         refreshEditorScriptStats();
+    }
+
+    function synthesizeSayAudio() {
+        if (!editorVideoId) return;
+        var ta = document.getElementById('editorVocalPanel');
+        var rawText = ta ? (ta.value || '') : '';
+        if (!rawText.trim()) { alert('Generate the SAY doc first.'); return; }
+        var maxWordsEl = document.getElementById('editorAudioMaxWords');
+        var maxWords = parseInt((maxWordsEl && maxWordsEl.value) || '200', 10);
+        if (!maxWords || maxWords < 5) maxWords = 200;
+
+        var btn = document.getElementById('editorAudioSynthBtn');
+        var status = document.getElementById('editorAudioStatus');
+        var orig = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = 'SYNTHESIZING…'; btn.style.opacity = '0.6'; }
+        if (status) { status.textContent = 'calling ElevenLabs…'; status.style.color = '#f5b942'; }
+
+        fetch('/api/videos/' + editorVideoId + '/say/synthesize', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ text: rawText, max_words: maxWords })
+        }).then(function(r){ return r.json().then(function(j){ return {ok:r.ok, body:j}; }); })
+          .then(function(res) {
+            if (!res.ok) {
+                if (status) { status.textContent = 'failed'; status.style.color = '#e07070'; }
+                alert('Synthesize failed: ' + (res.body.error || 'unknown') +
+                      (res.body.detail ? '\n' + res.body.detail : ''));
+                return;
+            }
+            editorAudioState = res.body;
+            renderAudioPanel();
+            if (status) { status.textContent = 'ready · ' + (res.body.bytes ? Math.round(res.body.bytes/1024)+'KB' : ''); status.style.color = '#4caf50'; }
+        }).catch(function(err) {
+            if (status) { status.textContent = 'error'; status.style.color = '#e07070'; }
+            alert('Synthesize error: ' + err);
+        }).finally(function() {
+            if (btn) { btn.disabled = false; btn.textContent = orig; btn.style.opacity = '1'; }
+        });
     }
 
     function generateVocalDoc() {
