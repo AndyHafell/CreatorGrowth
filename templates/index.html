@@ -2203,16 +2203,18 @@
                 <!-- AUDIO mode: ElevenLabs synthesis player + generation stack -->
                 <div id="editorAudioPanel" style="display:none; flex:1; overflow-y:auto; padding:18px 20px;">
                     <div style="color:#888; font-size:11px; line-height:1.6; margin-bottom:14px;">
-                        Synthesizes from the SAY tab via ElevenLabs. Markers are stripped. Each click stacks a new generation below.
+                        Synthesizes from the SAY tab via ElevenLabs. Markers stripped. Each click stacks a new generation below.
                     </div>
-                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap;">
+                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px; flex-wrap:wrap;">
                         <label style="color:#666; font-size:11px; letter-spacing:0.5px;">WORDS</label>
                         <input id="editorAudioMaxWords" type="number" min="20" max="5000" value="200"
+                               oninput="updateAudioCostEstimate()"
                                style="width:80px; background:#15151f; color:#ddd; border:1px solid #2a2a4a; border-radius:4px; padding:4px 8px; font-size:12px;">
                         <button id="editorAudioSynthBtn" onclick="synthesizeSayAudio()"
                                 style="background:#7ad17a; color:#000; border:none; padding:6px 14px; font-size:11px; letter-spacing:1px; font-weight:700; border-radius:4px; cursor:pointer;">SYNTHESIZE</button>
                         <span id="editorAudioStatus" style="color:#666; font-size:11px;"></span>
                     </div>
+                    <div id="editorAudioCostEstimate" style="color:#666; font-size:10.5px; line-height:1.6; margin-bottom:14px;"></div>
                     <div id="editorAudioGenList"></div>
                 </div>
                 <!-- Drag handle to resize column -->
@@ -7308,6 +7310,33 @@
         });
     }
 
+    function updateAudioCostEstimate() {
+        var out = document.getElementById('editorAudioCostEstimate');
+        if (!out) return;
+        var maxWordsEl = document.getElementById('editorAudioMaxWords');
+        var maxWords = parseInt((maxWordsEl && maxWordsEl.value) || '0', 10) || 0;
+        // Take the first N words of the actual cleaned SAY text so the char count reflects reality
+        var sayTxt = (editorVocalDoc || '').split('\n').filter(function(line) {
+            return !/^\s*=+\s*[A-Z0-9].*=+\s*$/.test(line);
+        }).join('\n').trim();
+        var allWords = sayTxt ? sayTxt.split(/\s+/) : [];
+        var slice = (maxWords > 0 && maxWords < allWords.length) ? allWords.slice(0, maxWords) : allWords;
+        var text = slice.join(' ');
+        var chars = text.length;
+        if (!chars) {
+            out.innerHTML = '<span style="color:#444;">Generate SAY first to see character usage.</span>';
+            return;
+        }
+        // Plan-quota rough cost (Creator $22 / 100k chars, Pro $99 / 500k chars)
+        var pctCreator = (chars / 100000 * 100).toFixed(2);
+        var pctPro = (chars / 500000 * 100).toFixed(2);
+        var overage = (chars / 1000 * 0.15).toFixed(2);
+        out.innerHTML =
+            '≈ <span style="color:#c8c8d0;">' + chars.toLocaleString() + ' chars</span> per click · ' +
+            pctCreator + '% of Creator quota · ' + pctPro + '% of Pro quota · ' +
+            '<span style="color:#555;">~$' + overage + ' if pay-as-you-go</span>';
+    }
+
     function deleteAudioGen(idx) {
         if (!editorVideoId) return;
         fetch('/api/videos/' + editorVideoId + '/say/voiceover/' + idx, { method: 'DELETE' })
@@ -7343,7 +7372,7 @@
             }
         });
         if (editorVideoId) localStorage.setItem('editorScriptMode_' + editorVideoId, editorScriptMode);
-        if (mode === 'audio') renderAudioPanel();
+        if (mode === 'audio') { renderAudioPanel(); updateAudioCostEstimate(); }
         refreshEditorScriptStats();
     }
 
@@ -7466,6 +7495,7 @@
         if (!ta || !editorVideoId) return;
         editorVocalDoc = ta.value;
         refreshEditorScriptStats();
+        updateAudioCostEstimate();
         var badge = document.getElementById('editorScriptSaveBadge');
         if (badge) {
             badge.textContent = 'editing…';
@@ -7510,7 +7540,9 @@
         }
         var words = (src.trim().match(/\S+/g) || []).length;
         if (!words) { status.textContent = 'empty'; return; }
-        var mins = words / 150;
+        // Calibrated from observed ElevenLabs throughput on Andy's cloned voice:
+        // 200 words → 1:12 audio = 167 wpm. Use 165 wpm for the estimate.
+        var mins = words / 165;
         var dur = mins < 1 ? (mins * 60).toFixed(0) + 's' : mins.toFixed(1) + 'm';
         status.textContent = words + ' ' + sourceLabel + ' words · ~' + dur;
     }
