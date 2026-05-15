@@ -4479,30 +4479,41 @@ def asset_proxy():
     return Response(stream_with_context(gen()), headers=headers)
 
 
-# ── Diagram batch generation (Nano Banana 2 / Gemini Image) ──────────────
+# ── Diagram batch generation (Gemini Nano Banana / Image gen) ────────────
+# `Generate all` produces 16-bit pixel art illustrations directly from each
+# step title — channel signature style. The per-diagram /pixel-art endpoint
+# below is a separate transform for already-existing images.
 
-_DIAGRAM_DARK_PREFIX = (
-    "CRITICAL: The background color MUST be EXACTLY #121212 -- not black (#000000), "
-    "not near-black, not dark gray, not #1a1a1a, not #0d0d0d. The EXACT hex value "
-    "#121212. This is non-negotiable.\n\n"
-    "Excalidraw-style sketch on a completely plain dark background -- EXACTLY #121212, "
-    "no texture, no paper grain, no noise. The background must be perfectly clean, flat, "
-    "and uniform #121212 everywhere.\n\n"
-    "Text and linework are the hand-drawn elements: all text is messy but legible "
-    "hand-scrawled handwriting in white (#f8f9fa) with uneven letter sizes and slight "
-    "tilts -- like someone wrote it fast with a thick white felt-tip marker on a dark "
-    "surface. Lines and shape outlines are VERY wobbly and imperfect.\n\n"
-    "Shape fills are SOLID and FLAT -- clean, even, uniform muted color inside each "
-    "shape. Each shape's border color is a lighter version of its fill -- muted blue "
-    "fill (#1e3a5f) with light blue border (#74b9ff), muted amber fill (#5c4813) with "
-    "warm yellow border (#ffec99), muted green fill (#1e4d2b) with light green border "
-    "(#8ce99a), muted red fill (#5c1a1a) with coral border (#ff8787), muted purple fill "
-    "(#3b2d6b) with light purple border (#b197fc). Borders are 2-3px thick with wobbly "
-    "hand-drawn outlines.\n\n"
-    "Arrows are hand-drawn with visible wobble. Arrows are light gray (#dee2e6) or "
-    "match the border color of shapes they connect.\n\n"
-    "All text is white (#f8f9fa). Background is ALWAYS exactly #121212. Output must be "
-    "16:9 aspect ratio (1920x1080)."
+_DIAGRAM_PIXEL_GEN_PROMPT_TPL = (
+    "16-bit SNES pixel art illustration that visually represents this concept:\n"
+    "\"{concept}\"\n\n"
+    "Style: chunky visible pixels, flat limited color palette, NO anti-aliasing, "
+    "NO smoothing, NO photorealism — pure retro pixel art game-screenshot aesthetic. "
+    "Think Final Fantasy / Chrono Trigger / Earthbound visual language.\n\n"
+    "Layout (locked):\n"
+    "- Background: dark navy (#121212) with a handful of small pixel sparkles "
+    "scattered across the canvas\n"
+    "- Title at top of frame: the concept text \"{concept}\" rendered in BOLD "
+    "16-bit pixel art font, vertical gradient from bright yellow (#FFD700) at "
+    "top to deep gold (#E8A800) at bottom, with a thick dark navy pixel-block "
+    "shadow behind it. Max 2 lines, large enough to read at thumbnail size.\n"
+    "- Center: pixel art ILLUSTRATION that conveys the idea — characters "
+    "(simple stick figures or chunky pixel sprites), objects (computers, "
+    "terminals, cloud server, keys, gears, lightning bolts, brain icons), "
+    "arrows or flow lines. Show the IDEA visually, do NOT just put text on "
+    "a background. The illustration should fill the middle ~60% of the frame.\n"
+    "- 1–3 short labels (max 3 words each) in white (#f8f9fa) blocky pixel "
+    "font calling out the key parts of the illustration. Skip labels if the "
+    "illustration is clear without them.\n\n"
+    "Accent color palette for illustration elements: gold (#FFD700, #E8A800), "
+    "light blue (#74b9ff), coral (#ff8787), light green (#8ce99a), light "
+    "purple (#b197fc), warm yellow (#ffec99). All text is white (#f8f9fa). "
+    "Background ALWAYS exactly #121212.\n\n"
+    "Do NOT include: photorealism, anti-aliasing, smooth lines, soft gradients "
+    "(except inside the title text), drop shadows other than the title's pixel "
+    "shadow, corporate clip art, stock photography, hand-drawn Excalidraw "
+    "wobble, anything that doesn't look like a 16-bit game screenshot.\n\n"
+    "Output must be 16:9 aspect ratio (1920x1080)."
 )
 
 _DIAGRAM_GEMINI_MODEL = "gemini-3.1-flash-image-preview"
@@ -4643,47 +4654,15 @@ def _derive_diagram_briefs(vid):
 
 
 def _gemini_generate_diagram_image(brief, api_key):
-    """One call to Gemini Image Generation. Returns PNG bytes or None on failure."""
-    from urllib.error import HTTPError, URLError
-    import base64
-    full_prompt = f"{_DIAGRAM_DARK_PREFIX}\n\n---\nConcept: {brief}\n\nCreate a clean Excalidraw-style concept diagram illustrating this idea. Keep it simple — 3 to 5 boxes with short labels (max 3 words each), arrows showing flow if applicable. The concept title should appear at the top in large hand-drawn text."
-    payload = {
-        "contents": [{"parts": [{"text": full_prompt}]}],
-        "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
-    }
-    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{_DIAGRAM_GEMINI_MODEL}:generateContent?key={api_key}")
-    req = Request(url, data=json.dumps(payload).encode("utf-8"),
-                  headers={"Content-Type": "application/json"}, method="POST")
-    try:
-        with urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except HTTPError as e:
-        detail = ""
-        try:
-            detail = e.read().decode("utf-8", "ignore")[:500]
-        except Exception:
-            pass
-        app.logger.warning(f"diagrams.gen: gemini http {e.code}: {detail}")
-        return None
-    except URLError as e:
-        app.logger.warning(f"diagrams.gen: gemini network: {e.reason}")
-        return None
-    try:
-        parts = data["candidates"][0]["content"]["parts"]
-    except (KeyError, IndexError, TypeError):
-        app.logger.warning(f"diagrams.gen: malformed gemini response: {str(data)[:300]}")
-        return None
-    for p in parts:
-        inline = p.get("inlineData") or p.get("inline_data")
-        if inline and inline.get("data"):
-            try:
-                return base64.b64decode(inline["data"])
-            except Exception as e:
-                app.logger.warning(f"diagrams.gen: b64 decode failed: {e}")
-                return None
-    app.logger.warning(f"diagrams.gen: no image part in response (only text/empty)")
-    return None
+    """One call to Gemini Image Generation — pixel art per step title.
+    Returns PNG bytes or None on failure."""
+    full_prompt = _DIAGRAM_PIXEL_GEN_PROMPT_TPL.format(concept=brief)
+    return _gemini_image_call(
+        [{"text": full_prompt}],
+        api_key,
+        _DIAGRAM_GEMINI_MODEL,
+        "diagrams.gen",
+    )
 
 
 @app.route("/api/videos/<int:vid>/diagrams/generate-batch", methods=["POST"])
