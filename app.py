@@ -4485,34 +4485,71 @@ def asset_proxy():
 # below is a separate transform for already-existing images.
 
 _DIAGRAM_PIXEL_GEN_PROMPT_TPL = (
-    "16-bit SNES pixel art illustration that visually represents this concept:\n"
-    "\"{concept}\"\n\n"
-    "Style: chunky visible pixels, flat limited color palette, NO anti-aliasing, "
-    "NO smoothing, NO photorealism — pure retro pixel art game-screenshot aesthetic. "
-    "Think Final Fantasy / Chrono Trigger / Earthbound visual language.\n\n"
-    "Layout (locked):\n"
-    "- Background: dark navy (#121212) with a handful of small pixel sparkles "
-    "scattered across the canvas\n"
-    "- Title at top of frame: the concept text \"{concept}\" rendered in BOLD "
-    "16-bit pixel art font, vertical gradient from bright yellow (#FFD700) at "
-    "top to deep gold (#E8A800) at bottom, with a thick dark navy pixel-block "
-    "shadow behind it. Max 2 lines, large enough to read at thumbnail size.\n"
-    "- Center: pixel art ILLUSTRATION that conveys the idea — characters "
-    "(simple stick figures or chunky pixel sprites), objects (computers, "
-    "terminals, cloud server, keys, gears, lightning bolts, brain icons), "
-    "arrows or flow lines. Show the IDEA visually, do NOT just put text on "
-    "a background. The illustration should fill the middle ~60% of the frame.\n"
-    "- 1–3 short labels (max 3 words each) in white (#f8f9fa) blocky pixel "
-    "font calling out the key parts of the illustration. Skip labels if the "
-    "illustration is clear without them.\n\n"
-    "Accent color palette for illustration elements: gold (#FFD700, #E8A800), "
-    "light blue (#74b9ff), coral (#ff8787), light green (#8ce99a), light "
-    "purple (#b197fc), warm yellow (#ffec99). All text is white (#f8f9fa). "
-    "Background ALWAYS exactly #121212.\n\n"
-    "Do NOT include: photorealism, anti-aliasing, smooth lines, soft gradients "
-    "(except inside the title text), drop shadows other than the title's pixel "
-    "shadow, corporate clip art, stock photography, hand-drawn Excalidraw "
-    "wobble, anything that doesn't look like a 16-bit game screenshot.\n\n"
+    "Generate a polished 16-bit SNES pixel art TUTORIAL SLIDE explaining this "
+    "step from a YouTube video.\n\n"
+    "STEP TITLE: \"{concept}\"\n\n"
+    "STEP CONTENT (extract 3–6 short punchy bullet points from this body — keep "
+    "each bullet to 4–8 words, render them as readable pixel-font text inside "
+    "the slide's content panels):\n"
+    "{body}\n\n"
+    "STYLE:\n"
+    "16-bit SNES pixel art aesthetic — chunky visible pixels, flat limited "
+    "color palette, NO anti-aliasing, NO smoothing, NO photorealism. Think "
+    "Final Fantasy / Chrono Trigger / Earthbound visual language. This is a "
+    "polished tutorial slide, not just an illustration.\n\n"
+    "LOCKED LAYOUT (mimic the AI Andy channel's slide signature):\n\n"
+    "1. TOP TITLE BAR (top ~18% of frame, full width):\n"
+    "   - The step title in BOLD UPPERCASE pixel-art letters, large, "
+    "centered or left-aligned\n"
+    "   - Vertical color gradient inside the letters: bright yellow "
+    "(#FFD700) at top → deep gold (#E8A800) at bottom\n"
+    "   - Thick dark navy pixel-block shadow behind the letters for depth\n"
+    "   - Optional small white pixel-font subtitle line directly below the "
+    "title summarizing the angle\n\n"
+    "2. MIDDLE CONTENT (middle ~65% of frame): TWO bordered panels side by "
+    "side, OR a single wide panel + an icon zone:\n"
+    "   - Each panel has a thick gold (#FFD700) pixel-art border, 3–4px, "
+    "with slightly wobbly hand-drawn corners\n"
+    "   - Top of each panel: a small uppercase header in green (#8ce99a) "
+    "pixel font (3–5 words — e.g. \"THE PROBLEM\", \"HOW IT WORKS\", "
+    "\"WHAT YOU GET\", \"WHY IT MATTERS\")\n"
+    "   - Inside each panel: a vertical BULLET LIST of 3–5 bullets. Each "
+    "bullet starts with a small green pixel checkmark sprite (✓ shape in "
+    "#8ce99a) followed by a short white (#f8f9fa) blocky pixel-font phrase "
+    "(4–8 words pulled from the STEP CONTENT above)\n"
+    "   - At least ONE panel should include a pixel art icon/character "
+    "illustration alongside the bullets — a computer, a robot, a key, a "
+    "gear, a cloud server, a brain, a chart, a stick-figure creator, a "
+    "logo silhouette — whatever fits the step\n"
+    "   - Use the bullet content from STEP CONTENT verbatim where possible "
+    "— viewers should be able to read and learn from the slide\n\n"
+    "3. BOTTOM SUMMARY (bottom ~12% of frame):\n"
+    "   - A single bold takeaway line in gold/green pixel font summarizing "
+    "the step's key promise\n"
+    "   - Optional smaller white pixel tagline beneath\n\n"
+    "BACKGROUND:\n"
+    "Dark navy (#121212) with a handful of small pixel sparkles scattered "
+    "around the panels (white + light blue dots, like distant stars).\n\n"
+    "COLOR PALETTE (use throughout):\n"
+    "- Title gold gradient: #FFD700 → #E8A800\n"
+    "- Panel borders: #FFD700\n"
+    "- Panel sub-headers: #8ce99a (green)\n"
+    "- Checkmark sprites: #8ce99a (green) — or #ff8787 (coral) as X marks "
+    "for negative bullets\n"
+    "- Body text: #f8f9fa (white)\n"
+    "- Accent icons: #74b9ff (blue), #ff8787 (coral), #b197fc (purple), "
+    "#ffec99 (warm yellow)\n"
+    "- Background: #121212 (dark navy) — exact value, no variation\n\n"
+    "DO NOT INCLUDE:\n"
+    "- Photorealism, anti-aliasing, smooth lines, soft gradients (except "
+    "inside the title letters)\n"
+    "- Hand-drawn Excalidraw wobble (this is pixel art, not whiteboard "
+    "sketches)\n"
+    "- Corporate clip art, stock photography\n"
+    "- Empty/decorative panels — every panel must have real readable "
+    "bullet text from the step content\n"
+    "- Just an isolated illustration with one label — this is a polished "
+    "slide with bullets and panels\n\n"
     "Output must be 16:9 aspect ratio (1920x1080)."
 )
 
@@ -4568,6 +4605,53 @@ def _extract_steps_from_text(text):
         seen.add(k)
         items.append(t)
     return items
+
+
+# Header patterns that also capture body (everything until the next header).
+# Tried in order; first one that finds 2+ matches wins.
+_STEP_SECTION_PATTERNS = [
+    # show-doc / "STEP 1 — TITLE" bare uppercase
+    re.compile(
+        r"^[ \t]*STEP\s+\d+\s*[-–—:]\s*(?P<title>.+?)[ \t]*\n(?P<body>.*?)(?=^[ \t]*STEP\s+\d+\s*[-–—:]|\Z)",
+        re.MULTILINE | re.DOTALL,
+    ),
+    # content-doc "### Step 1 - Title" / "## Step 1 — Title"
+    re.compile(
+        r"^[ \t]*#{2,4}\s+Step\s+\d+\s*[-–—:]\s*(?P<title>.+?)[ \t]*\n(?P<body>.*?)(?=^[ \t]*#{2,4}\s+Step\s+\d+|\Z)",
+        re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    ),
+    # bullet-doc escaped markdown: `\### **Step 1 — Title**`
+    re.compile(
+        r"^[ \t]*\\?#{2,4}\s+\*+Step\s+\d+\s*[-–—:]\s*(?P<title>.+?)\*+[ \t]*\n(?P<body>.*?)(?=^[ \t]*\\?#{2,4}\s+\*+Step\s+\d+|\Z)",
+        re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    ),
+]
+
+
+def _extract_step_sections_from_text(text):
+    """Return [(title, body)] — body is the prose between this step header and the next.
+    Body is capped at ~1800 chars so we keep image prompts focused."""
+    if not text:
+        return []
+    best = []
+    for pat in _STEP_SECTION_PATTERNS:
+        found = []
+        for m in pat.finditer(text):
+            title = (m.group("title") or "").strip().rstrip("*").strip()
+            body = (m.group("body") or "").strip()
+            if title:
+                found.append((title, body[:1800]))
+        if len(found) > len(best):
+            best = found
+    # Dedupe by title (case-insensitive)
+    out, seen = [], set()
+    for title, body in best:
+        k = title.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append((title, body))
+    return out
 
 
 def _briefs_diagnostic(vid):
@@ -4643,20 +4727,47 @@ def _derive_diagram_briefs(vid):
     conn.close()
     if not items:
         return []
+    # Re-fetch fields here too (the earlier scope only triggers on the fallback path).
+    # We attach a body to each title by re-extracting sections from whichever doc has them.
+    conn2 = get_db()
+    conn2.row_factory = sqlite3.Row
+    drow2 = conn2.execute(
+        "SELECT custom_fields FROM video_details WHERE video_id=?", (vid,)
+    ).fetchone()
+    conn2.close()
+    try:
+        fields2 = json.loads(drow2["custom_fields"]) if drow2 and drow2["custom_fields"] else []
+    except (TypeError, ValueError):
+        fields2 = []
+    sections_by_title = {}
+    for key in ("Content Doc", "Bullet Doc"):
+        doc_text = _read_doc_field(fields2, key).get("text", "")
+        if not doc_text:
+            continue
+        for (title, body) in _extract_step_sections_from_text(doc_text):
+            sections_by_title.setdefault(title.lower(), body)
     out = []
     for i, t in enumerate(items):
         title = (t or "").strip()
+        body = sections_by_title.get(title.lower(), "")
         out.append({
             "name": f"Step {i+1}: {title}" if title else f"Step {i+1}",
             "brief": title,
+            "body": body,
         })
     return out
 
 
-def _gemini_generate_diagram_image(brief, api_key):
-    """One call to Gemini Image Generation — pixel art per step title.
+def _gemini_generate_diagram_image(brief_obj, api_key):
+    """One call to Gemini Image Generation — pixel art slide per step.
+    `brief_obj` is {name, brief (title), body (rich content)}.
     Returns PNG bytes or None on failure."""
-    full_prompt = _DIAGRAM_PIXEL_GEN_PROMPT_TPL.format(concept=brief)
+    title = brief_obj.get("brief") or brief_obj.get("name") or ""
+    body = (brief_obj.get("body") or "").strip()
+    if not body:
+        body = ("(no extra content — render with just the title and a generic "
+                "pixel art illustration that fits the title)")
+    full_prompt = _DIAGRAM_PIXEL_GEN_PROMPT_TPL.format(concept=title, body=body)
     return _gemini_image_call(
         [{"text": full_prompt}],
         api_key,
@@ -4690,12 +4801,43 @@ def diagrams_generate_batch(vid):
     if len(briefs) > 12:
         briefs = briefs[:12]
 
+    # Replace prior auto-generated diagrams for this video (anything named
+    # "Step N: ...") so we don't accumulate stale duplicates each click.
+    # Manually-named diagrams (Diagram 1, etc.) are left untouched.
+    replace = body.get("replace", True)
+    deleted_count = 0
+    if replace:
+        conn = get_db()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, image_path FROM diagrams WHERE video_id=? AND name LIKE 'Step %:%'",
+            (vid,),
+        ).fetchall()
+        for r in rows:
+            # Best-effort: remove on-disk file too
+            try:
+                ip = r["image_path"]
+                if ip:
+                    fp = Path(app.root_path) / ip
+                    if fp.exists():
+                        fp.unlink()
+            except Exception:
+                pass
+        if rows:
+            conn.executemany(
+                "DELETE FROM diagrams WHERE id=?",
+                [(r["id"],) for r in rows],
+            )
+            conn.commit()
+            deleted_count = len(rows)
+        conn.close()
+
     from concurrent.futures import ThreadPoolExecutor, as_completed
     out_root = UPLOAD_DIR / "diagrams" / str(vid)
     out_root.mkdir(parents=True, exist_ok=True)
 
     def _worker(idx, b):
-        png = _gemini_generate_diagram_image(b["brief"], api_key)
+        png = _gemini_generate_diagram_image(b, api_key)
         if not png:
             return idx, b, None, None
         diagram_id = "d" + uuid.uuid4().hex[:14]
@@ -4746,6 +4888,7 @@ def diagrams_generate_batch(vid):
         "created": created,
         "requested": len(briefs),
         "failed": failures,
+        "replaced": deleted_count,
     })
 
 
