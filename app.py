@@ -3857,13 +3857,39 @@ STRIP (do not include any of this):
 - Metadata blocks (CHAPTERS, CODES, INTRO labels)
 
 OUTPUT FORMAT:
-Plain prose. Natural paragraph breaks (one blank line) between distinct beats. Nothing else.
+Plain prose with ONE permitted structural marker: section divider lines so the editor can see where steps begin. The marker lines are stripped before the text reaches ElevenLabs — they exist purely for visual structure while editing.
+
+Use exactly these marker forms, each on its own line, with a blank line above and below:
+- === HOOK === (above the intro / hook section)
+- === STEP 1: <step name> === (above each step's spoken content; number them 1, 2, 3, …)
+- === CLOSING === (above the final CTA / closing section, if there is one distinct from the last step)
+
+Example shape:
+
+=== HOOK ===
+
+[hook paragraph(s)]
+
+=== STEP 1: Setup ===
+
+[step 1 paragraph(s)]
+
+=== STEP 2: First Build ===
+
+[step 2 paragraph(s)]
+
+=== CLOSING ===
+
+[closing paragraph(s)]
+
+Other rules:
+- Natural paragraph breaks (one blank line) between distinct beats within a section.
 - Spell out symbols that would be read awkwardly: "30 percent" not "30%", "and" not "&", "for example" not "e.g."
 - Keep natural contractions ("it's", "we'll", "don't").
 - Use commas and ellipses for natural pauses — never insert codes like "|||" or "[pause]".
-- No headings, no labels, no bullets, no emoji, no markdown formatting whatsoever.
+- No headings beyond the === markers, no bold/italic/underline, no bullets, no emoji, no other markdown.
 
-CRITICAL: Return ONLY the spoken text. No preamble, no code fence, no commentary, no closing remarks. Start with the first spoken word of the intro and end with the final spoken word of the closing/CTA. The output should be fully self-contained — do not truncate mid-sentence."""
+CRITICAL: Return ONLY the spoken text plus the === markers. No preamble, no code fence, no commentary. Start with === HOOK === on the first line and end with the final spoken word of the last section. The output should be fully self-contained — do not truncate mid-sentence."""
 
 
 @app.route("/api/videos/<int:vid>/vocal-doc", methods=["GET"])

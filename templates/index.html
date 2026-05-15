@@ -2180,6 +2180,9 @@
                     <button id="editorVocalGenBtn" onclick="generateVocalDoc()"
                             title="Extract ElevenLabs-ready narration text (every word Andy says, no codes, no markdown)"
                             style="background:none; border:1px solid #f5b942; color:#f5b942; padding:4px 9px; font-size:10px; letter-spacing:1px; border-radius:4px; cursor:pointer;">→ SAY</button>
+                    <button id="editorVocalCopyBtn" onclick="copySayClean()"
+                            title="Copy narration to clipboard with === markers stripped (ready to paste into ElevenLabs)"
+                            style="background:none; border:1px solid #2a2a4a; color:#888; padding:4px 9px; font-size:10px; letter-spacing:1px; border-radius:4px; cursor:pointer;">COPY CLEAN</button>
                     <span style="flex:1;"></span>
                     <span id="editorScriptSaveBadge" style="color:#4caf50; font-size:10px; margin-right:8px; opacity:0; transition:opacity 0.3s;">saved</span>
                     <span id="editorScriptStatus" style="color:#444; font-size:10px;">—</span>
@@ -7280,6 +7283,34 @@
             alert('Generate error: ' + err);
         }).finally(function() {
             if (btn) { btn.disabled = false; btn.textContent = origLabel; btn.style.opacity = '1'; }
+        });
+    }
+
+    function copySayClean() {
+        var ta = document.getElementById('editorVocalPanel');
+        if (!ta) return;
+        var raw = ta.value || '';
+        // Strip === marker lines (e.g. "=== HOOK ===", "=== STEP 1: foo ===", "=== CLOSING ===")
+        var cleaned = raw.split('\n').filter(function(line) {
+            return !/^\s*=+\s*[A-Z0-9].*=+\s*$/.test(line);
+        }).join('\n');
+        // Collapse runs of 3+ blank lines back to 2 (one blank between paragraphs)
+        cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+        var btn = document.getElementById('editorVocalCopyBtn');
+        var origLabel = btn ? btn.textContent : '';
+        navigator.clipboard.writeText(cleaned).then(function() {
+            if (btn) {
+                btn.textContent = 'COPIED ✓';
+                btn.style.borderColor = '#4caf50';
+                btn.style.color = '#4caf50';
+                setTimeout(function() {
+                    btn.textContent = origLabel;
+                    btn.style.borderColor = '#2a2a4a';
+                    btn.style.color = '#888';
+                }, 1400);
+            }
+        }).catch(function(err) {
+            alert('Copy failed: ' + err);
         });
     }
 
