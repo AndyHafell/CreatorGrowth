@@ -2169,17 +2169,32 @@
         <div style="display:flex; height:calc(100vh - 49px);">
             <!-- Script panel (production source of truth) -->
             <div id="editorScriptCol" style="width:420px; background:#0d0d1a; display:flex; flex-direction:column; position:relative; flex-shrink:0; border-right:1px solid #1f1f30;">
-                <div style="display:flex; align-items:center; padding:14px 14px 8px; border-bottom:1px solid #15151f;">
-                    <span style="color:#444; font-size:10px; letter-spacing:1.5px;">SCRIPT</span>
+                <div style="display:flex; align-items:center; padding:14px 14px 8px; border-bottom:1px solid #15151f; gap:8px;">
+                    <!-- View toggle: Content / Vocal -->
+                    <div style="display:inline-flex; border:1px solid #2a2a4a; border-radius:4px; overflow:hidden;">
+                        <button id="editorScriptTabContent" onclick="setEditorScriptMode('content')"
+                                style="background:#1c1c2e; color:#c8c8d0; border:none; padding:4px 10px; font-size:10px; letter-spacing:1.5px; cursor:pointer;">CONTENT</button>
+                        <button id="editorScriptTabVocal" onclick="setEditorScriptMode('vocal')"
+                                style="background:none; color:#666; border:none; border-left:1px solid #2a2a4a; padding:4px 10px; font-size:10px; letter-spacing:1.5px; cursor:pointer;">VOCAL</button>
+                    </div>
+                    <button id="editorVocalGenBtn" onclick="generateVocalDoc()"
+                            title="Convert content doc → ElevenLabs-ready vocal doc with Benson tonality codes"
+                            style="background:none; border:1px solid #f5b942; color:#f5b942; padding:4px 9px; font-size:10px; letter-spacing:1px; border-radius:4px; cursor:pointer;">→ VOCAL DOC</button>
                     <span style="flex:1;"></span>
                     <span id="editorScriptSaveBadge" style="color:#4caf50; font-size:10px; margin-right:8px; opacity:0; transition:opacity 0.3s;">saved</span>
                     <span id="editorScriptStatus" style="color:#444; font-size:10px;">—</span>
                 </div>
+                <!-- Content mode: rich contenteditable mirror of modalDocEditor -->
                 <div id="editorScriptPanel" class="editor-script-body" contenteditable="true" spellcheck="true"
                      oninput="editorScriptChanged()"
                      style="flex:1; overflow-y:auto; padding:16px 22px 24px 18px; color:#c8c8d0; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; font-size:14px; line-height:1.7; outline:none; user-select:text;">
                     <div style="color:#444; font-size:12px;">Loading script…</div>
                 </div>
+                <!-- Vocal mode: plain-text markdown editor with tonality codes -->
+                <textarea id="editorVocalPanel" spellcheck="true"
+                     oninput="editorVocalChanged()"
+                     placeholder="Click → VOCAL DOC above to generate from the content doc."
+                     style="display:none; flex:1; width:100%; box-sizing:border-box; padding:16px 22px 24px 18px; background:#0d0d1a; color:#d0d0d8; font-family:'SF Mono','Menlo','Consolas',monospace; font-size:13px; line-height:1.7; border:none; outline:none; resize:none;"></textarea>
                 <!-- Drag handle to resize column -->
                 <div id="editorScriptResize"
                      onmousedown="editorScriptStartResize(event)"
@@ -7165,6 +7180,10 @@
         document.getElementById('editorStudio').style.display = 'none';
     }
 
+    var editorScriptMode = 'content'; // 'content' | 'vocal'
+    var editorVocalDoc = '';
+    var _editorVocalSaveTimer = null;
+
     function loadEditorScript() {
         var panel = document.getElementById('editorScriptPanel');
         if (!panel) return;
@@ -7183,16 +7202,131 @@
             panel.dataset.empty = '';
         }
         refreshEditorScriptStats();
+        // Fetch any stored vocal doc for this video
+        editorVocalDoc = '';
+        if (editorVideoId) {
+            fetch('/api/videos/' + editorVideoId + '/vocal-doc')
+                .then(function(r){ return r.json(); })
+                .then(function(d) {
+                    editorVocalDoc = (d && d.vocal_doc) || '';
+                    var ta = document.getElementById('editorVocalPanel');
+                    if (ta) ta.value = editorVocalDoc;
+                    // Restore last-used mode for this video
+                    var savedMode = localStorage.getItem('editorScriptMode_' + editorVideoId);
+                    if (savedMode === 'vocal' && editorVocalDoc) setEditorScriptMode('vocal');
+                    else setEditorScriptMode('content');
+                })
+                .catch(function(){ setEditorScriptMode('content'); });
+        }
+    }
+
+    function setEditorScriptMode(mode) {
+        editorScriptMode = (mode === 'vocal') ? 'vocal' : 'content';
+        var cBtn = document.getElementById('editorScriptTabContent');
+        var vBtn = document.getElementById('editorScriptTabVocal');
+        var cPanel = document.getElementById('editorScriptPanel');
+        var vPanel = document.getElementById('editorVocalPanel');
+        if (!cBtn || !vBtn || !cPanel || !vPanel) return;
+        if (editorScriptMode === 'vocal') {
+            cBtn.style.background = 'none'; cBtn.style.color = '#666';
+            vBtn.style.background = '#1c1c2e'; vBtn.style.color = '#c8c8d0';
+            cPanel.style.display = 'none';
+            vPanel.style.display = 'block';
+        } else {
+            cBtn.style.background = '#1c1c2e'; cBtn.style.color = '#c8c8d0';
+            vBtn.style.background = 'none'; vBtn.style.color = '#666';
+            cPanel.style.display = 'block';
+            vPanel.style.display = 'none';
+        }
+        if (editorVideoId) localStorage.setItem('editorScriptMode_' + editorVideoId, editorScriptMode);
+        refreshEditorScriptStats();
+    }
+
+    function generateVocalDoc() {
+        if (!editorVideoId) return;
+        var panel = document.getElementById('editorScriptPanel');
+        if (!panel || panel.dataset.empty === '1') {
+            alert('No content doc to convert. Open a video with a content doc first.');
+            return;
+        }
+        // Plain-text version of the content doc — easier for the LLM than raw HTML
+        var content = panel.innerText || panel.textContent || '';
+        if (!content.trim()) { alert('Content doc is empty.'); return; }
+        if (editorVocalDoc && editorVocalDoc.trim() &&
+            !confirm('Regenerate vocal doc? Current version will be replaced.')) return;
+
+        var btn = document.getElementById('editorVocalGenBtn');
+        var status = document.getElementById('editorScriptStatus');
+        var origLabel = btn ? btn.textContent : '';
+        if (btn) { btn.disabled = true; btn.textContent = 'GENERATING…'; btn.style.opacity = '0.6'; }
+        if (status) status.textContent = 'calling Gemini…';
+
+        fetch('/api/videos/' + editorVideoId + '/vocal-doc/generate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ content_doc: content })
+        }).then(function(r){ return r.json().then(function(j){ return {ok:r.ok, body:j}; }); })
+          .then(function(res) {
+            if (!res.ok) {
+                alert('Generate failed: ' + (res.body.error || 'unknown') + (res.body.detail ? '\n' + res.body.detail : ''));
+                return;
+            }
+            editorVocalDoc = res.body.vocal_doc || '';
+            var ta = document.getElementById('editorVocalPanel');
+            if (ta) ta.value = editorVocalDoc;
+            setEditorScriptMode('vocal');
+            if (status) status.textContent = 'vocal doc ready';
+        }).catch(function(err) {
+            alert('Generate error: ' + err);
+        }).finally(function() {
+            if (btn) { btn.disabled = false; btn.textContent = origLabel; btn.style.opacity = '1'; }
+        });
+    }
+
+    function editorVocalChanged() {
+        var ta = document.getElementById('editorVocalPanel');
+        if (!ta || !editorVideoId) return;
+        editorVocalDoc = ta.value;
+        refreshEditorScriptStats();
+        var badge = document.getElementById('editorScriptSaveBadge');
+        if (badge) {
+            badge.textContent = 'editing…';
+            badge.style.color = '#f5b942';
+            badge.style.opacity = '1';
+        }
+        clearTimeout(_editorVocalSaveTimer);
+        _editorVocalSaveTimer = setTimeout(function() {
+            fetch('/api/videos/' + editorVideoId + '/vocal-doc', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ vocal_doc: editorVocalDoc })
+            }).then(function() {
+                if (badge) {
+                    badge.textContent = 'saved';
+                    badge.style.color = '#4caf50';
+                    setTimeout(function() { badge.style.opacity = '0'; }, 800);
+                }
+            });
+        }, 600);
     }
 
     function refreshEditorScriptStats() {
-        var panel = document.getElementById('editorScriptPanel');
         var status = document.getElementById('editorScriptStatus');
-        if (!panel || !status) return;
-        if (panel.dataset.empty === '1') { status.textContent = 'empty'; return; }
-        var txt = panel.textContent || '';
+        if (!status) return;
+        var txt = '';
+        if (editorScriptMode === 'vocal') {
+            var ta = document.getElementById('editorVocalPanel');
+            txt = ta ? ta.value : '';
+            // Strip Benson codes for an accurate spoken-word count
+            txt = txt.replace(/\*\*/g, '').replace(/__/g, '').replace(/\|\|\|/g, '').replace(/-\?-/g, '');
+        } else {
+            var panel = document.getElementById('editorScriptPanel');
+            if (!panel || panel.dataset.empty === '1') { status.textContent = 'empty'; return; }
+            txt = panel.textContent || '';
+        }
         var words = (txt.trim().match(/\S+/g) || []).length;
-        var mins = words / 150; // ~150 wpm narration estimate
+        if (!words) { status.textContent = 'empty'; return; }
+        var mins = words / 150;
         status.textContent = words + ' words · ~' + (mins < 1 ? (mins * 60).toFixed(0) + 's' : mins.toFixed(1) + 'm');
     }
 

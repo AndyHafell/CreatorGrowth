@@ -223,6 +223,10 @@ def init_db():
         conn.execute("ALTER TABLE videos ADD COLUMN editor_state TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE videos ADD COLUMN vocal_doc TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # Chapter Studio: one list of chapter items per video, rendered to N MP4 clips.
     # One-shot migration: the cloned-from-diagrams schema had `boxes_json`. If that
@@ -3827,6 +3831,156 @@ def chapter_render(vid):
             shutil.rmtree(work)
         except OSError:
             pass
+
+
+# ── Vocal doc (Benson 3x tonality) ───────────────────────────────────────
+
+VOCAL_DOC_SYSTEM_PROMPT = """You convert a finished content doc into a VOCAL DOC — a stripped-down read-aloud script with John Benson's 3x tonality codes baked in. The vocal doc is what Andy reads on camera and what gets sent to ElevenLabs for TTS.
+
+THE 5 TONALITY CODES (apply sparingly):
+- **bold** = PUNCH. Voice goes up. Apply to power words (buy, real, secret, every, single, free, now, plus), feeling/sense words (desire, see, feel, watch, imagine), numbers/proof (9 percent, 14, 70x, 30 seconds), and the dynamic word in a story moment.
+- __underline__ = ELONGATE. Slow + stretch. Apply to driving force / USP / primary benefit phrase, complex/vital terminology, words right before action words.
+- (parens) = WHISPER. Voice drops, listener leans in. Once or twice per video MAX. Apply to "the (real reason)…" / "(the secret) behind this…".
+- name-?- = PRE-RECOGNITION. Say as a question, implies listener already knows it. Apply to product/brand/concept names after first introduction. Never on first introduction.
+- ||| = STRATEGIC PAUSE. 1-2 second silent beat. Apply after a vital statement that needs to sink in, or after a split-second-agreement word (right, deal, make sense?).
+
+DENSITY BUDGET PER VIDEO (do NOT exceed):
+- 8-15 punches
+- 4-8 elongations
+- 1-2 whispers
+- 0-2 pre-recognitions
+- 3-6 strategic pauses
+Bias toward SPARINGNESS. If every word is marked, nothing stands out.
+
+WHAT TO STRIP FROM THE CONTENT DOC (do not include):
+- Title lists, one-liners, thumbnail ideas, 5P framework
+- 💎 BENEFITS / 📋 STEPS bullet lists / 🖥️ Show cues / Key points / Source links / Checklists
+- 🔒 WHY STAY / 🎁 GIFT prep notes (only the spoken version inside the Say block counts)
+- B-roll cues, image captions, stage directions, frame notes
+
+WHAT TO KEEP (the only spoken content):
+- Title (clean, no "VOCAL DOC —" prefix)
+- Chapter overview (1 line per step)
+- 🎤 SAY THIS intro → becomes the INTRO section
+- Each 🗣️ Say: block → becomes the body of its STEP section
+- Closing/CTA spoken text (usually inside the final Say block)
+
+OUTPUT FORMAT (exact structure, plain markdown — NO bullet lists, use paragraph breaks):
+
+# [Clean Title]
+
+## CODES
+
+**bold** = punch (voice up)
+__underline__ = elongate (slow + stretch)
+(parens) = whisper (lean in, lower voice)
+name-?- = pre-recognition (say as question)
+||| = strategic pause (1-2 sec beat)
+
+Read it like you're talking to your best friend. Stand up. Energy high.
+
+## CHAPTERS
+
+1 — [Step 1 name]
+2 — [Step 2 name]
+...
+
+## INTRO
+
+[The SAY THIS intro paragraph with codes applied.]
+
+## STEP 1 — [Step name]
+
+[The Say block content with codes applied.]
+
+## STEP 2 — [Step name]
+
+[…]
+
+CRITICAL: Return ONLY the vocal doc markdown. No preamble, no code fence, no commentary. Start with the # title and end with the last step's spoken content."""
+
+
+@app.route("/api/videos/<int:vid>/vocal-doc", methods=["GET"])
+def get_vocal_doc(vid):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT vocal_doc FROM videos WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "video not found"}), 404
+    return jsonify({"vocal_doc": row["vocal_doc"] or ""})
+
+
+@app.route("/api/videos/<int:vid>/vocal-doc", methods=["POST"])
+def save_vocal_doc(vid):
+    body = request.get_json(force=True, silent=True) or {}
+    text = body.get("vocal_doc", "")
+    conn = get_db()
+    conn.execute("UPDATE videos SET vocal_doc=? WHERE id=?", (text, vid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/videos/<int:vid>/vocal-doc/generate", methods=["POST"])
+def generate_vocal_doc(vid):
+    """Take supplied content doc text (or fall back to stored script col) and
+    produce a Benson-coded vocal doc via Gemini 2.5 Flash."""
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+
+    body = request.get_json(force=True, silent=True) or {}
+    content_doc = (body.get("content_doc") or "").strip()
+    if not content_doc:
+        conn = get_db()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT script FROM videos WHERE id=?", (vid,)).fetchone()
+        conn.close()
+        content_doc = (row["script"] or "").strip() if row else ""
+    if not content_doc:
+        return jsonify({"error": "no content doc supplied and no stored script"}), 400
+
+    payload = {
+        "contents": [{
+            "parts": [{"text": VOCAL_DOC_SYSTEM_PROMPT + "\n\n---\nCONTENT DOC TO CONVERT:\n\n" + content_doc}]
+        }],
+        "generationConfig": {
+            "temperature": 0.6,
+            "maxOutputTokens": 8192,
+        }
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(url, data=json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        return jsonify({"error": f"gemini http {e.code}", "detail": e.read().decode("utf-8", "ignore")[:500]}), 502
+    except URLError as e:
+        return jsonify({"error": f"gemini network: {e.reason}"}), 502
+
+    try:
+        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError, TypeError):
+        return jsonify({"error": "gemini response malformed", "raw": data}), 502
+
+    # Strip an accidental ```markdown fence if Gemini adds one
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines[0].startswith("```"): lines = lines[1:]
+        if lines and lines[-1].strip() == "```": lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    conn = get_db()
+    conn.execute("UPDATE videos SET vocal_doc=? WHERE id=?", (text, vid))
+    conn.commit()
+    conn.close()
+    return jsonify({"vocal_doc": text})
 
 
 # ── Editor (CapCut-style timeline) ───────────────────────────────────────
