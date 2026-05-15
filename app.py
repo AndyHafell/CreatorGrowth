@@ -4798,10 +4798,29 @@ def _derive_diagram_briefs(vid):
             continue
         for (title, body) in _extract_step_sections_from_text(doc_text):
             sections_by_title.setdefault(title.lower(), body)
+
+    def _resolve_body(item_title):
+        """Match chapter title (short) to section title (often long, e.g. with
+        ': subtitle' suffix). Try exact, then prefix, then either-contains."""
+        key = item_title.lower().strip()
+        if not key:
+            return ""
+        if key in sections_by_title:
+            return sections_by_title[key]
+        # Prefix: chapter "THE PROBLEM" vs section "THE PROBLEM: EVERY VISUAL..."
+        for sk, sb in sections_by_title.items():
+            if sk.startswith(key):
+                return sb
+        # Either contains
+        for sk, sb in sections_by_title.items():
+            if key in sk or sk in key:
+                return sb
+        return ""
+
     out = []
     for i, t in enumerate(items):
         title = (t or "").strip()
-        body = sections_by_title.get(title.lower(), "")
+        body = _resolve_body(title)
         out.append({
             "name": f"Step {i+1}: {title}" if title else f"Step {i+1}",
             "brief": title,
@@ -4850,15 +4869,23 @@ def _gemini_plan_diagram_prompt(title, body, api_key):
 
 def _gemini_generate_diagram_image(brief_obj, api_key):
     """Two-step pipeline per SOP: planner (text) → renderer (image).
-    Returns PNG bytes or None on failure."""
+    Returns (PNG bytes, planned_prompt str) or (None, planned_prompt|None) on failure."""
     title = (brief_obj.get("brief") or brief_obj.get("name") or "").upper()
     body = (brief_obj.get("body") or "").strip()
+    app.logger.info(
+        f"diagrams.gen: title={title!r} body_chars={len(body)} body_preview={body[:160]!r}"
+    )
     if not body:
         body = ("(no extra script content — design something visual that fits "
                 "the title)")
     planned = _gemini_plan_diagram_prompt(title, body, api_key)
-    if not planned:
-        # Fallback: send a simpler instruction directly to the image model
+    if planned:
+        app.logger.info(
+            f"diagrams.plan: title={title!r} planned_chars={len(planned)}\n"
+            f"PLANNED PROMPT >>>\n{planned}\n<<<"
+        )
+    else:
+        app.logger.warning(f"diagrams.plan: planner returned NOTHING for title={title!r}")
         planned = (f"TOP CENTER: large bold gold pixel font title: '{title}'. "
                    f"Design a pixel art slide for this step. Pick the layout "
                    f"that best fits the content (hub-and-spoke / split / "
@@ -4869,12 +4896,13 @@ def _gemini_generate_diagram_image(brief_obj, api_key):
         style=_DIAGRAM_PIXEL_STYLE,
         body=planned,
     )
-    return _gemini_image_call(
+    png = _gemini_image_call(
         [{"text": full_prompt}],
         api_key,
         _DIAGRAM_GEMINI_MODEL,
         "diagrams.gen",
     )
+    return png, planned
 
 
 @app.route("/api/videos/<int:vid>/diagrams/generate-batch", methods=["POST"])
@@ -4938,7 +4966,7 @@ def diagrams_generate_batch(vid):
     out_root.mkdir(parents=True, exist_ok=True)
 
     def _worker(idx, b):
-        png = _gemini_generate_diagram_image(b, api_key)
+        png, _planned = _gemini_generate_diagram_image(b, api_key)
         if not png:
             return idx, b, None, None
         diagram_id = "d" + uuid.uuid4().hex[:14]
@@ -5095,9 +5123,16 @@ def diagram_regenerate(diagram_id):
         # Last resort: synthesize a brief from the diagram's name
         match = {"name": name, "brief": name.split(":", 1)[-1].strip() or name, "body": ""}
 
-    png = _gemini_generate_diagram_image(match, api_key)
+    png, planned = _gemini_generate_diagram_image(match, api_key)
     if not png:
-        return jsonify({"error": "generation failed (see server logs)"}), 502
+        return jsonify({
+            "error": "generation failed (see server logs)",
+            "debug": {
+                "body_chars": len((match.get("body") or "")),
+                "body_preview": (match.get("body") or "")[:300],
+                "planned_prompt": planned,
+            },
+        }), 502
     out_root = UPLOAD_DIR / "diagrams" / str(vid)
     out_root.mkdir(parents=True, exist_ok=True)
     out_path = out_root / f"{diagram_id}_{int(time.time())}.png"
@@ -5111,7 +5146,14 @@ def diagram_regenerate(diagram_id):
     conn.commit()
     row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
     conn.close()
-    return jsonify(_diagram_row_to_dict(row))
+    out = _diagram_row_to_dict(row)
+    # Echo back what the planner saw + produced so the UI can show it for debugging.
+    out["debug"] = {
+        "body_chars": len((match.get("body") or "")),
+        "body_preview": (match.get("body") or "")[:300],
+        "planned_prompt": planned,
+    }
+    return jsonify(out)
 
 
 @app.route("/api/diagrams/<diagram_id>/pixel-art", methods=["POST"])
