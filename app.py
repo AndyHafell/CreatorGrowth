@@ -3987,6 +3987,63 @@ def generate_vocal_doc(vid):
     return jsonify({"vocal_doc": text})
 
 
+def _split_text_for_tts(text, max_chars=9500):
+    """Split into chunks <= max_chars, preferring paragraph > sentence > word boundaries.
+    ElevenLabs free/Creator/Pro endpoint caps each request at 10k chars; we chunk and stitch."""
+    if len(text) <= max_chars:
+        return [text]
+
+    def by_sentence(p):
+        sentences = re.split(r'(?<=[.!?…])\s+', p)
+        out, cur = [], ""
+        for s in sentences:
+            cand = (cur + " " + s) if cur else s
+            if len(cand) <= max_chars:
+                cur = cand
+            else:
+                if cur: out.append(cur)
+                if len(s) <= max_chars:
+                    cur = s
+                else:
+                    # Final fallback: word-by-word, with hard char-slice for pathological single words
+                    words, sub = s.split(), ""
+                    for w in words:
+                        if len(w) > max_chars:
+                            if sub: out.append(sub); sub = ""
+                            for i in range(0, len(w), max_chars):
+                                out.append(w[i:i+max_chars])
+                            continue
+                        c2 = (sub + " " + w) if sub else w
+                        if len(c2) <= max_chars:
+                            sub = c2
+                        else:
+                            if sub: out.append(sub)
+                            sub = w
+                    cur = sub
+        if cur: out.append(cur)
+        return out
+
+    chunks, cur = [], ""
+    for p in text.split("\n\n"):
+        if not p.strip():
+            continue
+        cand = (cur + "\n\n" + p) if cur else p
+        if len(cand) <= max_chars:
+            cur = cand
+            continue
+        if cur:
+            chunks.append(cur)
+            cur = ""
+        if len(p) <= max_chars:
+            cur = p
+        else:
+            chunks.extend(by_sentence(p))
+            cur = ""
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
 def _strip_say_markers(text):
     """Drop === HOOK / STEP N / CLOSING === lines and collapse blank runs."""
     out = []
@@ -4094,38 +4151,77 @@ def synthesize_say(vid):
     model_id = (body.get("model_id") or os.environ.get("ELEVENLABS_MODEL_ID")
                 or "eleven_multilingual_v2").strip()
 
-    payload = {
-        "text": text,
-        "model_id": model_id,
-        "voice_settings": {
-            "stability": 0.45,
-            "similarity_boost": 0.75,
-            "style": 0.0,
-            "use_speaker_boost": True,
-        },
+    chunks = _split_text_for_tts(text, max_chars=9500)
+    base_voice_settings = {
+        "stability": 0.45,
+        "similarity_boost": 0.75,
+        "style": 0.0,
+        "use_speaker_boost": True,
     }
+    chunk_audio = []
+    prev_ids = []
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    req = Request(url, data=json.dumps(payload).encode("utf-8"), method="POST",
-                  headers={
-                      "xi-api-key": api_key,
-                      "Content-Type": "application/json",
-                      "Accept": "audio/mpeg",
-                  })
-    try:
-        with urlopen(req, timeout=180) as resp:
-            audio_bytes = resp.read()
-    except HTTPError as e:
-        detail = e.read().decode("utf-8", "ignore")[:600]
-        return jsonify({"error": f"elevenlabs http {e.code}", "detail": detail}), 502
-    except URLError as e:
-        return jsonify({"error": f"elevenlabs network: {e.reason}"}), 502
+    for chunk in chunks:
+        payload = {
+            "text": chunk,
+            "model_id": model_id,
+            "voice_settings": base_voice_settings,
+        }
+        if prev_ids:
+            # Chain to keep prosody/tone consistent across stitched chunks. API accepts up to 3.
+            payload["previous_request_ids"] = prev_ids[-3:]
+        req = Request(url, data=json.dumps(payload).encode("utf-8"), method="POST",
+                      headers={
+                          "xi-api-key": api_key,
+                          "Content-Type": "application/json",
+                          "Accept": "audio/mpeg",
+                      })
+        try:
+            with urlopen(req, timeout=180) as resp:
+                chunk_audio.append(resp.read())
+                rid = resp.getheader("request-id") or resp.getheader("x-request-id") or ""
+                if rid:
+                    prev_ids.append(rid)
+        except HTTPError as e:
+            detail = e.read().decode("utf-8", "ignore")[:600]
+            return jsonify({"error": f"elevenlabs http {e.code}",
+                            "detail": detail,
+                            "completed_chunks": len(chunk_audio),
+                            "total_chunks": len(chunks)}), 502
+        except URLError as e:
+            return jsonify({"error": f"elevenlabs network: {e.reason}"}), 502
 
     out_dir = Path(app.root_path) / "static" / "uploads" / "voiceover"
     out_dir.mkdir(parents=True, exist_ok=True)
     job_id = uuid.uuid4().hex[:10]
     out_path = out_dir / f"v{vid}_{job_id}.mp3"
-    with out_path.open("wb") as f:
-        f.write(audio_bytes)
+
+    if len(chunk_audio) == 1:
+        out_path.write_bytes(chunk_audio[0])
+        audio_bytes = chunk_audio[0]
+    else:
+        # Stitch chunks with ffmpeg (stream copy — all chunks share ElevenLabs encode params)
+        import tempfile, subprocess, shutil
+        work = Path(tempfile.mkdtemp(prefix=f"tts_stitch_{job_id}_"))
+        try:
+            parts = []
+            for i, b in enumerate(chunk_audio):
+                p = work / f"part_{i}.mp3"
+                p.write_bytes(b)
+                parts.append(p)
+            list_file = work / "concat.txt"
+            list_file.write_text("\n".join(
+                "file '" + str(p).replace("'", "'\\''") + "'" for p in parts
+            ))
+            cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                   "-i", str(list_file), "-c", "copy", str(out_path)]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            if r.returncode != 0:
+                return jsonify({"error": "ffmpeg concat failed",
+                                "stderr": r.stderr[-1500:]}), 500
+            audio_bytes = out_path.read_bytes()
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
     rel = str(out_path.relative_to(Path(app.root_path)))
     audio_url = "/" + rel
 
@@ -4136,6 +4232,7 @@ def synthesize_say(vid):
         "words": len(text.split()),
         "chars": len(text),
         "bytes": len(audio_bytes),
+        "chunks": len(chunks),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "preview": text[:140] + ("…" if len(text) > 140 else ""),
     }
