@@ -4499,37 +4499,82 @@ _DIAGRAM_PIXEL_STYLE = (
     "Retro game UI feel -- dramatic, high contrast, readable. "
 )
 
-_DIAGRAM_PIXEL_GEN_PROMPT_TPL = (
-    "{style}\n\n"
-    "TOP CENTER: large bold gold pixel font title: '{title}'. "
-    "Subtitle in white pixel font: a 1-line angle pulled from the step content.\n\n"
-    "LAYOUT: Left-right split screen with two bordered content panels.\n\n"
-    "LEFT PANEL (neon green border #00ff88, dark green tint inside, neon green "
-    "pixel label at top: 'KEY POINTS'): "
-    "3-5 bullet items in white pixel font, each preceded by a neon green pixel "
-    "checkmark badge. Each bullet is a 4-8 word phrase pulled from the STEP "
-    "CONTENT below — render them VERBATIM so the slide reads like a real "
-    "tutorial frame. Avoid placeholder text. "
-    "Include at least one small pixel art icon inside this panel that fits "
-    "the step (terminal, robot, document, clock, cloud server, branch icon, "
-    "lightning bolt, gear, brain).\n\n"
-    "RIGHT PANEL (neon blue border #00aaff, dark blue tint inside, neon blue "
-    "pixel label at top: 'WHY IT MATTERS'): "
-    "A larger pixel art ILLUSTRATION/SCENE that visually represents the step "
-    "concept. Below it: 2-3 short white pixel-font labels naming the key "
-    "elements of the illustration. If the step has a clear contrast "
-    "(before/after, wrong/right, with/without), use coral red (#ff4444) "
-    "X-marks and neon green (#00ff88) checkmarks to call it out.\n\n"
-    "BOTTOM CENTER: small white pixel font: a one-sentence takeaway line "
-    "summarizing the step in plain language.\n\n"
-    "STEP CONTENT (extract bullet text verbatim from here; pick the most "
-    "compelling 3-5 phrases):\n"
-    "{body}\n\n"
-    "DO NOT: leave panels empty, render only an illustration without bullet "
-    "text, use any background color other than #0b1220, use gradients or "
-    "smooth lines, use Excalidraw hand-drawn wobble. This is a polished "
-    "pixel art tutorial slide with readable text inside both panels."
+# Planner prompt — Gemini text generates a SOP-compliant image-gen prompt
+# per concept, then we feed it to the image model. This mirrors the SOP's
+# "Step 2 — Design Each Concept (Mental Only)" stage that a human would do.
+_DIAGRAM_PLANNER_PROMPT = (
+    "You are the planner for the 'Drawing to Pixel Art' SOP for a YouTube "
+    "tutorial video. For ONE step, design a detailed image-generation "
+    "prompt that will produce a striking pixel-art slide. Output ONLY the "
+    "prompt body — no markdown, no explanation, no preamble.\n\n"
+    "STEP TITLE: {title}\n\n"
+    "STEP CONTENT:\n{body}\n\n"
+    "SOP RULES YOU MUST FOLLOW:\n\n"
+    "1. PICK THE LAYOUT that best fits THIS specific concept (do not default "
+    "to a generic 'two-panel bullet list' — different steps want different "
+    "layouts):\n"
+    "   - side-by-side split → wrong vs right, before vs after, with/without\n"
+    "   - left-to-right pipeline → setup steps, multi-stage process, "
+    "input→processing→output\n"
+    "   - top-to-bottom flow → cause→effect, hierarchy\n"
+    "   - three columns → 3 distinct items or options\n"
+    "   - hub-and-spoke → MULTIPLE tools/brands converging on one thing, "
+    "chaos, the 'too many options' problem. Put brand logos around a central "
+    "element with lines connecting them.\n"
+    "   - comparison table → feature-by-feature comparison\n"
+    "   - single focal point → ONE clear idea or punchline\n\n"
+    "2. USE COMPASS LABELS in the prompt: TOP CENTER, LEFT PANEL, RIGHT "
+    "PANEL, CENTER, BOTTOM CENTER.\n\n"
+    "3. PER-PANEL DESCRIPTION must include:\n"
+    "   - the compass label + neon border color spec, e.g. "
+    "'LEFT PANEL (neon green border #00ff88, dark green tint):'\n"
+    "   - a pixel-font label header inside the panel\n"
+    "   - WHAT IS IN THE PANEL — describe icons, scenes, characters, brand "
+    "logos, screen mockups. NOT just text bullets.\n\n"
+    "4. BORDER COLORS by meaning:\n"
+    "   - neon green (#00ff88) = positive/right/with-system\n"
+    "   - coral red (#ff4444) = negative/wrong/without-system\n"
+    "   - gold (#ffd700) = neutral/highlight\n"
+    "   - neon blue (#00aaff) = stage/neutral flow\n"
+    "   - neon purple (#cc88ff) = secondary concepts\n"
+    "   - neon teal (#00ddcc) = variety\n\n"
+    "5. PIXEL ART ICONS / SCENES to use where relevant: pixel art terminal "
+    "window with cursor, pixel art robot with glowing eyes, pixel art "
+    "creator at a desk (stick figure with computer), brand logos (Midjourney "
+    "spiral, Canva 'C', Runway logo, GitHub branch, Photoshop square, "
+    "OpenAI flower, Anthropic Claude, stock-image grid), cloud server, "
+    "lightning bolt, gear, brain, neon green checkmark badge, coral red X "
+    "icon, clock, pipeline progress bar, ZIP file, waveform bars.\n\n"
+    "6. ALWAYS INCLUDE:\n"
+    "   - TOP CENTER: large bold gold pixel font title: '{title}'.\n"
+    "   - Per-panel descriptions for chosen layout.\n"
+    "   - BOTTOM CENTER: small white pixel font: <one-sentence takeaway>.\n\n"
+    "7. STYLE FREEDOM: prefer SCENES, CHARACTERS, BRAND LOGOS, screen "
+    "mockups, and visual storytelling over text-only bullet panels. Slides "
+    "should look like a 16-bit game tutorial screen, not a slide deck.\n\n"
+    "EXAMPLE OUTPUT for a step about 'tools cause chaos':\n"
+    "TOP CENTER: large bold gold pixel font title: 'THE PROBLEM'. Subtitle "
+    "in white pixel font: 'every visual is a different app'. LAYOUT: "
+    "hub-and-spoke. CENTER: a pixel art creator (stick figure with brown "
+    "hair, beard, white shirt) sitting at a glowing pixel computer, stressed "
+    "expression, with red zigzag lightning bolts radiating outward. AROUND "
+    "the creator: 4 pixel art brand logos arranged in a circle — top-left "
+    "Midjourney spiral, top-right Runway play-icon, bottom-left Canva 'C', "
+    "bottom-right a stock-image grid icon. Each logo has a coral red "
+    "(#ff4444) pixel border and a thin red dotted line connecting it back "
+    "to the creator. Small coral red pixel-font label under each logo "
+    "naming it. In the gap to the right of the hub: a coral red pixel "
+    "clock reading '22 MIN' and a coral red dollar-sign icon. BOTTOM "
+    "CENTER: small white pixel font: 'Every visual = a different app. "
+    "Logins, prompts, subscriptions, 20+ minutes burned.'\n\n"
+    "Now output the prompt body for THIS step, following the rules above. "
+    "Just the prompt text — nothing else."
 )
+
+
+# Image-gen prompt is just the locked PIXEL_STYLE prefix + the planner output.
+# No layout hard-coding here — that's the planner's job.
+_DIAGRAM_PIXEL_GEN_PROMPT_TPL = "{style}\n\n{body}"
 
 # Nano Banana Pro per the SOP — better at complex multi-panel layouts.
 _DIAGRAM_GEMINI_MODEL = "gemini-3-pro-image-preview"
@@ -4737,20 +4782,64 @@ def _derive_diagram_briefs(vid):
     return out
 
 
+def _gemini_plan_diagram_prompt(title, body, api_key):
+    """Step 1 of the SOP: Gemini text picks the layout + writes the
+    image-gen prompt body. Returns the prompt body string, or None on failure."""
+    from urllib.error import HTTPError, URLError
+    planner_text = _DIAGRAM_PLANNER_PROMPT.format(title=title, body=body)
+    payload = {
+        "contents": [{"parts": [{"text": planner_text}]}],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 1500,
+        },
+    }
+    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+           "gemini-2.5-flash:generateContent?key=" + api_key)
+    req = Request(url, data=json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "ignore")[:300]
+        except Exception:
+            pass
+        app.logger.warning(f"diagrams.plan: gemini http {e.code}: {detail}")
+        return None
+    except URLError as e:
+        app.logger.warning(f"diagrams.plan: gemini network: {e.reason}")
+        return None
+    try:
+        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return text or None
+    except (KeyError, IndexError, TypeError):
+        app.logger.warning(f"diagrams.plan: malformed planner response: {str(data)[:300]}")
+        return None
+
+
 def _gemini_generate_diagram_image(brief_obj, api_key):
-    """One call to Gemini Image Generation — pixel art slide per step,
-    following ~/dev/DRAWING_TO_PIXEL_ART_SOP.md exactly.
-    `brief_obj` is {name, brief (title), body (rich content)}.
+    """Two-step pipeline per SOP: planner (text) → renderer (image).
     Returns PNG bytes or None on failure."""
     title = (brief_obj.get("brief") or brief_obj.get("name") or "").upper()
     body = (brief_obj.get("body") or "").strip()
     if not body:
-        body = ("(no extra content available — render with the title and a "
-                "generic pixel art scene that fits)")
+        body = ("(no extra script content — design something visual that fits "
+                "the title)")
+    planned = _gemini_plan_diagram_prompt(title, body, api_key)
+    if not planned:
+        # Fallback: send a simpler instruction directly to the image model
+        planned = (f"TOP CENTER: large bold gold pixel font title: '{title}'. "
+                   f"Design a pixel art slide for this step. Pick the layout "
+                   f"that best fits the content (hub-and-spoke / split / "
+                   f"pipeline / focal point). Use brand logos and scenes "
+                   f"where relevant.\n\nCONTENT:\n{body}\n\n"
+                   f"BOTTOM CENTER: small white pixel font: one-sentence takeaway.")
     full_prompt = _DIAGRAM_PIXEL_GEN_PROMPT_TPL.format(
         style=_DIAGRAM_PIXEL_STYLE,
-        title=title,
-        body=body,
+        body=planned,
     )
     return _gemini_image_call(
         [{"text": full_prompt}],
