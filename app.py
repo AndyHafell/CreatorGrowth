@@ -3999,21 +3999,61 @@ def _strip_say_markers(text):
     return cleaned
 
 
-@app.route("/api/videos/<int:vid>/say/voiceover", methods=["GET"])
-def get_say_voiceover(vid):
+def _load_voiceover_state(vid):
+    """Return state dict with a `generations` list. Migrates old single-record
+    shape `{url, voice_id, ...}` to `{generations: [{...}]}` transparently."""
     conn = get_db()
     conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT voiceover_state FROM videos WHERE id=?", (vid,)).fetchone()
     conn.close()
-    if not row:
-        return jsonify({"error": "video not found"}), 404
-    raw = row["voiceover_state"]
-    if not raw:
-        return jsonify({})
+    if not row or not row["voiceover_state"]:
+        return {"generations": []}
     try:
-        return jsonify(json.loads(raw))
+        state = json.loads(row["voiceover_state"])
     except Exception:
-        return jsonify({})
+        return {"generations": []}
+    if isinstance(state, dict) and "generations" not in state:
+        # Legacy single-record shape
+        if state.get("url"):
+            state = {"generations": [state]}
+        else:
+            state = {"generations": []}
+    if "generations" not in state:
+        state["generations"] = []
+    return state
+
+
+def _save_voiceover_state(vid, state):
+    conn = get_db()
+    conn.execute("UPDATE videos SET voiceover_state=? WHERE id=?",
+                 (json.dumps(state), vid))
+    conn.commit()
+    conn.close()
+
+
+@app.route("/api/videos/<int:vid>/say/voiceover", methods=["GET"])
+def get_say_voiceover(vid):
+    return jsonify(_load_voiceover_state(vid))
+
+
+@app.route("/api/videos/<int:vid>/say/voiceover/<int:idx>", methods=["DELETE"])
+def delete_say_voiceover(vid, idx):
+    state = _load_voiceover_state(vid)
+    gens = state.get("generations", [])
+    if idx < 0 or idx >= len(gens):
+        return jsonify({"error": "index out of range"}), 404
+    removed = gens.pop(idx)
+    # Best-effort delete of the file
+    try:
+        rel = (removed.get("url") or "").lstrip("/")
+        if rel:
+            p = Path(app.root_path) / rel
+            if p.exists() and p.is_file():
+                p.unlink()
+    except Exception:
+        pass
+    _save_voiceover_state(vid, state)
+    return jsonify(state)
 
 
 @app.route("/api/videos/<int:vid>/say/synthesize", methods=["POST"])
@@ -4089,7 +4129,7 @@ def synthesize_say(vid):
     rel = str(out_path.relative_to(Path(app.root_path)))
     audio_url = "/" + rel
 
-    state = {
+    generation = {
         "url": audio_url,
         "voice_id": voice_id,
         "model_id": model_id,
@@ -4097,13 +4137,12 @@ def synthesize_say(vid):
         "chars": len(text),
         "bytes": len(audio_bytes),
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "preview": text[:140] + ("…" if len(text) > 140 else ""),
     }
-    conn = get_db()
-    conn.execute("UPDATE videos SET voiceover_state=? WHERE id=?",
-                 (json.dumps(state), vid))
-    conn.commit()
-    conn.close()
-    return jsonify(state)
+    state = _load_voiceover_state(vid)
+    state.setdefault("generations", []).append(generation)
+    _save_voiceover_state(vid, state)
+    return jsonify({"generation": generation, "generations": state["generations"]})
 
 
 # ── Editor (CapCut-style timeline) ───────────────────────────────────────
