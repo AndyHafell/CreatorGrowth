@@ -4393,6 +4393,153 @@ def video_assets(vid):
     return jsonify(out)
 
 
+def _read_doc_field(custom_fields, key_name):
+    """Resolve a 'Content Doc' / 'Bullet Doc' custom_fields entry to its file text. Returns '' if absent or unreadable."""
+    target = None
+    for f in custom_fields or []:
+        if (f.get("key") or "").strip().lower() == key_name.strip().lower():
+            target = (f.get("value") or "").strip()
+            break
+    if not target:
+        return ""
+    fname = Path(target).name
+    p0 = Path(target)
+    candidates = []
+    if p0.is_absolute():
+        candidates.append(p0)
+    candidates += [
+        CONTENT_DIR / target,
+        CONTENT_DIR / "content_docs" / fname,
+        CONTENT_DIR / fname,
+    ]
+    p = next((c for c in candidates if c.exists()), None)
+    if not p:
+        return ""
+    try:
+        return p.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+_ASSET_PROXY_ALLOWED_HOSTS = {"media.agentflow.net"}
+
+
+def _proxy_asset_url(url):
+    """If url is on a CORS-blocked allowlisted host, route through /api/asset-proxy so the editor can fetch bytes."""
+    from urllib.parse import urlparse, quote
+    if not url:
+        return url
+    try:
+        host = urlparse(url).hostname
+    except ValueError:
+        return url
+    if host in _ASSET_PROXY_ALLOWED_HOSTS:
+        return "/api/asset-proxy?u=" + quote(url, safe="")
+    return url
+
+
+@app.route("/api/asset-proxy", methods=["GET"])
+def asset_proxy():
+    """Stream a remote asset back to the browser so cross-origin fetches work.
+    Same-origin to the editor (creatorgrowth.com); avoids needing CORS on media subdomain.
+    Allowlisted to media.agentflow.net to prevent SSRF."""
+    from urllib.parse import urlparse
+    from flask import Response, stream_with_context
+    url = (request.args.get("u") or "").strip()
+    if not url:
+        return jsonify({"error": "missing u"}), 400
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or parsed.hostname not in _ASSET_PROXY_ALLOWED_HOSTS:
+        return jsonify({"error": "host not allowed"}), 403
+    try:
+        upstream = urlopen(Request(url, headers={"User-Agent": "creatorgrowth-asset-proxy"}), timeout=30)
+    except Exception as e:
+        return jsonify({"error": f"upstream fetch failed: {e}"}), 502
+    content_type = upstream.headers.get("Content-Type", "application/octet-stream")
+    content_length = upstream.headers.get("Content-Length")
+    def gen():
+        try:
+            while True:
+                chunk = upstream.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            upstream.close()
+    headers = {"Content-Type": content_type, "Cache-Control": "private, max-age=300"}
+    if content_length:
+        headers["Content-Length"] = content_length
+    return Response(stream_with_context(gen()), headers=headers)
+
+
+@app.route("/api/videos/<int:vid>/editor-bootstrap", methods=["GET"])
+def editor_bootstrap(vid):
+    """Single payload the OpenCut bridge page needs to seed a new project:
+    title, content/bullet doc text, and the rendered asset list."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    vrow = conn.execute("SELECT id, video_id, title FROM videos WHERE id=?", (vid,)).fetchone()
+    if not vrow:
+        conn.close()
+        return jsonify({"error": "video not found"}), 404
+    drow = conn.execute("SELECT custom_fields FROM video_details WHERE video_id=?", (vid,)).fetchone()
+    try:
+        custom_fields = json.loads(drow["custom_fields"]) if drow and drow["custom_fields"] else []
+    except (TypeError, ValueError):
+        custom_fields = []
+    # Reuse assets logic inline (kept small to avoid a refactor)
+    assets = []
+    try:
+        diagrams = conn.execute(
+            "SELECT id, name, result_url, result_meta_json FROM diagrams "
+            "WHERE video_id=? AND result_url IS NOT NULL ORDER BY position, updated_at",
+            (vid,),
+        ).fetchall()
+        for d in diagrams:
+            try:
+                meta = json.loads(d["result_meta_json"] or "{}")
+            except Exception:
+                meta = {}
+            assets.append({
+                "id": "diag_" + d["id"],
+                "type": "diagram",
+                "name": d["name"] or "diagram",
+                "url": _proxy_asset_url(d["result_url"]),
+                "duration": meta.get("duration", 0),
+            })
+    except sqlite3.OperationalError:
+        pass
+    try:
+        chapters = conn.execute(
+            "SELECT id, name, result_url, result_meta_json FROM chapters "
+            "WHERE video_id=? AND result_url IS NOT NULL ORDER BY position, updated_at",
+            (vid,),
+        ).fetchall()
+        for c in chapters:
+            try:
+                meta = json.loads(c["result_meta_json"] or "{}")
+            except Exception:
+                meta = {}
+            assets.append({
+                "id": "chap_" + c["id"],
+                "type": "chapter",
+                "name": c["name"] or "chapter",
+                "url": _proxy_asset_url(c["result_url"]),
+                "duration": meta.get("duration", 0),
+            })
+    except sqlite3.OperationalError:
+        pass
+    conn.close()
+    return jsonify({
+        "vid": vrow["id"],
+        "video_id": vrow["video_id"],
+        "title": vrow["title"] or f"Video {vid}",
+        "content_doc_text": _read_doc_field(custom_fields, "Content Doc"),
+        "bullet_doc_text": _read_doc_field(custom_fields, "Bullet Doc"),
+        "assets": assets,
+    })
+
+
 @app.route("/api/videos/<int:vid>/editor", methods=["GET"])
 def get_editor_state(vid):
     conn = get_db()
