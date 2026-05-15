@@ -219,6 +219,10 @@ def init_db():
         conn.execute("ALTER TABLE diagrams ADD COLUMN mode TEXT DEFAULT 'reveal'")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE videos ADD COLUMN editor_state TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # Chapter Studio: one list of chapter items per video, rendered to N MP4 clips.
     # One-shot migration: the cloned-from-diagrams schema had `boxes_json`. If that
@@ -3822,6 +3826,175 @@ def chapter_render(vid):
         try:
             shutil.rmtree(work)
         except OSError:
+            pass
+
+
+# ── Editor (CapCut-style timeline) ───────────────────────────────────────
+
+@app.route("/api/videos/<int:vid>/assets", methods=["GET"])
+def video_assets(vid):
+    """List all rendered assets (diagrams + chapters) for this video."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    out = []
+    try:
+        diagrams = conn.execute(
+            "SELECT id, name, result_url, result_meta_json, updated_at, position FROM diagrams "
+            "WHERE video_id=? AND result_url IS NOT NULL ORDER BY position, updated_at",
+            (vid,)
+        ).fetchall()
+        for d in diagrams:
+            try:
+                meta = json.loads(d["result_meta_json"] or "{}")
+            except Exception:
+                meta = {}
+            out.append({
+                "id": "diag_" + d["id"],
+                "type": "diagram",
+                "source_id": d["id"],
+                "name": d["name"] or "diagram",
+                "url": d["result_url"],
+                "duration": meta.get("duration", 0),
+                "updated_at": d["updated_at"],
+            })
+    except sqlite3.OperationalError:
+        pass
+    try:
+        chapters = conn.execute(
+            "SELECT id, name, result_url, result_meta_json, updated_at, position FROM chapters "
+            "WHERE video_id=? AND result_url IS NOT NULL ORDER BY position, updated_at",
+            (vid,)
+        ).fetchall()
+        for c in chapters:
+            try:
+                meta = json.loads(c["result_meta_json"] or "{}")
+            except Exception:
+                meta = {}
+            out.append({
+                "id": "chap_" + c["id"],
+                "type": "chapter",
+                "source_id": c["id"],
+                "name": c["name"] or "chapter",
+                "url": c["result_url"],
+                "duration": meta.get("duration", 0),
+                "updated_at": c["updated_at"],
+            })
+    except sqlite3.OperationalError:
+        pass
+    conn.close()
+    return jsonify(out)
+
+
+@app.route("/api/videos/<int:vid>/editor", methods=["GET"])
+def get_editor_state(vid):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT editor_state FROM videos WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "video not found"}), 404
+    raw = row["editor_state"]
+    if not raw:
+        return jsonify({"timeline": []})
+    try:
+        return jsonify(json.loads(raw))
+    except Exception:
+        return jsonify({"timeline": []})
+
+
+@app.route("/api/videos/<int:vid>/editor", methods=["POST"])
+def save_editor_state(vid):
+    body = request.get_json(force=True, silent=True) or {}
+    payload = json.dumps(body)
+    conn = get_db()
+    conn.execute("UPDATE videos SET editor_state=? WHERE id=?", (payload, vid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/videos/<int:vid>/editor/render", methods=["POST"])
+def render_editor_timeline(vid):
+    """Compose the timeline clips into a single MP4. v1: sequential concat with
+    optional re-encode for codec/dim consistency."""
+    import tempfile, subprocess, shutil
+
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT editor_state FROM videos WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "video not found"}), 404
+    try:
+        state = json.loads(row["editor_state"] or "{}")
+    except Exception:
+        return jsonify({"error": "editor state corrupt"}), 500
+    timeline = state.get("timeline", [])
+    if not timeline:
+        return jsonify({"error": "timeline is empty"}), 400
+
+    job_id = uuid.uuid4().hex[:12]
+    work_dir = Path(tempfile.mkdtemp(prefix=f"editor_{job_id}_"))
+    try:
+        # Resolve clip paths
+        clip_paths = []
+        for item in timeline:
+            url = (item.get("asset_url") or "").lstrip("/")
+            if not url:
+                continue
+            abs_path = Path(app.root_path) / url
+            if abs_path.exists():
+                clip_paths.append(abs_path)
+        if not clip_paths:
+            return jsonify({"error": "no resolvable clips on timeline"}), 400
+
+        # All clips are MP4s rendered by our pipeline, so they share the same
+        # codec/pixel-format/sample-rate. Use concat demuxer with stream copy.
+        concat_file = work_dir / "concat.txt"
+        with concat_file.open("w") as f:
+            for p in clip_paths:
+                f.write(f"file '{str(p).replace(chr(39), chr(92)+chr(39))}'\n")
+
+        out_path = work_dir / "out.mp4"
+        # Re-encode for safety (different durations, b-frames, GOP can break stream copy)
+        cmd = [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file),
+            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-r", "30",
+            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+            str(out_path),
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if r.returncode != 0:
+            return jsonify({"error": "ffmpeg failed", "stderr": r.stderr[-2000:]}), 500
+
+        out_dir = Path(app.root_path) / "static" / "uploads" / "editor"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        final_path = out_dir / f"v{vid}_{job_id}.mp4"
+        shutil.move(str(out_path), str(final_path))
+        rel = str(final_path.relative_to(Path(app.root_path)))
+        result_url = "/" + rel
+
+        # Persist last_render onto editor_state
+        state["last_render"] = {
+            "url": result_url,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "clips": len(clip_paths),
+        }
+        conn = get_db()
+        conn.execute("UPDATE videos SET editor_state=? WHERE id=?",
+                     (json.dumps(state), vid))
+        conn.commit()
+        conn.close()
+
+        return jsonify({"url": result_url, "clips": len(clip_paths)})
+    except Exception as e:
+        return jsonify({"error": f"render exception: {type(e).__name__}: {e}"}), 500
+    finally:
+        try:
+            shutil.rmtree(work_dir)
+        except Exception:
             pass
 
 
