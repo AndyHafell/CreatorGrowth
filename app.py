@@ -4505,7 +4505,7 @@ _DIAGRAM_DARK_PREFIX = (
     "16:9 aspect ratio (1920x1080)."
 )
 
-_DIAGRAM_GEMINI_MODEL = "gemini-2.0-flash-preview-image-generation"
+_DIAGRAM_GEMINI_MODEL = "gemini-3.1-flash-image-preview"
 
 
 # Several patterns Andy's docs use for step headers — we try them in order
@@ -4653,8 +4653,16 @@ def _gemini_generate_diagram_image(brief, api_key):
     try:
         with urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-    except (HTTPError, URLError) as e:
-        app.logger.warning(f"diagrams.gen: gemini call failed: {e}")
+    except HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "ignore")[:500]
+        except Exception:
+            pass
+        app.logger.warning(f"diagrams.gen: gemini http {e.code}: {detail}")
+        return None
+    except URLError as e:
+        app.logger.warning(f"diagrams.gen: gemini network: {e.reason}")
         return None
     try:
         parts = data["candidates"][0]["content"]["parts"]
