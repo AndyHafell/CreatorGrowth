@@ -4484,76 +4484,55 @@ def asset_proxy():
 # step title — channel signature style. The per-diagram /pixel-art endpoint
 # below is a separate transform for already-existing images.
 
-_DIAGRAM_PIXEL_GEN_PROMPT_TPL = (
-    "Generate a polished 16-bit SNES pixel art TUTORIAL SLIDE explaining this "
-    "step from a YouTube video.\n\n"
-    "STEP TITLE: \"{concept}\"\n\n"
-    "STEP CONTENT (extract 3–6 short punchy bullet points from this body — keep "
-    "each bullet to 4–8 words, render them as readable pixel-font text inside "
-    "the slide's content panels):\n"
-    "{body}\n\n"
-    "STYLE:\n"
-    "16-bit SNES pixel art aesthetic — chunky visible pixels, flat limited "
-    "color palette, NO anti-aliasing, NO smoothing, NO photorealism. Think "
-    "Final Fantasy / Chrono Trigger / Earthbound visual language. This is a "
-    "polished tutorial slide, not just an illustration.\n\n"
-    "LOCKED LAYOUT (mimic the AI Andy channel's slide signature):\n\n"
-    "1. TOP TITLE BAR (top ~18% of frame, full width):\n"
-    "   - The step title in BOLD UPPERCASE pixel-art letters, large, "
-    "centered or left-aligned\n"
-    "   - Vertical color gradient inside the letters: bright yellow "
-    "(#FFD700) at top → deep gold (#E8A800) at bottom\n"
-    "   - Thick dark navy pixel-block shadow behind the letters for depth\n"
-    "   - Optional small white pixel-font subtitle line directly below the "
-    "title summarizing the angle\n\n"
-    "2. MIDDLE CONTENT (middle ~65% of frame): TWO bordered panels side by "
-    "side, OR a single wide panel + an icon zone:\n"
-    "   - Each panel has a thick gold (#FFD700) pixel-art border, 3–4px, "
-    "with slightly wobbly hand-drawn corners\n"
-    "   - Top of each panel: a small uppercase header in green (#8ce99a) "
-    "pixel font (3–5 words — e.g. \"THE PROBLEM\", \"HOW IT WORKS\", "
-    "\"WHAT YOU GET\", \"WHY IT MATTERS\")\n"
-    "   - Inside each panel: a vertical BULLET LIST of 3–5 bullets. Each "
-    "bullet starts with a small green pixel checkmark sprite (✓ shape in "
-    "#8ce99a) followed by a short white (#f8f9fa) blocky pixel-font phrase "
-    "(4–8 words pulled from the STEP CONTENT above)\n"
-    "   - At least ONE panel should include a pixel art icon/character "
-    "illustration alongside the bullets — a computer, a robot, a key, a "
-    "gear, a cloud server, a brain, a chart, a stick-figure creator, a "
-    "logo silhouette — whatever fits the step\n"
-    "   - Use the bullet content from STEP CONTENT verbatim where possible "
-    "— viewers should be able to read and learn from the slide\n\n"
-    "3. BOTTOM SUMMARY (bottom ~12% of frame):\n"
-    "   - A single bold takeaway line in gold/green pixel font summarizing "
-    "the step's key promise\n"
-    "   - Optional smaller white pixel tagline beneath\n\n"
-    "BACKGROUND:\n"
-    "Dark navy (#121212) with a handful of small pixel sparkles scattered "
-    "around the panels (white + light blue dots, like distant stars).\n\n"
-    "COLOR PALETTE (use throughout):\n"
-    "- Title gold gradient: #FFD700 → #E8A800\n"
-    "- Panel borders: #FFD700\n"
-    "- Panel sub-headers: #8ce99a (green)\n"
-    "- Checkmark sprites: #8ce99a (green) — or #ff8787 (coral) as X marks "
-    "for negative bullets\n"
-    "- Body text: #f8f9fa (white)\n"
-    "- Accent icons: #74b9ff (blue), #ff8787 (coral), #b197fc (purple), "
-    "#ffec99 (warm yellow)\n"
-    "- Background: #121212 (dark navy) — exact value, no variation\n\n"
-    "DO NOT INCLUDE:\n"
-    "- Photorealism, anti-aliasing, smooth lines, soft gradients (except "
-    "inside the title letters)\n"
-    "- Hand-drawn Excalidraw wobble (this is pixel art, not whiteboard "
-    "sketches)\n"
-    "- Corporate clip art, stock photography\n"
-    "- Empty/decorative panels — every panel must have real readable "
-    "bullet text from the step content\n"
-    "- Just an isolated illustration with one label — this is a polished "
-    "slide with bullets and panels\n\n"
-    "Output must be 16:9 aspect ratio (1920x1080)."
+# LOCKED PIXEL_STYLE — copy verbatim from skills DRAWING_TO_PIXEL_ART_SOP.md.
+# Never modify per-request.
+_DIAGRAM_PIXEL_STYLE = (
+    "16-bit SNES pixel art, 16:9 aspect ratio (1920x1080). "
+    "Background: deep dark navy blue (#0b1220) with subtle sparse pixel star dots -- "
+    "small single white pixels scattered across it like a night sky. "
+    "All titles and headers: bold GOLD/YELLOW pixel font (#ffd700). "
+    "Labels and body text: white pixel font. "
+    "Accent colors for panels: neon green (#00ff88) for positive/right, "
+    "coral red (#ff4444) for negative/wrong. "
+    "Section borders: thick neon pixel borders matching accent color. "
+    "Visible chunky pixel blocks. No gradients, no photography, no smooth lines. "
+    "Retro game UI feel -- dramatic, high contrast, readable. "
 )
 
-_DIAGRAM_GEMINI_MODEL = "gemini-3.1-flash-image-preview"
+_DIAGRAM_PIXEL_GEN_PROMPT_TPL = (
+    "{style}\n\n"
+    "TOP CENTER: large bold gold pixel font title: '{title}'. "
+    "Subtitle in white pixel font: a 1-line angle pulled from the step content.\n\n"
+    "LAYOUT: Left-right split screen with two bordered content panels.\n\n"
+    "LEFT PANEL (neon green border #00ff88, dark green tint inside, neon green "
+    "pixel label at top: 'KEY POINTS'): "
+    "3-5 bullet items in white pixel font, each preceded by a neon green pixel "
+    "checkmark badge. Each bullet is a 4-8 word phrase pulled from the STEP "
+    "CONTENT below — render them VERBATIM so the slide reads like a real "
+    "tutorial frame. Avoid placeholder text. "
+    "Include at least one small pixel art icon inside this panel that fits "
+    "the step (terminal, robot, document, clock, cloud server, branch icon, "
+    "lightning bolt, gear, brain).\n\n"
+    "RIGHT PANEL (neon blue border #00aaff, dark blue tint inside, neon blue "
+    "pixel label at top: 'WHY IT MATTERS'): "
+    "A larger pixel art ILLUSTRATION/SCENE that visually represents the step "
+    "concept. Below it: 2-3 short white pixel-font labels naming the key "
+    "elements of the illustration. If the step has a clear contrast "
+    "(before/after, wrong/right, with/without), use coral red (#ff4444) "
+    "X-marks and neon green (#00ff88) checkmarks to call it out.\n\n"
+    "BOTTOM CENTER: small white pixel font: a one-sentence takeaway line "
+    "summarizing the step in plain language.\n\n"
+    "STEP CONTENT (extract bullet text verbatim from here; pick the most "
+    "compelling 3-5 phrases):\n"
+    "{body}\n\n"
+    "DO NOT: leave panels empty, render only an illustration without bullet "
+    "text, use any background color other than #0b1220, use gradients or "
+    "smooth lines, use Excalidraw hand-drawn wobble. This is a polished "
+    "pixel art tutorial slide with readable text inside both panels."
+)
+
+# Nano Banana Pro per the SOP — better at complex multi-panel layouts.
+_DIAGRAM_GEMINI_MODEL = "gemini-3-pro-image-preview"
 
 
 # Several patterns Andy's docs use for step headers — we try them in order
@@ -4759,15 +4738,20 @@ def _derive_diagram_briefs(vid):
 
 
 def _gemini_generate_diagram_image(brief_obj, api_key):
-    """One call to Gemini Image Generation — pixel art slide per step.
+    """One call to Gemini Image Generation — pixel art slide per step,
+    following ~/dev/DRAWING_TO_PIXEL_ART_SOP.md exactly.
     `brief_obj` is {name, brief (title), body (rich content)}.
     Returns PNG bytes or None on failure."""
-    title = brief_obj.get("brief") or brief_obj.get("name") or ""
+    title = (brief_obj.get("brief") or brief_obj.get("name") or "").upper()
     body = (brief_obj.get("body") or "").strip()
     if not body:
-        body = ("(no extra content — render with just the title and a generic "
-                "pixel art illustration that fits the title)")
-    full_prompt = _DIAGRAM_PIXEL_GEN_PROMPT_TPL.format(concept=title, body=body)
+        body = ("(no extra content available — render with the title and a "
+                "generic pixel art scene that fits)")
+    full_prompt = _DIAGRAM_PIXEL_GEN_PROMPT_TPL.format(
+        style=_DIAGRAM_PIXEL_STYLE,
+        title=title,
+        body=body,
+    )
     return _gemini_image_call(
         [{"text": full_prompt}],
         api_key,
