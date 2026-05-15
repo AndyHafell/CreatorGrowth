@@ -2168,16 +2168,23 @@
         </div>
         <div style="display:flex; height:calc(100vh - 49px);">
             <!-- Script panel (production source of truth) -->
-            <div style="width:380px; background:#0d0d1a; border-right:1px solid #1f1f30; display:flex; flex-direction:column;">
+            <div id="editorScriptCol" style="width:420px; background:#0d0d1a; display:flex; flex-direction:column; position:relative; flex-shrink:0; border-right:1px solid #1f1f30;">
                 <div style="display:flex; align-items:center; padding:14px 14px 8px; border-bottom:1px solid #15151f;">
                     <span style="color:#444; font-size:10px; letter-spacing:1.5px;">SCRIPT</span>
                     <span style="flex:1;"></span>
+                    <span id="editorScriptSaveBadge" style="color:#4caf50; font-size:10px; margin-right:8px; opacity:0; transition:opacity 0.3s;">saved</span>
                     <span id="editorScriptStatus" style="color:#444; font-size:10px;">—</span>
                 </div>
-                <div id="editorScriptPanel" class="editor-script-body"
-                     style="flex:1; overflow-y:auto; padding:16px 18px; color:#c8c8d0; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; font-size:13.5px; line-height:1.65; user-select:text;">
+                <div id="editorScriptPanel" class="editor-script-body" contenteditable="true" spellcheck="true"
+                     oninput="editorScriptChanged()"
+                     style="flex:1; overflow-y:auto; padding:16px 22px 24px 18px; color:#c8c8d0; font-family:'Helvetica Neue', Helvetica, Arial, sans-serif; font-size:14px; line-height:1.7; outline:none; user-select:text;">
                     <div style="color:#444; font-size:12px;">Loading script…</div>
                 </div>
+                <!-- Drag handle to resize column -->
+                <div id="editorScriptResize"
+                     onmousedown="editorScriptStartResize(event)"
+                     title="Drag to resize"
+                     style="position:absolute; top:0; right:-3px; width:6px; height:100%; cursor:col-resize; z-index:5;"></div>
             </div>
             <!-- Asset gallery -->
             <div style="width:220px; background:#0d0d1a; border-right:1px solid #1f1f30; padding:14px 12px; overflow-y:auto;">
@@ -7160,24 +7167,88 @@
 
     function loadEditorScript() {
         var panel = document.getElementById('editorScriptPanel');
-        var status = document.getElementById('editorScriptStatus');
         if (!panel) return;
+        // Restore column width
+        var col = document.getElementById('editorScriptCol');
+        var savedW = parseInt(localStorage.getItem('editorScriptColW') || '0', 10);
+        if (col && savedW >= 240 && savedW <= 1200) col.style.width = savedW + 'px';
+
         var src = document.getElementById('modalDocEditor');
         var html = src ? (src.innerHTML || '').trim() : '';
         if (!html) {
             panel.innerHTML = '<div style="color:#444; font-size:12px; line-height:1.5;">No content doc loaded. Open the doc in the modal first — its body will appear here.</div>';
-            if (status) status.textContent = 'empty';
-            return;
+            panel.dataset.empty = '1';
+        } else {
+            panel.innerHTML = html;
+            panel.dataset.empty = '';
         }
-        panel.innerHTML = html;
-        // Count words for a quick read on script length / estimated VO duration
+        refreshEditorScriptStats();
+    }
+
+    function refreshEditorScriptStats() {
+        var panel = document.getElementById('editorScriptPanel');
+        var status = document.getElementById('editorScriptStatus');
+        if (!panel || !status) return;
+        if (panel.dataset.empty === '1') { status.textContent = 'empty'; return; }
         var txt = panel.textContent || '';
         var words = (txt.trim().match(/\S+/g) || []).length;
-        // ~150 wpm typical narration
-        var mins = words / 150;
-        if (status) {
-            status.textContent = words + ' words · ~' + (mins < 1 ? (mins * 60).toFixed(0) + 's' : mins.toFixed(1) + 'm');
+        var mins = words / 150; // ~150 wpm narration estimate
+        status.textContent = words + ' words · ~' + (mins < 1 ? (mins * 60).toFixed(0) + 's' : mins.toFixed(1) + 'm');
+    }
+
+    var _editorScriptSyncTimer = null;
+    function editorScriptChanged() {
+        var panel = document.getElementById('editorScriptPanel');
+        if (!panel || panel.dataset.empty === '1') return;
+        refreshEditorScriptStats();
+        // Mirror edits back to the modal's content doc + trigger its autosave
+        var modal = document.getElementById('modalDocEditor');
+        if (!modal) return;
+        modal.innerHTML = panel.innerHTML;
+        if (typeof modalDocChanged === 'function') modalDocChanged();
+        // Saved-badge UX
+        var badge = document.getElementById('editorScriptSaveBadge');
+        if (badge) {
+            badge.textContent = 'editing…';
+            badge.style.color = '#f5b942';
+            badge.style.opacity = '1';
+            clearTimeout(_editorScriptSyncTimer);
+            _editorScriptSyncTimer = setTimeout(function() {
+                badge.textContent = 'saved';
+                badge.style.color = '#4caf50';
+                setTimeout(function() { badge.style.opacity = '0'; }, 800);
+            }, 700);
         }
+    }
+
+    var _editorScriptResize = null;
+    function editorScriptStartResize(e) {
+        e.preventDefault();
+        var col = document.getElementById('editorScriptCol');
+        if (!col) return;
+        _editorScriptResize = { startX: e.clientX, startW: col.offsetWidth };
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        document.addEventListener('mousemove', editorScriptDoResize);
+        document.addEventListener('mouseup', editorScriptEndResize);
+    }
+    function editorScriptDoResize(e) {
+        if (!_editorScriptResize) return;
+        var col = document.getElementById('editorScriptCol');
+        var w = _editorScriptResize.startW + (e.clientX - _editorScriptResize.startX);
+        if (w < 240) w = 240;
+        if (w > 1200) w = 1200;
+        col.style.width = w + 'px';
+    }
+    function editorScriptEndResize() {
+        if (!_editorScriptResize) return;
+        var col = document.getElementById('editorScriptCol');
+        localStorage.setItem('editorScriptColW', String(col.offsetWidth));
+        _editorScriptResize = null;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        document.removeEventListener('mousemove', editorScriptDoResize);
+        document.removeEventListener('mouseup', editorScriptEndResize);
     }
 
     function setEditorStatus(text, color) {
