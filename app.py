@@ -5026,6 +5026,66 @@ _DIAGRAM_PIXEL_PROMPT = (
 )
 
 
+@app.route("/api/diagrams/<diagram_id>/regenerate", methods=["POST"])
+def diagram_regenerate(diagram_id):
+    """Redo a single diagram's source image via the same 2-step SOP pipeline
+    used by /generate-batch. Reuses the chapter brief associated with this
+    diagram's name (Step N: TITLE). Replaces image_path on success."""
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "diagram not found"}), 404
+    vid = row["video_id"]
+    name = row["name"] or ""
+    conn.close()
+
+    # Find the brief in the current chapter/step list whose title matches.
+    briefs = _derive_diagram_briefs(vid)
+    match = None
+    # `Step N: TITLE` → derive position + title
+    m = re.match(r"^\s*Step\s+(\d+)\s*:\s*(.+?)\s*$", name, re.IGNORECASE)
+    if m:
+        step_num = int(m.group(1))
+        title_lc = m.group(2).strip().lower()
+        # Prefer position match (1-indexed)
+        if 1 <= step_num <= len(briefs):
+            cand = briefs[step_num - 1]
+            if (cand.get("brief") or "").strip().lower() == title_lc:
+                match = cand
+        if not match:
+            # Fall back to title-only match
+            for b in briefs:
+                if (b.get("brief") or "").strip().lower() == title_lc:
+                    match = b
+                    break
+    if not match:
+        # Last resort: synthesize a brief from the diagram's name
+        match = {"name": name, "brief": name.split(":", 1)[-1].strip() or name, "body": ""}
+
+    png = _gemini_generate_diagram_image(match, api_key)
+    if not png:
+        return jsonify({"error": "generation failed (see server logs)"}), 502
+    out_root = UPLOAD_DIR / "diagrams" / str(vid)
+    out_root.mkdir(parents=True, exist_ok=True)
+    out_path = out_root / f"{diagram_id}_{int(time.time())}.png"
+    out_path.write_bytes(png)
+    rel = str(out_path.relative_to(Path(app.root_path)))
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    conn.execute("UPDATE diagrams SET image_path=?, updated_at=? WHERE id=?",
+                 (rel, now, diagram_id))
+    conn.commit()
+    row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    conn.close()
+    return jsonify(_diagram_row_to_dict(row))
+
+
 @app.route("/api/diagrams/<diagram_id>/pixel-art", methods=["POST"])
 def diagram_pixel_art(diagram_id):
     """Transform the diagram's current image into 16-bit pixel art via Nano Banana Pro
