@@ -4479,6 +4479,208 @@ def asset_proxy():
     return Response(stream_with_context(gen()), headers=headers)
 
 
+# ── Diagram batch generation (Nano Banana 2 / Gemini Image) ──────────────
+
+_DIAGRAM_DARK_PREFIX = (
+    "CRITICAL: The background color MUST be EXACTLY #121212 -- not black (#000000), "
+    "not near-black, not dark gray, not #1a1a1a, not #0d0d0d. The EXACT hex value "
+    "#121212. This is non-negotiable.\n\n"
+    "Excalidraw-style sketch on a completely plain dark background -- EXACTLY #121212, "
+    "no texture, no paper grain, no noise. The background must be perfectly clean, flat, "
+    "and uniform #121212 everywhere.\n\n"
+    "Text and linework are the hand-drawn elements: all text is messy but legible "
+    "hand-scrawled handwriting in white (#f8f9fa) with uneven letter sizes and slight "
+    "tilts -- like someone wrote it fast with a thick white felt-tip marker on a dark "
+    "surface. Lines and shape outlines are VERY wobbly and imperfect.\n\n"
+    "Shape fills are SOLID and FLAT -- clean, even, uniform muted color inside each "
+    "shape. Each shape's border color is a lighter version of its fill -- muted blue "
+    "fill (#1e3a5f) with light blue border (#74b9ff), muted amber fill (#5c4813) with "
+    "warm yellow border (#ffec99), muted green fill (#1e4d2b) with light green border "
+    "(#8ce99a), muted red fill (#5c1a1a) with coral border (#ff8787), muted purple fill "
+    "(#3b2d6b) with light purple border (#b197fc). Borders are 2-3px thick with wobbly "
+    "hand-drawn outlines.\n\n"
+    "Arrows are hand-drawn with visible wobble. Arrows are light gray (#dee2e6) or "
+    "match the border color of shapes they connect.\n\n"
+    "All text is white (#f8f9fa). Background is ALWAYS exactly #121212. Output must be "
+    "16:9 aspect ratio (1920x1080)."
+)
+
+_DIAGRAM_GEMINI_MODEL = "gemini-2.0-flash-preview-image-generation"
+
+
+_STEP_RE = re.compile(
+    r"^\s*(?:#{2,4}\s+)?Step\s+\d+\s*[-–—:]\s*(.+?)(?:\s*[✅✓☑])?\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _extract_steps_from_text(text):
+    """Pull step titles from a content/show-doc style markdown string."""
+    if not text:
+        return []
+    items, seen = [], set()
+    for m in _STEP_RE.findall(text):
+        t = m.strip()
+        if not t:
+            continue
+        k = t.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        items.append(t)
+    return items
+
+
+def _derive_diagram_briefs(vid):
+    """Return [{name, brief}] in this order of fallback:
+    1) chapters.items_json (manually curated)
+    2) Steps parsed from the Content Doc file
+    3) Steps parsed from the Bullet Doc file
+    """
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM chapters WHERE video_id=?", (vid,)).fetchone()
+    items = []
+    if row:
+        try:
+            items = json.loads(row["items_json"] or "[]")
+        except (TypeError, ValueError):
+            items = []
+    if not items:
+        drow = conn.execute(
+            "SELECT custom_fields FROM video_details WHERE video_id=?", (vid,)
+        ).fetchone()
+        try:
+            fields = json.loads(drow["custom_fields"]) if drow and drow["custom_fields"] else []
+        except (TypeError, ValueError):
+            fields = []
+        for key in ("Content Doc", "Bullet Doc"):
+            doc = _read_doc_field(fields, key)
+            extracted = _extract_steps_from_text(doc.get("text", ""))
+            if extracted:
+                items = extracted
+                break
+    conn.close()
+    if not items:
+        return []
+    return [{"name": (t or "").strip() or f"Diagram {i+1}",
+             "brief": (t or "").strip()}
+            for i, t in enumerate(items)]
+
+
+def _gemini_generate_diagram_image(brief, api_key):
+    """One call to Gemini Image Generation. Returns PNG bytes or None on failure."""
+    from urllib.error import HTTPError, URLError
+    import base64
+    full_prompt = f"{_DIAGRAM_DARK_PREFIX}\n\n---\nConcept: {brief}\n\nCreate a clean Excalidraw-style concept diagram illustrating this idea. Keep it simple — 3 to 5 boxes with short labels (max 3 words each), arrows showing flow if applicable. The concept title should appear at the top in large hand-drawn text."
+    payload = {
+        "contents": [{"parts": [{"text": full_prompt}]}],
+        "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
+    }
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{_DIAGRAM_GEMINI_MODEL}:generateContent?key={api_key}")
+    req = Request(url, data=json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (HTTPError, URLError) as e:
+        app.logger.warning(f"diagrams.gen: gemini call failed: {e}")
+        return None
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError):
+        app.logger.warning(f"diagrams.gen: malformed gemini response: {str(data)[:300]}")
+        return None
+    for p in parts:
+        inline = p.get("inlineData") or p.get("inline_data")
+        if inline and inline.get("data"):
+            try:
+                return base64.b64decode(inline["data"])
+            except Exception as e:
+                app.logger.warning(f"diagrams.gen: b64 decode failed: {e}")
+                return None
+    app.logger.warning(f"diagrams.gen: no image part in response (only text/empty)")
+    return None
+
+
+@app.route("/api/videos/<int:vid>/diagrams/generate-batch", methods=["POST"])
+def diagrams_generate_batch(vid):
+    """Generate N diagrams in one shot. Body: {briefs?: [{name, brief}]}.
+    If briefs missing, derive from chapter items. Runs in parallel."""
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set on server"}), 500
+    body = request.get_json(force=True, silent=True) or {}
+    briefs = body.get("briefs") or _derive_diagram_briefs(vid)
+    briefs = [b for b in briefs if isinstance(b, dict) and (b.get("brief") or "").strip()]
+    if not briefs:
+        return jsonify({
+            "error": "no briefs supplied and no chapter items on this video. "
+                     "Generate chapters from the content doc first."
+        }), 400
+    if len(briefs) > 12:
+        briefs = briefs[:12]
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    out_root = UPLOAD_DIR / "diagrams" / str(vid)
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    def _worker(idx, b):
+        png = _gemini_generate_diagram_image(b["brief"], api_key)
+        if not png:
+            return idx, b, None, None
+        diagram_id = "d" + uuid.uuid4().hex[:14]
+        fname = f"{diagram_id}.png"
+        out_path = out_root / fname
+        out_path.write_bytes(png)
+        rel = str(out_path.relative_to(Path(app.root_path)))
+        return idx, b, diagram_id, rel
+
+    results = [None] * len(briefs)
+    with ThreadPoolExecutor(max_workers=min(7, len(briefs))) as ex:
+        futures = {ex.submit(_worker, i, b): i for i, b in enumerate(briefs)}
+        for fut in as_completed(futures):
+            try:
+                idx, b, diagram_id, rel = fut.result()
+            except Exception as e:
+                app.logger.exception(f"diagrams.gen: worker crashed: {e}")
+                continue
+            results[idx] = (b, diagram_id, rel)
+
+    # Persist successful ones as diagram rows
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    pos_row = conn.execute(
+        "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM diagrams WHERE video_id=?",
+        (vid,)
+    ).fetchone()
+    base_pos = pos_row[0] if pos_row else 0
+    created = []
+    failures = 0
+    now = datetime.now(timezone.utc).isoformat()
+    for i, r in enumerate(results):
+        if not r or not r[1]:
+            failures += 1
+            continue
+        b, diagram_id, rel = r
+        conn.execute(
+            "INSERT INTO diagrams (id, video_id, name, boxes_json, image_path, position, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (diagram_id, vid, b["name"], "[]", rel, base_pos + i, now, now),
+        )
+        row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+        created.append(_diagram_row_to_dict(row))
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "created": created,
+        "requested": len(briefs),
+        "failed": failures,
+    })
+
+
 @app.route("/api/videos/<int:vid>/editor-bootstrap", methods=["GET"])
 def editor_bootstrap(vid):
     """Single payload the OpenCut bridge page needs to seed a new project:
