@@ -1857,6 +1857,7 @@
                     <button onclick="openAllLinks()" title="Open all links in new tabs" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">OPEN LINKS</button>
                     <button onclick="openDiagrams()" title="Animate diagrams + images from script" style="font-size:11px; letter-spacing:0.5px; color:#f5b942;">DIAGRAMS</button>
                     <button onclick="openChapters()" title="Chapter Animation studio" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">CHAPTERS</button>
+                    <button onclick="openEditor()" title="Timeline editor — compose all assets into one video (CapCut-style)" style="font-size:11px; letter-spacing:0.5px; color:#7ad17a;">EDITOR</button>
                 </div>
                 <div id="modalDocEditor" class="modal-doc-editor" contenteditable="true" spellcheck="true" oninput="modalDocChanged()" style="min-height:400px; max-height:80vh; overflow-y:auto; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px; padding:16px; color:#ddd; font-size:14px; line-height:1.7; outline:none;"></div>
             </div>
@@ -2154,6 +2155,46 @@
         </div>
     </div>
 
+
+    <!-- ============ EDITOR (CapCut-style timeline) ============ -->
+    <div id="editorStudio" style="display:none; position:fixed; inset:0; background:#0a0a14; z-index:600; color:#ddd;">
+        <div style="display:flex; align-items:center; gap:14px; padding:12px 22px; border-bottom:1px solid #1f1f30; background:#0d0d1a;">
+            <div style="font-weight:700; letter-spacing:2px; color:#7ad17a; font-size:12px;">EDITOR</div>
+            <div id="editorStudioTitle" style="color:#666; font-size:12px; border-left:1px solid #2a2a4a; padding-left:14px;"></div>
+            <div style="flex:1;"></div>
+            <span id="editorStatus" style="color:#555; font-size:11px;"></span>
+            <button onclick="renderEditor()" style="background:#7ad17a; color:#000; border:none; padding:7px 16px; border-radius:4px; font-size:11px; font-weight:700; letter-spacing:1px; cursor:pointer;">EXPORT MP4</button>
+            <button onclick="closeEditor()" style="background:none; border:1px solid #2a2a4a; color:#888; padding:6px 14px; border-radius:4px; font-size:11px; letter-spacing:0.5px; cursor:pointer;">CLOSE</button>
+        </div>
+        <div style="display:flex; height:calc(100vh - 49px);">
+            <!-- Asset gallery -->
+            <div style="width:240px; background:#0d0d1a; border-right:1px solid #1f1f30; padding:14px 12px; overflow-y:auto;">
+                <div style="color:#444; font-size:10px; letter-spacing:1.5px; padding:0 4px 8px;">ASSETS</div>
+                <div id="editorAssetList"></div>
+                <div style="color:#333; font-size:10px; padding:8px 4px 0; border-top:1px solid #1f1f30; margin-top:8px; letter-spacing:0.3px; line-height:1.5;">drag to timeline below &middot; right-click clip on timeline to remove</div>
+            </div>
+            <!-- Main: preview + timeline -->
+            <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+                <div id="editorPreviewWrap" style="flex:1; padding:20px; background:#000; display:flex; align-items:center; justify-content:center; min-height:0;">
+                    <video id="editorPreview" controls style="display:none; max-width:100%; max-height:100%; background:#000;"></video>
+                    <div id="editorPreviewEmpty" style="color:#444; font-size:13px; text-align:center;">Drop assets onto the timeline below, then EXPORT to render the composition.</div>
+                </div>
+                <div style="height:140px; background:#0d0d1a; border-top:1px solid #1f1f30; padding:14px;">
+                    <div style="display:flex; align-items:center; margin-bottom:8px;">
+                        <span style="color:#444; font-size:10px; letter-spacing:1.5px;">TIMELINE</span>
+                        <span style="flex:1;"></span>
+                        <span id="editorTimelineDuration" style="color:#666; font-size:11px; font-variant-numeric:tabular-nums;"></span>
+                    </div>
+                    <div id="editorTimeline"
+                         ondragover="event.preventDefault(); event.dataTransfer.dropEffect='copy';"
+                         ondrop="dropOnTimeline(event)"
+                         style="display:flex; gap:4px; min-height:62px; background:#15151f; border:1px solid #2a2a4a; border-radius:6px; padding:8px; overflow-x:auto; align-items:center;">
+                        <div id="editorTimelineEmpty" style="color:#444; font-size:11px; padding:0 12px;">Drag assets here from the left</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <div id="teleprompterOverlay" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; background:#000; z-index:99999; overflow-y:auto;">
         <div id="tpToolbar" style="position:fixed; top:0; left:0; right:0; display:flex; align-items:center; gap:6px; padding:8px 16px; background:rgba(0,0,0,0.85); border-bottom:1px solid #222; z-index:100000; opacity:0; transition:opacity 0.2s;" onmouseenter="this.style.opacity=1" onmouseleave="this.style.opacity=0">
@@ -7031,6 +7072,223 @@
             items.forEach(function(item) { uploadAndInsert(item.getAsFile(), null, null); });
         });
     });
+    </script>
+
+    <!-- ============ EDITOR JS ============ -->
+    <script>
+    var editorVideoId = null;
+    var editorAssets = [];
+    var editorState = { timeline: [] };
+
+    function openEditor() {
+        var vid = (typeof modalVideoId !== 'undefined' && modalVideoId) ? modalVideoId : null;
+        if (!vid) { alert('Open a video first.'); return; }
+        editorVideoId = vid;
+        document.getElementById('editorStudio').style.display = 'block';
+        var t = document.getElementById('modalTitle');
+        document.getElementById('editorStudioTitle').textContent = (t && t.textContent.trim()) || 'untitled';
+        setEditorStatus('Loading…', '#f5b942');
+        // hide previous render preview
+        var p = document.getElementById('editorPreview');
+        p.style.display = 'none'; p.removeAttribute('src');
+        document.getElementById('editorPreviewEmpty').style.display = 'block';
+
+        Promise.all([
+            fetch('/api/videos/' + vid + '/assets').then(function(r){return r.json();}),
+            fetch('/api/videos/' + vid + '/editor').then(function(r){return r.json();})
+        ]).then(function(arr) {
+            editorAssets = Array.isArray(arr[0]) ? arr[0] : [];
+            editorState = arr[1] || { timeline: [] };
+            if (!editorState.timeline) editorState.timeline = [];
+            renderEditorAssetGallery();
+            renderEditorTimeline();
+            // restore last-render preview if any
+            if (editorState.last_render && editorState.last_render.url) {
+                var v = document.getElementById('editorPreview');
+                v.src = editorState.last_render.url;
+                v.style.display = 'block';
+                document.getElementById('editorPreviewEmpty').style.display = 'none';
+            }
+            setEditorStatus('Saved', '#4caf50');
+        }).catch(function(err) { setEditorStatus('Load failed: ' + err, '#e07070'); });
+    }
+
+    function closeEditor() {
+        saveEditorState();
+        document.getElementById('editorStudio').style.display = 'none';
+    }
+
+    function setEditorStatus(text, color) {
+        var el = document.getElementById('editorStatus');
+        if (!el) return;
+        el.textContent = text || '';
+        el.style.color = color || '#555';
+    }
+
+    function renderEditorAssetGallery() {
+        var c = document.getElementById('editorAssetList');
+        c.innerHTML = '';
+        if (!editorAssets.length) {
+            c.innerHTML = '<div style="color:#444; font-size:11px; padding:8px 4px; line-height:1.5;">No rendered assets yet. Render diagrams or chapters first — they\'ll appear here.</div>';
+            return;
+        }
+        editorAssets.forEach(function(asset) {
+            var card = document.createElement('div');
+            card.draggable = true;
+            card.style.cssText = 'margin-bottom:8px; padding:9px 10px; background:#15151f; border:1px solid #1f1f30; border-radius:4px; cursor:grab; transition:border-color 0.1s;';
+            card.onmouseenter = function(){ card.style.borderColor = '#7ad17a'; };
+            card.onmouseleave = function(){ card.style.borderColor = '#1f1f30'; };
+            card.ondragstart = function(ev) {
+                ev.dataTransfer.effectAllowed = 'copy';
+                ev.dataTransfer.setData('application/json', JSON.stringify(asset));
+                card.style.opacity = '0.5';
+            };
+            card.ondragend = function(){ card.style.opacity = '1'; };
+            var nameEl = document.createElement('div');
+            nameEl.textContent = asset.name || 'untitled';
+            nameEl.style.cssText = 'color:#ddd; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+            card.appendChild(nameEl);
+            var meta = document.createElement('div');
+            var dur = (asset.duration != null) ? asset.duration.toFixed(1) + 's' : '?';
+            meta.textContent = asset.type + ' · ' + dur;
+            meta.style.cssText = 'color:#666; font-size:10px; margin-top:3px; letter-spacing:0.3px;';
+            card.appendChild(meta);
+            c.appendChild(card);
+        });
+    }
+
+    function dropOnTimeline(ev) {
+        ev.preventDefault();
+        var data = ev.dataTransfer.getData('application/json');
+        if (!data) return;
+        var asset;
+        try { asset = JSON.parse(data); } catch (e) { return; }
+        editorState.timeline.push({
+            asset_id: asset.id,
+            asset_url: asset.url,
+            asset_name: asset.name,
+            duration: asset.duration || 0,
+            type: asset.type
+        });
+        renderEditorTimeline();
+        saveEditorState();
+    }
+
+    function renderEditorTimeline() {
+        var c = document.getElementById('editorTimeline');
+        c.innerHTML = '';
+        var total = 0;
+        if (!editorState.timeline || !editorState.timeline.length) {
+            c.innerHTML = '<div style="color:#444; font-size:11px; padding:0 12px;">Drag assets here from the left</div>';
+            document.getElementById('editorTimelineDuration').textContent = '';
+            return;
+        }
+        editorState.timeline.forEach(function(clip, i) {
+            total += clip.duration || 0;
+            var w = Math.max(80, (clip.duration || 1) * 28);
+            var s = document.createElement('div');
+            s.draggable = true;
+            s.dataset.idx = i;
+            s.style.cssText = 'min-width:' + w + 'px; height:46px; background:#1f1c0c; border:1px solid #f5b942; border-radius:4px; padding:5px 9px; display:flex; flex-direction:column; justify-content:center; cursor:grab; flex-shrink:0; transition:opacity 0.1s;';
+            s.title = 'Drag to reorder · right-click to remove';
+            s.ondragstart = function(ev) {
+                ev.dataTransfer.effectAllowed = 'move';
+                ev.dataTransfer.setData('text/plain', 'tl:' + i);
+                s.style.opacity = '0.5';
+            };
+            s.ondragend = function(){ s.style.opacity = '1'; };
+            s.ondragover = function(ev) {
+                ev.preventDefault();
+                ev.dataTransfer.dropEffect = 'move';
+            };
+            s.ondrop = function(ev) {
+                ev.preventDefault();
+                var raw = ev.dataTransfer.getData('text/plain');
+                if (raw && raw.indexOf('tl:') === 0) {
+                    var src = parseInt(raw.slice(3), 10);
+                    var dst = parseInt(s.dataset.idx, 10);
+                    if (!isNaN(src) && !isNaN(dst) && src !== dst) {
+                        var moved = editorState.timeline.splice(src, 1)[0];
+                        if (src < dst) dst -= 1;
+                        editorState.timeline.splice(dst, 0, moved);
+                        renderEditorTimeline();
+                        saveEditorState();
+                    }
+                    ev.stopPropagation();
+                    return;
+                }
+                // fallback: forward to outer drop (asset from gallery)
+                var dataJ = ev.dataTransfer.getData('application/json');
+                if (dataJ) { dropOnTimeline(ev); ev.stopPropagation(); }
+            };
+            s.oncontextmenu = function(ev) {
+                ev.preventDefault();
+                editorState.timeline.splice(i, 1);
+                renderEditorTimeline();
+                saveEditorState();
+            };
+            var label = document.createElement('div');
+            label.textContent = (i+1) + '. ' + (clip.asset_name || 'clip');
+            label.style.cssText = 'color:#f5b942; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600;';
+            s.appendChild(label);
+            var dur = document.createElement('div');
+            dur.textContent = (clip.duration || 0).toFixed(1) + 's · ' + (clip.type || '');
+            dur.style.cssText = 'color:#888; font-size:10px;';
+            s.appendChild(dur);
+            c.appendChild(s);
+        });
+        document.getElementById('editorTimelineDuration').textContent = 'total: ' + total.toFixed(1) + 's';
+    }
+
+    var _editorPatchTimer = null;
+    function saveEditorState() {
+        if (!editorVideoId) return;
+        if (_editorPatchTimer) clearTimeout(_editorPatchTimer);
+        _editorPatchTimer = setTimeout(function() {
+            setEditorStatus('Saving…', '#f5b942');
+            fetch('/api/videos/' + editorVideoId + '/editor', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(editorState)
+            }).then(function() { setEditorStatus('Saved', '#4caf50'); })
+              .catch(function(err) { setEditorStatus('Save failed: ' + err, '#e07070'); });
+        }, 400);
+    }
+
+    function renderEditor() {
+        if (!editorVideoId) return;
+        if (!editorState.timeline || !editorState.timeline.length) {
+            alert('Drop at least one asset onto the timeline first.');
+            return;
+        }
+        setEditorStatus('Rendering…', '#f5b942');
+        var t0 = Date.now();
+        // flush save first
+        if (_editorPatchTimer) { clearTimeout(_editorPatchTimer); _editorPatchTimer = null; }
+        fetch('/api/videos/' + editorVideoId + '/editor', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(editorState)
+        }).then(function() {
+            return fetch('/api/videos/' + editorVideoId + '/editor/render', { method: 'POST' });
+        }).then(function(r) {
+            return r.json().then(function(j) { return {ok: r.ok, body: j}; });
+        }).then(function(res) {
+            if (!res.ok) {
+                setEditorStatus('Render failed: ' + (res.body.error || 'unknown'), '#e07070');
+                console.error('editor render error', res.body);
+                return;
+            }
+            var dt = ((Date.now() - t0) / 1000).toFixed(1);
+            setEditorStatus('Rendered in ' + dt + 's', '#4caf50');
+            var v = document.getElementById('editorPreview');
+            v.src = res.body.url + '?t=' + Date.now();
+            v.style.display = 'block';
+            document.getElementById('editorPreviewEmpty').style.display = 'none';
+            editorState.last_render = { url: res.body.url, at: new Date().toISOString() };
+        }).catch(function(err) {
+            setEditorStatus('Render error: ' + err, '#e07070');
+        });
+    }
     </script>
 </body>
 </html>
