@@ -215,6 +215,51 @@ def init_db():
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_diagrams_video ON diagrams(video_id, position)")
+    try:
+        conn.execute("ALTER TABLE diagrams ADD COLUMN mode TEXT DEFAULT 'reveal'")
+    except sqlite3.OperationalError:
+        pass
+
+    # Chapter Studio: one list of chapter items per video, rendered to N MP4 clips.
+    # One-shot migration: the cloned-from-diagrams schema had `boxes_json`. If that
+    # column exists, drop the table and recreate with the new list-driven shape.
+    existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(chapters)").fetchall()]
+    if "boxes_json" in existing_cols:
+        conn.execute("DROP TABLE chapters")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS chapters (
+            video_id INTEGER PRIMARY KEY,
+            items_json TEXT NOT NULL DEFAULT '[]',
+            style TEXT NOT NULL DEFAULT 'blue_glass',
+            numbering TEXT NOT NULL DEFAULT 'none',
+            result_zip_path TEXT,
+            last_rendered_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE
+        )
+    """)
+    # Migration: add `numbering` column to pre-existing tables
+    try:
+        conn.execute("ALTER TABLE chapters ADD COLUMN numbering TEXT NOT NULL DEFAULT 'none'")
+    except sqlite3.OperationalError:
+        pass
+    # Migration: add manual layout overrides (auto-fit when 'auto')
+    for col, default in [("box_size", "auto"), ("text_size", "auto"), ("wrap_mode", "off")]:
+        try:
+            conn.execute(f"ALTER TABLE chapters ADD COLUMN {col} TEXT NOT NULL DEFAULT '{default}'")
+        except sqlite3.OperationalError:
+            pass
+    # Migration: card padding (T/R/B/L in px) + reveal style
+    for col, default in [("pad_top", 60), ("pad_right", 80), ("pad_bottom", 60), ("pad_left", 80)]:
+        try:
+            conn.execute(f"ALTER TABLE chapters ADD COLUMN {col} INTEGER NOT NULL DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass
+    try:
+        conn.execute("ALTER TABLE chapters ADD COLUMN reveal_style TEXT NOT NULL DEFAULT 'blur_fade'")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 
@@ -2298,6 +2343,41 @@ def _ring_median_color(img, x, y, w, h, pad=8, ring=24):
     return (rs[m], gs[m], bs[m])
 
 
+def _despeckle_stars(crop, bg_color, luma_threshold=110, radius=3, dark_ratio=0.80):
+    """Remove isolated bright pixels (stars) from a box crop. A pixel is considered
+    a 'star' if it's brighter than luma_threshold AND most of its neighbors are dark.
+    Replaces star pixels with bg_color. Used for slideshow slides where the crop is
+    scaled up — stars would otherwise become very visible dots."""
+    W, H = crop.size
+    src = crop.load()
+    out = crop.copy()
+    dst = out.load()
+    # Build a luma map first (faster than recomputing for each pixel's neighbors)
+    luma = [[0] * H for _ in range(W)]
+    for y in range(H):
+        for x in range(W):
+            p = src[x, y]
+            luma[x][y] = 0.3 * p[0] + 0.6 * p[1] + 0.1 * p[2]
+    for y in range(H):
+        for x in range(W):
+            if luma[x][y] < luma_threshold:
+                continue
+            dark = 0; total = 0
+            for dy in range(-radius, radius + 1):
+                ny = y + dy
+                if ny < 0 or ny >= H: continue
+                for dx in range(-radius, radius + 1):
+                    if dx == 0 and dy == 0: continue
+                    nx = x + dx
+                    if nx < 0 or nx >= W: continue
+                    if luma[nx][ny] < 60:
+                        dark += 1
+                    total += 1
+            if total > 0 and (dark / total) >= dark_ratio:
+                dst[x, y] = bg_color
+    return out
+
+
 def _corner_bg_color(img, patch=40):
     """Median RGB sampled from the 4 corner patches — global background guess."""
     px = img.load()
@@ -2604,6 +2684,11 @@ def diagrams_patch(diagram_id):
         fields.append("boxes_json=?"); values.append(json.dumps(payload["boxes"]))
     if "script" in payload:
         fields.append("script=?"); values.append(payload["script"])
+    if "mode" in payload:
+        mode_v = (payload.get("mode") or "reveal").lower()
+        if mode_v not in ("reveal", "slideshow"):
+            mode_v = "reveal"
+        fields.append("mode=?"); values.append(mode_v)
     if not fields:
         return jsonify({"error": "no fields to update"}), 400
     fields.append("updated_at=?")
@@ -2704,6 +2789,36 @@ def diagrams_upload_audio(diagram_id):
     return jsonify({"audio_path": rel, "audio_path_url": "/" + rel, "audio_name": f.filename, "audio_duration": duration})
 
 
+def _render_write_on_frames(frames_dir, crop_img, bw, bh, reveal_dur, fps=30):
+    """Pre-render PNG frames for a 'write-on' wipe: alpha mask sweeps left → right
+    over reveal_dur seconds, with a soft 3%-of-width feather at the leading edge.
+    Returns (frames_dir, n_frames)."""
+    from PIL import Image as _Image, ImageDraw as _ImageDraw, ImageChops as _ImageChops
+    n_frames = max(2, int(round(reveal_dur * fps)))
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    base = crop_img.convert("RGBA")
+    soft = max(6, int(bw * 0.03))
+    src_alpha = base.split()[3]
+    for i in range(n_frames):
+        p = i / max(1, n_frames - 1)
+        ease = p * p * (3 - 2 * p)
+        mask_x = int(bw * ease)
+        # Build a column mask: 255 left of mask_x-soft, gradient down to 0 at mask_x, 0 beyond.
+        col_mask = _Image.new("L", (bw, bh), 0)
+        d = _ImageDraw.Draw(col_mask)
+        if mask_x - soft > 0:
+            d.rectangle([0, 0, mask_x - soft - 1, bh - 1], fill=255)
+        for x in range(max(0, mask_x - soft), min(bw, mask_x)):
+            v = int(round(255 * (mask_x - x) / soft))
+            d.line([(x, 0), (x, bh - 1)], fill=max(0, min(255, v)))
+        # Combine column mask with the source alpha
+        new_alpha = _ImageChops.multiply(src_alpha, col_mask)
+        frame = base.copy()
+        frame.putalpha(new_alpha)
+        frame.save(frames_dir / f"f{i:04d}.png")
+    return frames_dir, n_frames
+
+
 def _render_zoom_frames(frames_dir, crop_img, bw, bh, anim, zoom_dur, fade_dur, fps=30):
     """Pre-render PNG frames for a zoom intro animation. Each frame is a (bw, bh)
     RGBA canvas with the box content scaled per smoothstep ease + alpha fade baked in.
@@ -2716,7 +2831,8 @@ def _render_zoom_frames(frames_dir, crop_img, bw, bh, anim, zoom_dur, fade_dur, 
     base = crop_img.convert("RGBA")
     for i in range(n_frames):
         p = i / max(1, n_frames - 1)
-        ease = p * p * (3 - 2 * p)
+        # smootherstep: zero first + second derivative at ends → ultra-soft onset/offset
+        ease = p * p * p * (p * (6 * p - 15) + 10)
         s = start_s + (end_s - start_s) * ease
         nw = max(1, int(round(bw * s)))
         nh = max(1, int(round(bh * s)))
@@ -2873,19 +2989,31 @@ def diagrams_render():
 
         N = len(box_rects)
 
-        # Pre-sample bg-fill color per box rect — reused for both bg.png and for
-        # masking nested inner-box regions inside outer-box crops.
-        fill_for_rect = {}  # (x,y,w,h) -> (r,g,b)
+        # Determine mode early — bg + crops differ between reveal and slideshow.
+        mode = "reveal"
+        if diagram_row:
+            try:
+                mode = (diagram_row["mode"] or "reveal").lower()
+            except (KeyError, IndexError):
+                mode = "reveal"
+            if mode not in ("reveal", "slideshow"):
+                mode = "reveal"
+
+        # Pre-sample bg-fill color per box rect — used for reveal-mode masking.
+        fill_for_rect = {}
         for (x, y, w, h, _anim, _bd) in all_box_records:
             fill_for_rect[(x, y, w, h)] = _ring_median_color(img, x, y, w, h, pad=8, ring=24)
 
-        # Background = image with EVERY box filled with the LOCAL background color.
-        # Reveal boxes get re-overlaid on top with the chosen animation; hide boxes stay masked.
-        bg = img.copy()
-        draw = ImageDraw.Draw(bg)
-        for (x, y, w, h, _anim, _bd) in all_box_records:
-            fill = fill_for_rect[(x, y, w, h)]
-            draw.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
+        if mode == "reveal":
+            # Reveal mode: bg = image with every box filled with its local bg color.
+            bg = img.copy()
+            draw = ImageDraw.Draw(bg)
+            for (x, y, w, h, _anim, _bd) in all_box_records:
+                fill = fill_for_rect[(x, y, w, h)]
+                draw.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
+        else:
+            # Slideshow mode: bg = flat corner-sampled color (slides cover it).
+            bg = Image.new("RGB", (W, H), (8, 8, 18))  # placeholder, replaced below
 
         def _rect_contains(outer, inner, slack=2):
             """outer / inner are (x,y,w,h). True if inner is (mostly) inside outer."""
@@ -2898,10 +3026,14 @@ def diagrams_render():
         bottom_pad = int(min(120, max(60, H * 0.10)))
         bottom_pad -= bottom_pad % 2
         canvas_bg_color = _corner_bg_color(img, patch=40)
-        bg_padded = Image.new("RGB", (W, H + bottom_pad), canvas_bg_color)
-        bg_padded.paste(bg, (0, 0))
         bg_path = work_dir / "bg.png"
-        bg_padded.save(bg_path)
+        if mode == "reveal":
+            bg_padded = Image.new("RGB", (W, H + bottom_pad), canvas_bg_color)
+            bg_padded.paste(bg, (0, 0))
+            bg_padded.save(bg_path)
+        else:
+            # Slideshow bg = flat corner color (the slides cover the whole frame).
+            Image.new("RGB", (W, H + bottom_pad), canvas_bg_color).save(bg_path)
 
         # If no reveal boxes (only hide boxes), short-circuit to a trivial render:
         # just bg.png + audio, no filter graph.
@@ -3074,39 +3206,82 @@ def diagrams_render():
             if alignment_mode in ("whisper_aligned", "gemini_audio", "evenly_distributed"):
                 alignment_mode = alignment_mode + "_with_manual"
 
-        # Generate crops NOW that we know reveal-order — so each outer-box crop
-        # can mask the regions of later-revealing inner boxes (avoids the double-
-        # reveal where the outer's crop briefly shows the inner box's content
-        # before the inner box runs its own animation).
+        # Generate the per-box overlay source. Reveal mode = cropped + inner-masked
+        # rectangle to overlay at the box's original position. Slideshow mode = the
+        # box content scaled up centered on a full 16:9 canvas (the slide IS the frame).
+        canvas_w = W
+        canvas_h = H + bottom_pad
         for i, ((x, y, w, h), anim_for_box) in enumerate(zip(box_rects, box_anims)):
-            crop = img.crop((x, y, x + w, y + h))
-            dc = ImageDraw.Draw(crop)
-            # Mask any reveal-box that is contained inside this box AND reveals later
-            for j in range(i + 1, N):
-                jx, jy, jw, jh = box_rects[j]
-                if _rect_contains((x, y, w, h), (jx, jy, jw, jh)):
-                    lx, ly = jx - x, jy - y
-                    fill = fill_for_rect.get(box_rects[j], (8, 8, 18))
-                    dc.rectangle([lx, ly, lx + jw - 1, ly + jh - 1], fill=fill)
-            # Hide boxes contained inside stay masked too
-            for hr in hide_rects:
-                if _rect_contains((x, y, w, h), hr):
-                    hx, hy, hw, hh = hr
-                    lx, ly = hx - x, hy - y
-                    fill = fill_for_rect.get(hr, (8, 8, 18))
-                    dc.rectangle([lx, ly, lx + hw - 1, ly + hh - 1], fill=fill)
-            cp = work_dir / f"crop_{i:02d}.png"
-            crop.save(cp)
-            crop_paths[i] = cp
-            if anim_for_box in ("zoom_in", "zoom_out"):
-                fdir, nf = _render_zoom_frames(
-                    work_dir / f"zoom_{i:02d}", crop, w, h, anim_for_box,
-                    zoom_dur=0.45, fade_dur=0.35, fps=FPS,
-                )
-                zoom_frame_dirs[i] = fdir
-                zoom_frame_counts[i] = nf
+            if mode == "reveal":
+                crop = img.crop((x, y, x + w, y + h))
+                dc = ImageDraw.Draw(crop)
+                for j in range(i + 1, N):
+                    jx, jy, jw, jh = box_rects[j]
+                    if _rect_contains((x, y, w, h), (jx, jy, jw, jh)):
+                        lx, ly = jx - x, jy - y
+                        fill = fill_for_rect.get(box_rects[j], (8, 8, 18))
+                        dc.rectangle([lx, ly, lx + jw - 1, ly + jh - 1], fill=fill)
+                for hr in hide_rects:
+                    if _rect_contains((x, y, w, h), hr):
+                        hx, hy, hw, hh = hr
+                        lx, ly = hx - x, hy - y
+                        fill = fill_for_rect.get(hr, (8, 8, 18))
+                        dc.rectangle([lx, ly, lx + hw - 1, ly + hh - 1], fill=fill)
+                cp = work_dir / f"crop_{i:02d}.png"
+                crop.save(cp)
+                crop_paths[i] = cp
+                if anim_for_box in ("zoom_in", "zoom_out"):
+                    fdir, nf = _render_zoom_frames(
+                        work_dir / f"zoom_{i:02d}", crop, w, h, anim_for_box,
+                        zoom_dur=0.45, fade_dur=0.35, fps=FPS,
+                    )
+                    zoom_frame_dirs[i] = fdir
+                    zoom_frame_counts[i] = nf
+                elif anim_for_box == "write_on":
+                    fdir, nf = _render_write_on_frames(
+                        work_dir / f"writeon_{i:02d}", crop.convert("RGBA"),
+                        w, h, reveal_dur=0.8, fps=FPS,
+                    )
+                    zoom_frame_dirs[i] = fdir
+                    zoom_frame_counts[i] = nf
+            else:
+                # SLIDESHOW: the box content becomes a full 16:9 slide.
+                box_crop = img.crop((x, y, x + w, y + h))
+                # Remove isolated bright pixels (stars) before upscaling — otherwise
+                # a 1-2px star becomes a 5-10px dot in the slide.
+                box_crop = _despeckle_stars(box_crop, canvas_bg_color)
+                margin = 0.85   # leave 15% breathing room
+                sx_ = (canvas_w * margin) / w
+                sy_ = (H * margin) / h   # vertical center within the content area (top H of canvas)
+                s = min(sx_, sy_)
+                nw = max(2, int(w * s)); nh = max(2, int(h * s))
+                nw -= nw % 2; nh -= nh % 2
+                scaled = box_crop.resize((nw, nh), Image.LANCZOS)
+                slide = Image.new("RGB", (canvas_w, canvas_h), canvas_bg_color)
+                ox = (canvas_w - nw) // 2
+                oy = (H - nh) // 2   # vertical center within top H, leaves bottom_pad clear
+                slide.paste(scaled, (ox, oy))
+                sp = work_dir / f"slide_{i:02d}.png"
+                slide.save(sp)
+                crop_paths[i] = sp
+                # Zoom in slideshow = "Ken Burns" feel on the full slide
+                if anim_for_box in ("zoom_in", "zoom_out"):
+                    fdir, nf = _render_zoom_frames(
+                        work_dir / f"zoom_{i:02d}", slide, canvas_w, canvas_h, anim_for_box,
+                        zoom_dur=0.45, fade_dur=0.35, fps=FPS,
+                    )
+                    zoom_frame_dirs[i] = fdir
+                    zoom_frame_counts[i] = nf
+                elif anim_for_box == "write_on":
+                    fdir, nf = _render_write_on_frames(
+                        work_dir / f"writeon_{i:02d}", slide.convert("RGBA"),
+                        canvas_w, canvas_h, reveal_dur=0.8, fps=FPS,
+                    )
+                    zoom_frame_dirs[i] = fdir
+                    zoom_frame_counts[i] = nf
 
-        fade_dur = 0.35
+        fade_dur = 0.35           # entrance fade duration
+        exit_fade_dur = 0.55      # exit fade — longer so fade-only exits don't feel abrupt
         slide_dur = 0.50
         zoom_dur = 0.45
         slide_dist = int(min(60, max(22, (H + bottom_pad) * 0.04)))
@@ -3119,7 +3294,7 @@ def diagrams_render():
             "from_below_fade": "from_below",
         }
         valid_anims = {"fade", "from_right", "from_left", "from_above", "from_below",
-                       "zoom_in", "zoom_out"}
+                       "zoom_in", "zoom_out", "write_on"}
 
         # Resolve each reveal box's effective anim
         resolved_anims = []
@@ -3131,7 +3306,7 @@ def diagrams_render():
         # Build ffmpeg inputs
         inputs = ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(bg_path)]
         for i in range(N):
-            if resolved_anims[i] in ("zoom_in", "zoom_out"):
+            if resolved_anims[i] in ("zoom_in", "zoom_out", "write_on"):
                 # image sequence input (fade is baked into the PNG frames)
                 inputs += ["-framerate", f"{FPS}",
                            "-i", str(zoom_frame_dirs[i] / "f%04d.png")]
@@ -3139,46 +3314,80 @@ def diagrams_render():
                 inputs += ["-loop", "1", "-t", f"{duration:.3f}", "-i", str(crop_paths[i])]
         inputs += ["-i", str(audio_path)]
 
-        def _box_filter_segs(prev_lbl, in_idx, out_lbl, bx, by, bw, bh, t, anim, n_zoom_frames):
-            """Return list of filter-graph segments for one box's entrance animation."""
+        # mode was determined at the top of the render (slideshow vs reveal)
+        # Slide-distance: bigger in slideshow (slides cover the whole frame)
+        if mode == "slideshow":
+            slide_dist = int(min(220, max(60, (H + bottom_pad) * 0.10)))
+
+        def _box_filter_segs(prev_lbl, in_idx, out_lbl, bx, by, bw, bh, t, anim,
+                             n_zoom_frames, t_exit=None):
+            """Return filter-graph segments for one box's entrance (+ optional exit fade).
+            When t_exit is set, an alpha fade-out is added starting at t_exit, and the
+            overlay's enable gate becomes 'between(t, t, t_exit + exit_fade_dur)'."""
             src = f"[s{in_idx}]"
             segs = []
-            if anim in ("zoom_in", "zoom_out"):
-                # The image sequence has fade + scale baked in (n_zoom_frames at FPS).
-                # We need to: shift its pts to start at t, then clone the last frame
-                # for the remainder of the video.
+            exit_filter = (f",fade=t=out:st={t_exit:.3f}:d={exit_fade_dur:.3f}:alpha=1"
+                           if t_exit is not None else "")
+            if anim in ("zoom_in", "zoom_out", "write_on"):
                 zoom_clip_len = n_zoom_frames / FPS
                 stop_extra = max(0.0, duration - t - zoom_clip_len)
                 segs.append(
                     f"[{in_idx}:v]format=rgba,"
                     f"setpts=PTS+{t:.3f}/TB,"
-                    f"tpad=stop_mode=clone:stop_duration={stop_extra:.3f}{src}"
+                    f"tpad=stop_mode=clone:stop_duration={stop_extra:.3f}"
+                    f"{exit_filter}{src}"
                 )
                 x_expr, y_expr = str(bx), str(by)
             elif anim == "fade":
-                segs.append(f"[{in_idx}:v]format=rgba,fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1{src}")
+                segs.append(
+                    f"[{in_idx}:v]format=rgba,"
+                    f"fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1"
+                    f"{exit_filter}{src}"
+                )
                 x_expr, y_expr = str(bx), str(by)
             else:
-                # slide variants — always include crossfade, eased
-                p = f"min(1,max(0,(t-{t:.3f})/{slide_dur:.3f}))"
-                ease = f"({p}*{p}*(3-2*{p}))"
-                remaining = f"(1-{ease})"
+                # Slide variants — eased entrance, optionally eased exit in the same
+                # direction (only when t_exit is set, i.e. slideshow inter-slide transitions).
+                p_in = f"min(1,max(0,(t-{t:.3f})/{slide_dur:.3f}))"
+                ease_in = f"({p_in}*{p_in}*(3-2*{p_in}))"
+                remaining_in = f"(1-{ease_in})"
+                if t_exit is not None:
+                    p_out = f"min(1,max(0,(t-{t_exit:.3f})/{slide_dur:.3f}))"
+                    ease_out = f"({p_out}*{p_out}*(3-2*{p_out}))"
+                    exit_offset = f"({slide_dist}*{ease_out})"
+                else:
+                    exit_offset = "0"
                 segs.append(
-                    f"[{in_idx}:v]format=rgba,fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1{src}"
+                    f"[{in_idx}:v]format=rgba,"
+                    f"fade=t=in:st={t:.3f}:d={fade_dur:.3f}:alpha=1"
+                    f"{exit_filter}{src}"
                 )
                 if anim == "from_right":
-                    x_expr = f"{bx}+{slide_dist}*{remaining}"; y_expr = str(by)
+                    # enters from right (x = bx + slide_dist), moves left; exit continues left.
+                    x_expr = f"{bx}+{slide_dist}*{remaining_in}-{exit_offset}"
+                    y_expr = str(by)
                 elif anim == "from_left":
-                    x_expr = f"{bx}-{slide_dist}*{remaining}"; y_expr = str(by)
+                    # enters from left, moves right; exit continues right.
+                    x_expr = f"{bx}-{slide_dist}*{remaining_in}+{exit_offset}"
+                    y_expr = str(by)
                 elif anim == "from_below":
-                    x_expr = str(bx); y_expr = f"{by}+{slide_dist}*{remaining}"
+                    # enters from below, moves up; exit continues up.
+                    x_expr = str(bx)
+                    y_expr = f"{by}+{slide_dist}*{remaining_in}-{exit_offset}"
                 elif anim == "from_above":
-                    x_expr = str(bx); y_expr = f"{by}-{slide_dist}*{remaining}"
+                    # enters from above, moves down; exit continues down.
+                    x_expr = str(bx)
+                    y_expr = f"{by}-{slide_dist}*{remaining_in}+{exit_offset}"
                 else:
                     x_expr, y_expr = str(bx), str(by)
+            if t_exit is not None:
+                # The overlay is enabled from reveal through fade-out completion.
+                enable_expr = f"between(t,{t:.3f},{(t_exit + exit_fade_dur):.3f})"
+            else:
+                enable_expr = f"gte(t,{t:.3f})"
             segs.append(
                 f"{prev_lbl}{src}overlay=x='{x_expr}':y='{y_expr}':"
-                f"enable='gte(t,{t:.3f})'{out_lbl}"
+                f"enable='{enable_expr}'{out_lbl}"
             )
             return segs
 
@@ -3187,7 +3396,24 @@ def diagrams_render():
         for i, ((bx, by, bw, bh), t) in enumerate(zip(box_rects, times)):
             anim = resolved_anims[i]
             out_label = "[vout]" if i == N - 1 else f"[v{i}]"
-            filter_parts.extend(_box_filter_segs(last_label, i + 1, out_label, bx, by, bw, bh, t, anim, zoom_frame_counts[i]))
+            t_exit = None
+            if mode == "slideshow" and i + 1 < N:
+                # Force slide N's exit to fully complete BEFORE slide N+1 enters,
+                # with a small gap between them so they don't overlap on screen.
+                inter_slide_gap = 0.10
+                t_exit = times[i + 1] - exit_fade_dur - inter_slide_gap
+                t_exit = max(t + 0.15, t_exit)
+            # In slideshow mode the overlay is the full 16:9 canvas, positioned at (0,0).
+            if mode == "slideshow":
+                ovx, ovy = 0, 0
+                ovw, ovh = canvas_w, canvas_h
+            else:
+                ovx, ovy, ovw, ovh = bx, by, bw, bh
+            filter_parts.extend(_box_filter_segs(
+                last_label, i + 1, out_label,
+                ovx, ovy, ovw, ovh, t, anim,
+                zoom_frame_counts[i], t_exit=t_exit,
+            ))
             last_label = out_label
 
         filter_complex = ";".join(filter_parts)
@@ -3234,6 +3460,7 @@ def diagrams_render():
             "content_size": (W, H),
             "bottom_pad": bottom_pad,
             "anims": resolved_anims,
+            "mode": mode,
         }
 
         if diagram_row:
@@ -3297,6 +3524,305 @@ def diagrams_transcribe():
     except (KeyError, IndexError, TypeError):
         return jsonify({"error": "gemini response malformed", "raw": data}), 502
     return jsonify({"transcript": text})
+
+
+
+# ── Chapter Studio: list-driven chapter clip renderer ───────────────────
+
+def _chapters_dir():
+    d = Path(app.root_path) / "static" / "uploads" / "chapters"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _chapter_video_dir(video_id):
+    d = _chapters_dir() / str(video_id)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _chapter_row_to_dict(row):
+    if not row:
+        return None
+    d = dict(row)
+    try:
+        d["items"] = json.loads(d.pop("items_json") or "[]")
+    except (TypeError, ValueError):
+        d["items"] = []
+    rz = d.get("result_zip_path")
+    d["result_zip_url"] = ("/" + rz) if rz and not rz.startswith("/") else rz
+    return d
+
+
+_CS_WRAP_VALUES = {"off", "on"}
+
+# Reveal style → ffmpeg xfade transition name.
+_CS_REVEAL_TO_XFADE = {
+    "blur_fade":   "fade",
+    "dissolve":    "dissolve",
+    "wipe_lr":     "wiperight",
+    "wipe_rl":     "wipeleft",
+    "slide_left":  "slideright",   # item enters from left side
+    "slide_right": "slideleft",    # item enters from right side
+    "circle_open": "circleopen",
+    "pixelize":    "pixelize",
+}
+
+
+def _cs_clamp_size(val, lo, hi, default="auto"):
+    """Accept 'auto' or an integer string in [lo, hi]. Returns the canonical string."""
+    if val == "auto" or val is None:
+        return "auto"
+    try:
+        n = int(val)
+    except (TypeError, ValueError):
+        return default
+    n = max(lo, min(hi, n))
+    return str(n)
+
+
+def _cs_clamp_int(val, lo, hi, default):
+    try:
+        n = int(val)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
+
+
+@app.route("/api/videos/<int:vid>/chapter", methods=["GET"])
+def chapter_get(vid):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM chapters WHERE video_id=?", (vid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({
+            "video_id": vid, "items": [], "style": "blue_glass", "numbering": "none",
+            "box_size": "auto", "text_size": "auto", "wrap_mode": "off",
+            "pad_top": 60, "pad_right": 80, "pad_bottom": 60, "pad_left": 80,
+            "reveal_style": "blur_fade",
+            "result_zip_url": None,
+        })
+    return jsonify(_chapter_row_to_dict(row))
+
+
+@app.route("/api/videos/<int:vid>/chapter", methods=["PUT"])
+def chapter_put(vid):
+    payload = request.get_json(force=True, silent=True) or {}
+    items = payload.get("items", [])
+    if not isinstance(items, list):
+        return jsonify({"error": "items must be a list"}), 400
+    items = [str(x or "")[:500] for x in items]
+    style = (payload.get("style") or "blue_glass")
+    if style not in ("blue_glass",):
+        style = "blue_glass"
+    numbering = (payload.get("numbering") or "none")
+    if numbering not in ("none", "number", "step"):
+        numbering = "none"
+    box_size = _cs_clamp_size(payload.get("box_size"), 50, 100)
+    text_size = _cs_clamp_size(payload.get("text_size"), 24, 120)
+    wrap_mode = (payload.get("wrap_mode") or "off")
+    if wrap_mode not in _CS_WRAP_VALUES: wrap_mode = "off"
+    pad_top    = _cs_clamp_int(payload.get("pad_top"),    0, 300, 60)
+    pad_right  = _cs_clamp_int(payload.get("pad_right"),  0, 300, 80)
+    pad_bottom = _cs_clamp_int(payload.get("pad_bottom"), 0, 300, 60)
+    pad_left   = _cs_clamp_int(payload.get("pad_left"),   0, 300, 80)
+    reveal_style = (payload.get("reveal_style") or "blur_fade")
+    if reveal_style not in _CS_REVEAL_TO_XFADE: reveal_style = "blur_fade"
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db()
+    conn.execute(
+        """INSERT INTO chapters
+             (video_id, items_json, style, numbering, box_size, text_size, wrap_mode,
+              pad_top, pad_right, pad_bottom, pad_left, reveal_style, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(video_id) DO UPDATE SET
+             items_json=excluded.items_json,
+             style=excluded.style,
+             numbering=excluded.numbering,
+             box_size=excluded.box_size,
+             text_size=excluded.text_size,
+             wrap_mode=excluded.wrap_mode,
+             pad_top=excluded.pad_top,
+             pad_right=excluded.pad_right,
+             pad_bottom=excluded.pad_bottom,
+             pad_left=excluded.pad_left,
+             reveal_style=excluded.reveal_style,
+             updated_at=excluded.updated_at""",
+        (vid, json.dumps(items), style, numbering, box_size, text_size, wrap_mode,
+         pad_top, pad_right, pad_bottom, pad_left, reveal_style, now, now)
+    )
+    conn.commit()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM chapters WHERE video_id=?", (vid,)).fetchone()
+    conn.close()
+    return jsonify(_chapter_row_to_dict(row))
+
+
+@app.route("/api/videos/<int:vid>/chapter/from-doc", methods=["POST"])
+def chapter_from_doc(vid):
+    """Pull chapter titles from the linked content doc.
+
+    Looks at video_details.custom_fields for "Content Doc" path,
+    reads the markdown, and extracts `### Step N - <title>` lines."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT custom_fields FROM video_details WHERE video_id=?", (vid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "no video_details for this video"}), 404
+    try:
+        fields = json.loads(row["custom_fields"] or "[]")
+    except (TypeError, ValueError):
+        fields = []
+    doc_path = ""
+    for f in fields:
+        if (f.get("key") or "").strip().lower() == "content doc":
+            doc_path = (f.get("value") or "").strip()
+            break
+    if not doc_path:
+        return jsonify({"error": "no Content Doc field set on this video"}), 404
+    # Field may hold an absolute path, "content_docs/foo.md", or just "foo.md".
+    # Canonical prod layout: CONTENT_DIR/content_docs/<filename>. Try a few resolutions.
+    fname = Path(doc_path).name
+    candidates = []
+    p0 = Path(doc_path)
+    if p0.is_absolute():
+        candidates.append(p0)
+    candidates += [
+        CONTENT_DIR / doc_path,                # CONTENT_DIR + "content_docs/foo.md"
+        CONTENT_DIR / "content_docs" / fname,  # CONTENT_DIR/content_docs/foo.md
+        CONTENT_DIR / fname,                   # CONTENT_DIR/foo.md
+    ]
+    p = next((c for c in candidates if c.exists()), None)
+    if not p:
+        return jsonify({"error": f"content doc not found. tried: {[str(c) for c in candidates]}"}), 404
+    try:
+        text = p.read_text(encoding="utf-8", errors="ignore")
+    except OSError as e:
+        return jsonify({"error": f"could not read content doc: {e}"}), 500
+    # Match step headings in either content-doc style (`### Step N - Title`) or
+    # show-doc style (`STEP N — TITLE`). Line must START with optional `###` + Step,
+    # so narration like "And now let's get into Step 1..." doesn't match.
+    step_re = re.compile(
+        r"^\s*(?:#{2,4}\s+)?Step\s+\d+\s*[-–—:]\s*(.+?)(?:\s*[✅✓☑])?\s*$",
+        re.MULTILINE | re.IGNORECASE,
+    )
+    matches = step_re.findall(text)
+    # Dedupe consecutive identical titles (case-insensitive), preserving order
+    items = []
+    seen = set()
+    for m in matches:
+        t = m.strip()
+        if not t:
+            continue
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(t)
+    return jsonify({"items": items, "source": str(p)})
+
+
+@app.route("/api/videos/<int:vid>/chapter/render", methods=["POST"])
+def chapter_render(vid):
+    """Accept 2N PNGs (before/after for each clip) and assemble N MP4 clips.
+
+    Form fields:
+      count: int N
+      clip_K_before, clip_K_after: PNG files for K in 1..N
+    Each clip: 4.5s hold before → 1s xfade → 4.5s hold after = 10s @ 30fps."""
+    import tempfile, subprocess, shutil, zipfile
+    try:
+        n = int(request.form.get("count", "0"))
+    except ValueError:
+        return jsonify({"error": "invalid count"}), 400
+    if n < 1 or n > 20:
+        return jsonify({"error": "count must be between 1 and 20"}), 400
+
+    # Pull the saved reveal_style for this video; default to crossfade.
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    crow = conn.execute("SELECT reveal_style FROM chapters WHERE video_id=?", (vid,)).fetchone()
+    conn.close()
+    reveal_style = (crow["reveal_style"] if crow and "reveal_style" in crow.keys() else "blur_fade")
+    xfade_name = _CS_REVEAL_TO_XFADE.get(reveal_style, "fade")
+
+    work = Path(tempfile.mkdtemp(prefix=f"chapter_render_{vid}_"))
+    try:
+        # Save uploads, validate
+        for k in range(1, n + 1):
+            for phase in ("before", "after"):
+                f = request.files.get(f"clip_{k}_{phase}")
+                if not f:
+                    return jsonify({"error": f"missing clip_{k}_{phase}"}), 400
+                f.save(str(work / f"clip_{k}_{phase}.png"))
+
+        # Output dir under static
+        out_dir = _chapter_video_dir(vid) / "clips"
+        # Clean prior renders for this video
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        clips = []
+        for k in range(1, n + 1):
+            before = work / f"clip_{k}_before.png"
+            after = work / f"clip_{k}_after.png"
+            out = out_dir / f"chapter_{k:02d}.mp4"
+            # 4.5s hold before, 1s xfade, 4.5s hold after = 10s. Offset of xfade = 4.5.
+            # `xfade` requires both inputs as video streams of equal duration parts; we use
+            # -loop on the still images and -t to clip them.
+            cmd = [
+                "ffmpeg", "-y",
+                "-loop", "1", "-t", "5.5", "-i", str(before),
+                "-loop", "1", "-t", "5.5", "-i", str(after),
+                "-filter_complex",
+                "[0:v]scale=1920:1080,format=yuv420p,fps=30,setsar=1[v0];"
+                "[1:v]scale=1920:1080,format=yuv420p,fps=30,setsar=1[v1];"
+                f"[v0][v1]xfade=transition={xfade_name}:duration=1:offset=4.5,format=yuv420p[v]",
+                "-map", "[v]",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                str(out),
+            ]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            if r.returncode != 0:
+                return jsonify({
+                    "error": f"ffmpeg failed for clip {k}",
+                    "stderr": r.stderr[-1500:],
+                }), 500
+            rel = str(out.relative_to(Path(app.root_path)))
+            clips.append({"k": k, "name": out.name, "url": "/" + rel})
+
+        # Zip all clips
+        zip_path = out_dir / f"chapters_video_{vid}.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
+            for c in clips:
+                zf.write(out_dir / c["name"], arcname=c["name"])
+        rel_zip = str(zip_path.relative_to(Path(app.root_path)))
+
+        now = datetime.now(timezone.utc).isoformat()
+        conn = get_db()
+        conn.execute(
+            "UPDATE chapters SET result_zip_path=?, last_rendered_at=?, updated_at=? WHERE video_id=?",
+            (rel_zip, now, now, vid)
+        )
+        conn.commit()
+        conn.close()
+
+        return jsonify({
+            "ok": True,
+            "count": n,
+            "clips": clips,
+            "zip_url": "/" + rel_zip,
+            "rendered_at": now,
+        })
+    finally:
+        try:
+            shutil.rmtree(work)
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":
