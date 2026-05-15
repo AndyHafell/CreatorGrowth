@@ -4394,14 +4394,16 @@ def video_assets(vid):
 
 
 def _read_doc_field(custom_fields, key_name):
-    """Resolve a 'Content Doc' / 'Bullet Doc' custom_fields entry to its file text. Returns '' if absent or unreadable."""
+    """Resolve a 'Content Doc' / 'Bullet Doc' custom_fields entry to {text, rel_path}.
+    rel_path is what PUT /api/content/file expects (relative to CONTENT_DIR). Returns
+    {'text':'', 'rel_path':''} if absent or unreadable."""
     target = None
     for f in custom_fields or []:
         if (f.get("key") or "").strip().lower() == key_name.strip().lower():
             target = (f.get("value") or "").strip()
             break
     if not target:
-        return ""
+        return {"text": "", "rel_path": ""}
     fname = Path(target).name
     p0 = Path(target)
     candidates = []
@@ -4414,11 +4416,16 @@ def _read_doc_field(custom_fields, key_name):
     ]
     p = next((c for c in candidates if c.exists()), None)
     if not p:
-        return ""
+        return {"text": "", "rel_path": target}
     try:
-        return p.read_text(encoding="utf-8", errors="ignore")
+        text = p.read_text(encoding="utf-8", errors="ignore")
     except OSError:
-        return ""
+        text = ""
+    try:
+        rel = str(p.resolve().relative_to(CONTENT_DIR.resolve()))
+    except ValueError:
+        rel = target
+    return {"text": text, "rel_path": rel}
 
 
 _ASSET_PROXY_ALLOWED_HOSTS = {"media.agentflow.net"}
@@ -4534,8 +4541,11 @@ def editor_bootstrap(vid):
         "vid": vrow["id"],
         "video_id": vrow["video_id"],
         "title": vrow["title"] or f"Video {vid}",
-        "content_doc_text": _read_doc_field(custom_fields, "Content Doc"),
-        "bullet_doc_text": _read_doc_field(custom_fields, "Bullet Doc"),
+        "content_doc": _read_doc_field(custom_fields, "Content Doc"),
+        "bullet_doc": _read_doc_field(custom_fields, "Bullet Doc"),
+        # Back-compat with the first bridge build that read text-only fields.
+        "content_doc_text": _read_doc_field(custom_fields, "Content Doc")["text"],
+        "bullet_doc_text": _read_doc_field(custom_fields, "Bullet Doc")["text"],
         "assets": assets,
     })
 
