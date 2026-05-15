@@ -7378,6 +7378,21 @@
         refreshEditorScriptStats();
     }
 
+    // fetch wrapper that doesn't barf when the server returns HTML (proxy timeout, etc.)
+    function safeFetchJson(url, opts) {
+        return fetch(url, opts).then(function(r) {
+            return r.text().then(function(txt) {
+                var body = null;
+                try { body = JSON.parse(txt); } catch (e) {}
+                return { ok: r.ok, status: r.status, body: body, rawText: txt };
+            });
+        });
+    }
+
+    function _resetSynthBtn(btn, orig) {
+        if (btn) { btn.disabled = false; btn.textContent = orig; btn.style.opacity = '1'; }
+    }
+
     function synthesizeSayAudio() {
         if (!editorVideoId) return;
         var ta = document.getElementById('editorVocalPanel');
@@ -7391,36 +7406,96 @@
         var status = document.getElementById('editorAudioStatus');
         var orig = btn ? btn.textContent : '';
         if (btn) { btn.disabled = true; btn.textContent = 'SYNTHESIZING…'; btn.style.opacity = '0.6'; }
-        if (status) { status.textContent = 'calling ElevenLabs…'; status.style.color = '#f5b942'; }
+        if (status) { status.textContent = 'queuing job…'; status.style.color = '#f5b942'; }
 
-        fetch('/api/videos/' + editorVideoId + '/say/synthesize', {
+        var startedAt = Date.now();
+        safeFetchJson('/api/videos/' + editorVideoId + '/say/synthesize', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ text: rawText, max_words: maxWords })
-        }).then(function(r){ return r.json().then(function(j){ return {ok:r.ok, body:j}; }); })
-          .then(function(res) {
-            if (!res.ok) {
-                if (status) { status.textContent = 'failed'; status.style.color = '#e07070'; }
-                alert('Synthesize failed: ' + (res.body.error || 'unknown') +
-                      (res.body.detail ? '\n' + res.body.detail : ''));
+        }).then(function(res) {
+            if (!res.ok || !res.body || !res.body.job_id) {
+                if (status) { status.textContent = 'queue failed'; status.style.color = '#e07070'; }
+                var msg = (res.body && res.body.error) || res.rawText || ('HTTP ' + res.status);
+                alert('Synthesize start failed: ' + msg);
+                _resetSynthBtn(btn, orig);
                 return;
             }
-            // New endpoint returns {generation, generations}; fall back to legacy single-record shape for safety.
-            if (Array.isArray(res.body.generations)) editorAudioGenerations = res.body.generations;
-            else if (res.body.url) editorAudioGenerations.push(res.body);
-            renderAudioPanel();
-            var gen = res.body.generation || res.body;
-            if (status) {
-                status.textContent = 'gen ' + editorAudioGenerations.length + ' ready · ' +
-                                     (gen.bytes ? Math.round(gen.bytes/1024)+'KB' : '');
-                status.style.color = '#4caf50';
-            }
+            pollSynthStatus(res.body.job_id, startedAt, btn, orig);
         }).catch(function(err) {
             if (status) { status.textContent = 'error'; status.style.color = '#e07070'; }
-            alert('Synthesize error: ' + err);
-        }).finally(function() {
-            if (btn) { btn.disabled = false; btn.textContent = orig; btn.style.opacity = '1'; }
+            alert('Synthesize start error: ' + err);
+            _resetSynthBtn(btn, orig);
         });
+    }
+
+    function pollSynthStatus(jobId, startedAt, btn, orig) {
+        var status = document.getElementById('editorAudioStatus');
+        var tries = 0;
+        var maxTries = 600; // ~15 min at 1.5s
+
+        function tick() {
+            tries++;
+            var elapsed = ((Date.now() - startedAt) / 1000) | 0;
+            safeFetchJson('/api/videos/' + editorVideoId + '/say/synthesize/status/' + jobId)
+                .then(function(res) {
+                    var b = res.body;
+                    if (!b) {
+                        // Edge returned non-JSON (proxy hiccup) — retry quietly
+                        if (status) { status.textContent = 'reconnecting… ' + elapsed + 's'; status.style.color = '#f5b942'; }
+                        if (tries > maxTries) {
+                            if (status) { status.textContent = 'gave up polling'; status.style.color = '#e07070'; }
+                            _resetSynthBtn(btn, orig);
+                            return;
+                        }
+                        setTimeout(tick, 2500);
+                        return;
+                    }
+                    if (b.status === 'done') {
+                        if (Array.isArray(b.generations)) editorAudioGenerations = b.generations;
+                        else if (b.generation) editorAudioGenerations.push(b.generation);
+                        renderAudioPanel();
+                        if (status) {
+                            status.textContent = 'gen ' + editorAudioGenerations.length + ' ready · ' + elapsed + 's';
+                            status.style.color = '#4caf50';
+                        }
+                        _resetSynthBtn(btn, orig);
+                        return;
+                    }
+                    if (b.status === 'error') {
+                        if (status) { status.textContent = 'failed'; status.style.color = '#e07070'; }
+                        alert('Synthesize failed: ' + (b.error || 'unknown') +
+                              (b.detail ? '\n' + b.detail : ''));
+                        _resetSynthBtn(btn, orig);
+                        return;
+                    }
+                    // queued / synthesizing / stitching
+                    var label;
+                    if (b.status === 'stitching') {
+                        label = 'stitching MP3… ' + elapsed + 's';
+                    } else if (b.chunks_total > 0) {
+                        var cur = Math.min(b.chunks_done + 1, b.chunks_total);
+                        label = 'chunk ' + cur + '/' + b.chunks_total + '… ' + elapsed + 's';
+                    } else {
+                        label = 'starting… ' + elapsed + 's';
+                    }
+                    if (status) { status.textContent = label; status.style.color = '#f5b942'; }
+                    if (tries > maxTries) {
+                        if (status) { status.textContent = 'timed out polling'; status.style.color = '#e07070'; }
+                        _resetSynthBtn(btn, orig);
+                        return;
+                    }
+                    setTimeout(tick, 1500);
+                }).catch(function(err) {
+                    if (tries > maxTries) {
+                        if (status) { status.textContent = 'poll error'; status.style.color = '#e07070'; }
+                        _resetSynthBtn(btn, orig);
+                        return;
+                    }
+                    setTimeout(tick, 2500);
+                });
+        }
+        tick();
     }
 
     function generateVocalDoc() {
