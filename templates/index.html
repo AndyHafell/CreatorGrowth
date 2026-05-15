@@ -2235,17 +2235,54 @@
                     <video id="editorPreview" controls style="display:none; max-width:100%; max-height:100%; background:#000;"></video>
                     <div id="editorPreviewEmpty" style="color:#444; font-size:13px; text-align:center;">Drop assets onto the timeline below, then EXPORT to render the composition.</div>
                 </div>
-                <div style="height:140px; background:#0d0d1a; border-top:1px solid #1f1f30; padding:14px;">
-                    <div style="display:flex; align-items:center; margin-bottom:8px;">
-                        <span style="color:#444; font-size:10px; letter-spacing:1.5px;">TIMELINE</span>
+                <div id="editorTimelineWrap" style="height:200px; background:#0d0d1a; border-top:1px solid #1f1f30; display:flex; flex-direction:column;">
+                    <!-- Toolbar -->
+                    <div style="display:flex; align-items:center; padding:6px 12px; gap:6px; border-bottom:1px solid #15151f; flex-shrink:0;">
+                        <span style="color:#444; font-size:10px; letter-spacing:1.5px; margin-right:4px;">TIMELINE</span>
+                        <button id="editorPlayBtn" onclick="editorTogglePlay()"
+                                title="Play / pause (space)"
+                                style="background:#7ad17a; color:#000; border:none; width:30px; height:24px; border-radius:3px; cursor:pointer; font-size:11px; font-weight:700;">▶</button>
+                        <button onclick="editorSliceAtPlayhead()"
+                                title="Slice clip at playhead (S)"
+                                style="background:none; border:1px solid #2a2a4a; color:#c8c8d0; padding:3px 9px; font-size:10px; letter-spacing:1px; border-radius:3px; cursor:pointer;">SLICE</button>
+                        <button onclick="editorClearTimeline()"
+                                title="Remove all clips from the timeline"
+                                style="background:none; border:1px solid #2a2a4a; color:#888; padding:3px 9px; font-size:10px; letter-spacing:1px; border-radius:3px; cursor:pointer;">CLEAR</button>
+                        <span style="color:#333; margin:0 4px;">|</span>
+                        <label style="color:#555; font-size:10px; letter-spacing:0.5px;">ZOOM</label>
+                        <button onclick="editorZoom(-1)"
+                                style="background:none; border:1px solid #2a2a4a; color:#888; width:22px; height:22px; font-size:13px; border-radius:3px; cursor:pointer; line-height:1;">−</button>
+                        <button onclick="editorZoom(1)"
+                                style="background:none; border:1px solid #2a2a4a; color:#888; width:22px; height:22px; font-size:13px; border-radius:3px; cursor:pointer; line-height:1;">+</button>
                         <span style="flex:1;"></span>
-                        <span id="editorTimelineDuration" style="color:#666; font-size:11px; font-variant-numeric:tabular-nums;"></span>
+                        <span id="editorCurTime" style="color:#c8c8d0; font-variant-numeric:tabular-nums; font-size:11px; font-family:'SF Mono',Menlo,monospace;">0:00.0</span>
+                        <span style="color:#444;">/</span>
+                        <span id="editorTotalTime" style="color:#666; font-variant-numeric:tabular-nums; font-size:11px; font-family:'SF Mono',Menlo,monospace;">0:00.0</span>
                     </div>
-                    <div id="editorTimeline"
-                         ondragover="event.preventDefault(); event.dataTransfer.dropEffect='copy';"
-                         ondrop="dropOnTimeline(event)"
-                         style="display:flex; gap:4px; min-height:62px; background:#15151f; border:1px solid #2a2a4a; border-radius:6px; padding:8px; overflow-x:auto; align-items:center;">
-                        <div id="editorTimelineEmpty" style="color:#444; font-size:11px; padding:0 12px;">Drag assets here from the left</div>
+                    <!-- Scrolling track stack -->
+                    <div id="editorTrackScroll" style="flex:1; overflow:auto; position:relative;">
+                        <div id="editorTrackInner" style="position:relative; min-width:100%;">
+                            <canvas id="editorRulerCanvas"
+                                    onclick="editorRulerClick(event)"
+                                    style="display:block; height:18px; background:#0a0a14; cursor:pointer;"></canvas>
+                            <div id="editorTrack_video"
+                                 onclick="editorTrackClick(event,'video')"
+                                 ondragover="editorTrackDragOver(event)"
+                                 ondragleave="editorTrackDragLeave(event)"
+                                 ondrop="editorTrackDrop(event,'video')"
+                                 title="Video lane — drop diagrams, chapters, screen recordings here"
+                                 style="position:relative; height:46px; background:#0d0d1a; border-top:1px solid #15151f;"></div>
+                            <div id="editorTrack_audio"
+                                 onclick="editorTrackClick(event,'audio')"
+                                 ondragover="editorTrackDragOver(event)"
+                                 ondragleave="editorTrackDragLeave(event)"
+                                 ondrop="editorTrackDrop(event,'audio')"
+                                 title="Audio lane — drop ElevenLabs generations from the AUDIO tab"
+                                 style="position:relative; height:60px; background:#0d0d1a; border-top:1px solid #15151f;"></div>
+                            <div id="editorPlayhead"
+                                 style="position:absolute; top:0; bottom:0; width:0; border-left:1.5px solid #e74c3c; pointer-events:none; z-index:6;"></div>
+                            <div id="editorTimelineEmpty" style="position:absolute; top:34px; left:14px; color:#444; font-size:11px; pointer-events:none;">Drag diagrams onto the video lane, audio generations onto the audio lane.</div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -7190,8 +7227,9 @@
             fetch('/api/videos/' + vid + '/editor').then(function(r){return r.json();})
         ]).then(function(arr) {
             editorAssets = Array.isArray(arr[0]) ? arr[0] : [];
-            editorState = arr[1] || { timeline: [] };
-            if (!editorState.timeline) editorState.timeline = [];
+            editorState = arr[1] || {};
+            ensureTracksShape();
+            editorPlayhead = 0;
             renderEditorAssetGallery();
             renderEditorTimeline();
             // restore last-render preview if any
@@ -7272,7 +7310,25 @@
             var realIdx = editorAudioGenerations.length - 1 - displayIdx;
             var genNum = realIdx + 1;
             var card = document.createElement('div');
-            card.style.cssText = 'background:#15151f; border:1px solid #1f1f30; border-radius:6px; padding:12px 14px; margin-bottom:10px;';
+            card.draggable = true;
+            card.style.cssText = 'background:#15151f; border:1px solid #1f1f30; border-radius:6px; padding:12px 14px; margin-bottom:10px; cursor:grab;';
+            card.ondragstart = function(ev) {
+                // Best-effort duration: we wrote a hidden <audio> for the card below; read its duration if loaded
+                var audioEl = card.querySelector('audio');
+                var dur = (audioEl && isFinite(audioEl.duration)) ? audioEl.duration : 0;
+                var payload = {
+                    id: 'audiogen_' + realIdx,
+                    type: 'audio',
+                    kind: 'audio',
+                    url: g.url,
+                    name: 'Gen ' + genNum + ' · voiceover',
+                    duration: dur,
+                };
+                ev.dataTransfer.effectAllowed = 'copy';
+                ev.dataTransfer.setData('application/json', JSON.stringify(payload));
+                card.style.opacity = '0.5';
+            };
+            card.ondragend = function(){ card.style.opacity = '1'; };
 
             var when = g.generated_at || '';
             try { when = new Date(when).toLocaleString(); } catch(e) {}
@@ -7701,7 +7757,8 @@
             card.onmouseleave = function(){ card.style.borderColor = '#1f1f30'; };
             card.ondragstart = function(ev) {
                 ev.dataTransfer.effectAllowed = 'copy';
-                ev.dataTransfer.setData('application/json', JSON.stringify(asset));
+                var payload = Object.assign({}, asset, { kind: 'video' });
+                ev.dataTransfer.setData('application/json', JSON.stringify(payload));
                 card.style.opacity = '0.5';
             };
             card.ondragend = function(){ card.style.opacity = '1'; };
@@ -7718,88 +7775,499 @@
         });
     }
 
-    function dropOnTimeline(ev) {
+    // ─── Multi-track timeline engine ──────────────────────────────────────
+    var EDITOR_PPS = 10; // pixels per second (zoom)
+    var EDITOR_PPS_LEVELS = [4, 6, 10, 16, 24, 40, 60, 100];
+    var editorPlayhead = 0;
+    var editorIsPlaying = false;
+    var editorPlayRAF = null;
+    var editorPlayStartedAt = 0;
+    var editorPlayStartedPh = 0;
+    var editorTotalDuration = 0;
+    var _wfCache = {};       // url -> {peaks: [[min,max], ...] sized to render width}
+    var _wfPending = {};     // url -> bool (decode in flight)
+    var _audioEls = {};      // url -> HTMLAudioElement (reused)
+    var _previewClipUrl = '';
+
+    function ensureTracksShape() {
+        if (!editorState.tracks) editorState.tracks = {};
+        if (!Array.isArray(editorState.tracks.video)) editorState.tracks.video = [];
+        if (!Array.isArray(editorState.tracks.audio)) editorState.tracks.audio = [];
+        // Migrate legacy flat timeline → video track with sequential start_times
+        if (Array.isArray(editorState.timeline) && editorState.timeline.length && !editorState.tracks.video.length) {
+            var t = 0;
+            editorState.timeline.forEach(function(c) {
+                var dur = c.duration || 0;
+                editorState.tracks.video.push({
+                    asset_id: c.asset_id, asset_url: c.asset_url, asset_name: c.asset_name,
+                    duration: dur, type: c.type, kind: 'video',
+                    start_time: t, in: 0, out: dur,
+                });
+                t += dur;
+            });
+        }
+        delete editorState.timeline;
+    }
+
+    function editorTimelineMaxEnd() {
+        var maxEnd = 0;
+        ['video','audio'].forEach(function(tn) {
+            (editorState.tracks[tn] || []).forEach(function(c) {
+                var end = (c.start_time || 0) + Math.max(0, (c.out || 0) - (c.in || 0));
+                if (end > maxEnd) maxEnd = end;
+            });
+        });
+        return maxEnd;
+    }
+
+    function editorFormatTime(s) {
+        if (!isFinite(s) || s < 0) s = 0;
+        var m = Math.floor(s / 60);
+        var sec = Math.floor(s % 60);
+        var t = Math.floor((s - Math.floor(s)) * 10);
+        return m + ':' + String(sec).padStart(2,'0') + '.' + t;
+    }
+
+    function renderEditorTimeline() {
+        ensureTracksShape();
+        var maxEnd = editorTimelineMaxEnd();
+        editorTotalDuration = Math.max(maxEnd, 10);
+        var pxWidth = editorTotalDuration * EDITOR_PPS;
+        var inner = document.getElementById('editorTrackInner');
+        if (inner) inner.style.minWidth = pxWidth + 'px';
+        renderEditorRuler(pxWidth);
+        renderEditorTrack('video', '#f5b942', '#1f1c0c', pxWidth);
+        renderEditorTrack('audio', '#5b9bd5', '#0c1620', pxWidth);
+        var empty = document.getElementById('editorTimelineEmpty');
+        if (empty) empty.style.display = (editorState.tracks.video.length || editorState.tracks.audio.length) ? 'none' : 'block';
+        var totalEl = document.getElementById('editorTotalTime');
+        if (totalEl) totalEl.textContent = editorFormatTime(maxEnd);
+        updateEditorPlayhead();
+    }
+
+    function renderEditorRuler(pxWidth) {
+        var canvas = document.getElementById('editorRulerCanvas');
+        if (!canvas) return;
+        var dpr = window.devicePixelRatio || 1;
+        canvas.width = pxWidth * dpr;
+        canvas.height = 18 * dpr;
+        canvas.style.width = pxWidth + 'px';
+        canvas.style.height = '18px';
+        var ctx = canvas.getContext('2d');
+        ctx.scale(dpr, dpr);
+        ctx.clearRect(0,0,pxWidth,18);
+        ctx.font = '9px -apple-system, "SF Mono", monospace';
+        ctx.textBaseline = 'top';
+        // Decide tick interval based on zoom
+        var tickEvery = 1;
+        if (EDITOR_PPS <= 6) tickEvery = 5;
+        else if (EDITOR_PPS <= 12) tickEvery = 2;
+        for (var s = 0; s <= editorTotalDuration; s++) {
+            var x = s * EDITOR_PPS;
+            var major = (s % (tickEvery * 5) === 0);
+            var minor = (s % tickEvery === 0);
+            if (!minor) continue;
+            ctx.strokeStyle = major ? '#3a3a5a' : '#1f1f30';
+            ctx.beginPath();
+            ctx.moveTo(Math.floor(x)+0.5, major ? 4 : 11);
+            ctx.lineTo(Math.floor(x)+0.5, 18);
+            ctx.stroke();
+            if (major) {
+                ctx.fillStyle = '#666';
+                var m = Math.floor(s/60), sec = s%60;
+                var label = (m > 0) ? m+':'+String(sec).padStart(2,'0') : sec + 's';
+                ctx.fillText(label, x+3, 3);
+            }
+        }
+    }
+
+    function renderEditorTrack(name, color, bgColor, pxWidth) {
+        var track = document.getElementById('editorTrack_' + name);
+        if (!track) return;
+        track.innerHTML = '';
+        track.style.width = pxWidth + 'px';
+        (editorState.tracks[name] || []).forEach(function(c, i) {
+            var clipLen = Math.max(0.05, (c.out || 0) - (c.in || 0));
+            var x = (c.start_time || 0) * EDITOR_PPS;
+            var w = clipLen * EDITOR_PPS;
+            var h = (name === 'audio') ? 60 : 46;
+            var div = document.createElement('div');
+            div.draggable = true;
+            div.dataset.idx = i;
+            div.dataset.track = name;
+            div.style.cssText =
+                'position:absolute; left:' + x + 'px; top:0; width:' + w + 'px; height:100%;' +
+                'background:' + bgColor + '; border:1px solid ' + color + '; border-radius:3px;' +
+                'cursor:grab; box-sizing:border-box; overflow:hidden; transition:opacity 0.1s;';
+            div.title = name + ' clip · drag to reposition · right-click to remove';
+            div.ondragstart = function(ev) {
+                ev.dataTransfer.effectAllowed = 'move';
+                ev.dataTransfer.setData('text/plain', 'tlclip:' + name + ':' + i);
+                div.style.opacity = '0.5';
+                ev.stopPropagation();
+            };
+            div.ondragend = function(){ div.style.opacity = '1'; };
+            div.oncontextmenu = function(ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                editorState.tracks[name].splice(i, 1);
+                renderEditorTimeline(); saveEditorState();
+            };
+            if (name === 'audio') {
+                var wfCanvas = document.createElement('canvas');
+                wfCanvas.style.cssText = 'position:absolute; left:0; top:14px; right:0; bottom:0; width:100%; height:' + (h - 14) + 'px; pointer-events:none; opacity:0.55;';
+                div.appendChild(wfCanvas);
+                editorRenderWaveform(c.asset_url, wfCanvas, Math.max(1, Math.floor(w)), h - 14, c.in || 0, (c.out || 0));
+            }
+            var label = document.createElement('div');
+            label.textContent = c.asset_name || (name + ' clip');
+            label.style.cssText = 'position:relative; color:' + color + '; font-size:10px; padding:2px 6px; font-weight:700; pointer-events:none; text-shadow:0 1px 2px rgba(0,0,0,0.7); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
+            div.appendChild(label);
+            var sub = document.createElement('div');
+            sub.textContent = clipLen.toFixed(1) + 's';
+            sub.style.cssText = 'position:relative; color:rgba(255,255,255,0.5); font-size:9px; padding:0 6px; pointer-events:none;';
+            div.appendChild(sub);
+            track.appendChild(div);
+        });
+    }
+
+    function editorRenderWaveform(url, canvas, w, h, inSec, outSec) {
+        if (!url) return;
+        var dpr = window.devicePixelRatio || 1;
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
+        function draw(peaks) {
+            var ctx = canvas.getContext('2d');
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.clearRect(0,0,w,h);
+            ctx.fillStyle = '#5b9bd5';
+            var mid = h / 2;
+            var step = peaks.length / w;
+            for (var i = 0; i < w; i++) {
+                var idx = Math.floor(i * step);
+                if (idx >= peaks.length) break;
+                var p = peaks[idx];
+                var amp = Math.max(Math.abs(p[0]), Math.abs(p[1]));
+                var bar = Math.max(1, amp * (h - 2));
+                ctx.fillRect(i, mid - bar/2, 1, bar);
+            }
+        }
+        if (_wfCache[url]) { draw(_wfCache[url]); return; }
+        if (_wfPending[url]) return;
+        _wfPending[url] = true;
+        fetch(url).then(function(r){ return r.arrayBuffer(); }).then(function(buf) {
+            var AC = window.AudioContext || window.webkitAudioContext;
+            var ac = new AC();
+            return ac.decodeAudioData(buf).then(function(audio) {
+                var ch = audio.getChannelData(0);
+                // Downsample to 4 peaks per pixel across the FULL audio (independent of clip trim)
+                var bins = 2000; // enough resolution for any zoom
+                var spp = Math.max(1, Math.floor(ch.length / bins));
+                var peaks = new Array(bins);
+                for (var i = 0; i < bins; i++) {
+                    var s = i * spp, e = Math.min(s + spp, ch.length);
+                    var mn = 0, mx = 0;
+                    for (var j = s; j < e; j++) {
+                        var v = ch[j];
+                        if (v < mn) mn = v;
+                        if (v > mx) mx = v;
+                    }
+                    peaks[i] = [mn, mx];
+                }
+                _wfCache[url] = peaks;
+                _wfPending[url] = false;
+                draw(peaks);
+                ac.close && ac.close();
+                // Re-render this clip with proper peaks (the canvas reference is held by the DOM)
+            });
+        }).catch(function(err) {
+            _wfPending[url] = false;
+            console.warn('waveform decode failed', url, err);
+        });
+    }
+
+    // ─── Drag-drop onto tracks ────────────────────────────────────────────
+    function editorTrackDragOver(ev) {
         ev.preventDefault();
+        ev.dataTransfer.dropEffect = (ev.dataTransfer.types.indexOf('text/plain') >= 0) ? 'move' : 'copy';
+        ev.currentTarget.style.background = '#15151f';
+    }
+    function editorTrackDragLeave(ev) {
+        ev.currentTarget.style.background = '#0d0d1a';
+    }
+
+    function editorTrackDrop(ev, trackName) {
+        ev.preventDefault();
+        ev.currentTarget.style.background = '#0d0d1a';
+        var raw = ev.dataTransfer.getData('text/plain');
+        var rect = ev.currentTarget.getBoundingClientRect();
+        var scroll = document.getElementById('editorTrackScroll');
+        var x = ev.clientX - rect.left + (scroll ? scroll.scrollLeft : 0);
+        var t = Math.max(0, x / EDITOR_PPS);
+
+        // Moving an existing clip
+        if (raw && raw.indexOf('tlclip:') === 0) {
+            var parts = raw.slice(7).split(':');
+            var srcTrack = parts[0], srcIdx = parseInt(parts[1], 10);
+            if (srcTrack && !isNaN(srcIdx)) {
+                var clip = editorState.tracks[srcTrack][srcIdx];
+                if (!clip) return;
+                // Same-kind move (or cross-track if compatible)
+                if (srcTrack === trackName) {
+                    clip.start_time = t;
+                } else {
+                    // disallow cross-track move (video clip onto audio lane or vice versa)
+                    return;
+                }
+                renderEditorTimeline(); saveEditorState();
+            }
+            return;
+        }
+
         var data = ev.dataTransfer.getData('application/json');
         if (!data) return;
         var asset;
         try { asset = JSON.parse(data); } catch (e) { return; }
-        editorState.timeline.push({
-            asset_id: asset.id,
-            asset_url: asset.url,
-            asset_name: asset.name,
-            duration: asset.duration || 0,
-            type: asset.type
-        });
-        renderEditorTimeline();
-        saveEditorState();
-    }
-
-    function renderEditorTimeline() {
-        var c = document.getElementById('editorTimeline');
-        c.innerHTML = '';
-        var total = 0;
-        if (!editorState.timeline || !editorState.timeline.length) {
-            c.innerHTML = '<div style="color:#444; font-size:11px; padding:0 12px;">Drag assets here from the left</div>';
-            document.getElementById('editorTimelineDuration').textContent = '';
+        var assetKind = asset.kind || (asset.type === 'audio' ? 'audio' : 'video');
+        if (assetKind !== trackName) {
+            // Polite reject — wrong lane
             return;
         }
-        editorState.timeline.forEach(function(clip, i) {
-            total += clip.duration || 0;
-            var w = Math.max(80, (clip.duration || 1) * 28);
-            var s = document.createElement('div');
-            s.draggable = true;
-            s.dataset.idx = i;
-            s.style.cssText = 'min-width:' + w + 'px; height:46px; background:#1f1c0c; border:1px solid #f5b942; border-radius:4px; padding:5px 9px; display:flex; flex-direction:column; justify-content:center; cursor:grab; flex-shrink:0; transition:opacity 0.1s;';
-            s.title = 'Drag to reorder · right-click to remove';
-            s.ondragstart = function(ev) {
-                ev.dataTransfer.effectAllowed = 'move';
-                ev.dataTransfer.setData('text/plain', 'tl:' + i);
-                s.style.opacity = '0.5';
+        var dur = asset.duration || 0;
+        // If duration unknown (audio drop pre-load), probe it
+        var pushClip = function(d) {
+            var clip = {
+                asset_id: asset.id, asset_url: asset.url,
+                asset_name: asset.name || (trackName + ' clip'),
+                duration: d, type: asset.type, kind: trackName,
+                start_time: t, in: 0, out: d,
             };
-            s.ondragend = function(){ s.style.opacity = '1'; };
-            s.ondragover = function(ev) {
-                ev.preventDefault();
-                ev.dataTransfer.dropEffect = 'move';
-            };
-            s.ondrop = function(ev) {
-                ev.preventDefault();
-                var raw = ev.dataTransfer.getData('text/plain');
-                if (raw && raw.indexOf('tl:') === 0) {
-                    var src = parseInt(raw.slice(3), 10);
-                    var dst = parseInt(s.dataset.idx, 10);
-                    if (!isNaN(src) && !isNaN(dst) && src !== dst) {
-                        var moved = editorState.timeline.splice(src, 1)[0];
-                        if (src < dst) dst -= 1;
-                        editorState.timeline.splice(dst, 0, moved);
-                        renderEditorTimeline();
-                        saveEditorState();
-                    }
-                    ev.stopPropagation();
-                    return;
-                }
-                // fallback: forward to outer drop (asset from gallery)
-                var dataJ = ev.dataTransfer.getData('application/json');
-                if (dataJ) { dropOnTimeline(ev); ev.stopPropagation(); }
-            };
-            s.oncontextmenu = function(ev) {
-                ev.preventDefault();
-                editorState.timeline.splice(i, 1);
-                renderEditorTimeline();
-                saveEditorState();
-            };
-            var label = document.createElement('div');
-            label.textContent = (i+1) + '. ' + (clip.asset_name || 'clip');
-            label.style.cssText = 'color:#f5b942; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600;';
-            s.appendChild(label);
-            var dur = document.createElement('div');
-            dur.textContent = (clip.duration || 0).toFixed(1) + 's · ' + (clip.type || '');
-            dur.style.cssText = 'color:#888; font-size:10px;';
-            s.appendChild(dur);
-            c.appendChild(s);
-        });
-        document.getElementById('editorTimelineDuration').textContent = 'total: ' + total.toFixed(1) + 's';
+            editorState.tracks[trackName].push(clip);
+            renderEditorTimeline(); saveEditorState();
+        };
+        if (dur > 0) { pushClip(dur); return; }
+        var probe = document.createElement('audio');
+        probe.preload = 'metadata';
+        probe.src = asset.url;
+        probe.onloadedmetadata = function() { pushClip(isFinite(probe.duration) ? probe.duration : 1); };
+        probe.onerror = function() { pushClip(1); };
     }
+
+    // Click on track background to seek
+    function editorTrackClick(ev, trackName) {
+        if (ev.target.dataset && ev.target.dataset.idx != null) return; // clicked a clip, not the bg
+        var rect = ev.currentTarget.getBoundingClientRect();
+        var scroll = document.getElementById('editorTrackScroll');
+        var x = ev.clientX - rect.left + (scroll ? scroll.scrollLeft : 0);
+        editorSeek(x / EDITOR_PPS);
+    }
+    function editorRulerClick(ev) {
+        var canvas = ev.currentTarget;
+        var rect = canvas.getBoundingClientRect();
+        var scroll = document.getElementById('editorTrackScroll');
+        var x = ev.clientX - rect.left + (scroll ? scroll.scrollLeft : 0);
+        // Actually rect is already adjusted by scroll if canvas is inside scroll — recompute from inner
+        var inner = document.getElementById('editorTrackInner');
+        if (inner) {
+            var ir = inner.getBoundingClientRect();
+            x = ev.clientX - ir.left;
+        }
+        editorSeek(x / EDITOR_PPS);
+    }
+
+    // ─── Playback ─────────────────────────────────────────────────────────
+    function editorGetOrMakeAudio(url) {
+        if (!_audioEls[url]) {
+            var a = new Audio();
+            a.preload = 'auto';
+            a.src = url;
+            _audioEls[url] = a;
+        }
+        return _audioEls[url];
+    }
+
+    function editorActiveAudioClip(t) {
+        var arr = editorState.tracks.audio || [];
+        for (var i = 0; i < arr.length; i++) {
+            var c = arr[i];
+            var len = (c.out || 0) - (c.in || 0);
+            if (t >= (c.start_time || 0) - 0.001 && t < (c.start_time || 0) + len) return c;
+        }
+        return null;
+    }
+    function editorActiveVideoClip(t) {
+        var arr = editorState.tracks.video || [];
+        for (var i = 0; i < arr.length; i++) {
+            var c = arr[i];
+            var len = (c.out || 0) - (c.in || 0);
+            if (t >= (c.start_time || 0) - 0.001 && t < (c.start_time || 0) + len) return c;
+        }
+        return null;
+    }
+
+    function editorSyncPreviewToPlayhead() {
+        var v = document.getElementById('editorPreview');
+        var c = editorActiveVideoClip(editorPlayhead);
+        if (!v) return;
+        if (!c) {
+            v.style.display = 'none'; v.removeAttribute('src'); _previewClipUrl = '';
+            document.getElementById('editorPreviewEmpty').style.display = 'block';
+            return;
+        }
+        document.getElementById('editorPreviewEmpty').style.display = 'none';
+        var localT = (editorPlayhead - c.start_time) + (c.in || 0);
+        if (_previewClipUrl !== c.asset_url) {
+            v.src = c.asset_url; v.style.display = 'block';
+            _previewClipUrl = c.asset_url;
+            v.onloadedmetadata = function() {
+                try { v.currentTime = localT; } catch (e) {}
+                if (editorIsPlaying) v.play().catch(function(){});
+            };
+        } else {
+            try { v.currentTime = localT; } catch (e) {}
+            if (editorIsPlaying) v.play().catch(function(){});
+            else v.pause();
+        }
+    }
+
+    function editorSyncAudioToPlayhead() {
+        var c = editorActiveAudioClip(editorPlayhead);
+        // Pause all non-active audio elements
+        Object.keys(_audioEls).forEach(function(u) {
+            if (!c || c.asset_url !== u) _audioEls[u].pause();
+        });
+        if (!c) return;
+        var a = editorGetOrMakeAudio(c.asset_url);
+        var localT = (editorPlayhead - c.start_time) + (c.in || 0);
+        // Only adjust if it's far off, to avoid micro-jitter
+        if (!isFinite(a.duration) || a.readyState < 1) {
+            a.onloadedmetadata = function() {
+                try { a.currentTime = Math.max(0, Math.min(localT, a.duration - 0.01)); } catch (e) {}
+                if (editorIsPlaying) a.play().catch(function(){});
+            };
+        } else {
+            if (Math.abs((a.currentTime || 0) - localT) > 0.15) {
+                try { a.currentTime = Math.max(0, Math.min(localT, a.duration - 0.01)); } catch (e) {}
+            }
+            if (editorIsPlaying) a.play().catch(function(){}); else a.pause();
+        }
+    }
+
+    function updateEditorPlayhead() {
+        var ph = document.getElementById('editorPlayhead');
+        if (ph) ph.style.left = (editorPlayhead * EDITOR_PPS) + 'px';
+        var cur = document.getElementById('editorCurTime');
+        if (cur) cur.textContent = editorFormatTime(editorPlayhead);
+    }
+
+    function editorTogglePlay() {
+        if (editorIsPlaying) editorPause();
+        else editorPlay();
+    }
+    function editorPlay() {
+        if (editorTotalDuration <= 0) return;
+        if (editorPlayhead >= editorTimelineMaxEnd()) editorPlayhead = 0;
+        editorIsPlaying = true;
+        editorPlayStartedAt = performance.now();
+        editorPlayStartedPh = editorPlayhead;
+        var btn = document.getElementById('editorPlayBtn');
+        if (btn) { btn.textContent = '❚❚'; btn.style.background = '#e74c3c'; btn.style.color = '#fff'; }
+        editorSyncPreviewToPlayhead();
+        editorSyncAudioToPlayhead();
+        function step() {
+            if (!editorIsPlaying) return;
+            var dt = (performance.now() - editorPlayStartedAt) / 1000;
+            editorPlayhead = editorPlayStartedPh + dt;
+            var endT = editorTimelineMaxEnd();
+            if (editorPlayhead >= endT) {
+                editorPlayhead = endT;
+                updateEditorPlayhead();
+                editorPause();
+                return;
+            }
+            updateEditorPlayhead();
+            // If the active video clip changed, swap src
+            var vc = editorActiveVideoClip(editorPlayhead);
+            if (vc && _previewClipUrl !== vc.asset_url) editorSyncPreviewToPlayhead();
+            editorPlayRAF = requestAnimationFrame(step);
+        }
+        editorPlayRAF = requestAnimationFrame(step);
+    }
+    function editorPause() {
+        editorIsPlaying = false;
+        if (editorPlayRAF) cancelAnimationFrame(editorPlayRAF);
+        editorPlayRAF = null;
+        var btn = document.getElementById('editorPlayBtn');
+        if (btn) { btn.textContent = '▶'; btn.style.background = '#7ad17a'; btn.style.color = '#000'; }
+        var v = document.getElementById('editorPreview');
+        if (v) v.pause();
+        Object.keys(_audioEls).forEach(function(u){ _audioEls[u].pause(); });
+    }
+    function editorSeek(t) {
+        editorPlayhead = Math.max(0, Math.min(t, editorTotalDuration));
+        if (editorIsPlaying) {
+            editorPlayStartedAt = performance.now();
+            editorPlayStartedPh = editorPlayhead;
+        }
+        updateEditorPlayhead();
+        editorSyncPreviewToPlayhead();
+        editorSyncAudioToPlayhead();
+    }
+
+    // Slice the clip under the playhead on each track (audio + video)
+    function editorSliceAtPlayhead() {
+        var t = editorPlayhead;
+        var didSlice = false;
+        ['video','audio'].forEach(function(tn) {
+            var arr = editorState.tracks[tn] || [];
+            for (var i = 0; i < arr.length; i++) {
+                var c = arr[i];
+                var len = (c.out || 0) - (c.in || 0);
+                var end = (c.start_time || 0) + len;
+                if (t > (c.start_time || 0) + 0.02 && t < end - 0.02) {
+                    var offset = t - c.start_time;
+                    var splitAt = (c.in || 0) + offset;
+                    var copy = Object.assign({}, c, {
+                        start_time: t, in: splitAt, out: c.out,
+                    });
+                    c.out = splitAt;
+                    arr.splice(i + 1, 0, copy);
+                    didSlice = true;
+                    break;
+                }
+            }
+        });
+        if (didSlice) { renderEditorTimeline(); saveEditorState(); }
+    }
+
+    function editorClearTimeline() {
+        if (!confirm('Clear every clip from the timeline?')) return;
+        editorState.tracks = {video: [], audio: []};
+        editorPlayhead = 0;
+        Object.keys(_audioEls).forEach(function(u){ _audioEls[u].pause(); });
+        renderEditorTimeline(); saveEditorState();
+    }
+
+    function editorZoom(dir) {
+        var idx = EDITOR_PPS_LEVELS.indexOf(EDITOR_PPS);
+        if (idx < 0) idx = 2;
+        idx = Math.max(0, Math.min(EDITOR_PPS_LEVELS.length - 1, idx + dir));
+        EDITOR_PPS = EDITOR_PPS_LEVELS[idx];
+        renderEditorTimeline();
+    }
+
+    // Keyboard shortcuts (only while editor open)
+    document.addEventListener('keydown', function(ev) {
+        var editorOpen = (document.getElementById('editorStudio') || {}).style;
+        if (!editorOpen || editorOpen.display !== 'block') return;
+        var tag = (ev.target.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea' || ev.target.isContentEditable) return;
+        if (ev.code === 'Space') { ev.preventDefault(); editorTogglePlay(); }
+        else if (ev.key === 's' || ev.key === 'S') { ev.preventDefault(); editorSliceAtPlayhead(); }
+        else if (ev.key === 'ArrowLeft') { ev.preventDefault(); editorSeek(editorPlayhead - (ev.shiftKey ? 5 : 0.5)); }
+        else if (ev.key === 'ArrowRight') { ev.preventDefault(); editorSeek(editorPlayhead + (ev.shiftKey ? 5 : 0.5)); }
+        else if (ev.key === 'Home') { ev.preventDefault(); editorSeek(0); }
+    });
 
     var _editorPatchTimer = null;
     function saveEditorState() {
@@ -7818,8 +8286,11 @@
 
     function renderEditor() {
         if (!editorVideoId) return;
-        if (!editorState.timeline || !editorState.timeline.length) {
-            alert('Drop at least one asset onto the timeline first.');
+        ensureTracksShape();
+        var nv = (editorState.tracks.video || []).length;
+        var na = (editorState.tracks.audio || []).length;
+        if (nv === 0 && na === 0) {
+            alert('Drop at least one clip on the timeline first.');
             return;
         }
         setEditorStatus('Rendering…', '#f5b942');

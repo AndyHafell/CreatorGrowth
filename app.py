@@ -4421,11 +4421,41 @@ def save_editor_state(vid):
     return jsonify({"ok": True})
 
 
+def _editor_resolve(url):
+    rel = (url or "").lstrip("/")
+    if not rel:
+        return None
+    p = Path(app.root_path) / rel
+    return p if p.exists() else None
+
+
+def _editor_normalize_state(state):
+    """Ensure tracks shape. Migrate legacy flat `timeline` array into video track."""
+    tracks = state.get("tracks") or {}
+    tracks.setdefault("video", [])
+    tracks.setdefault("audio", [])
+    legacy = state.get("timeline") or []
+    if legacy and not tracks["video"]:
+        t = 0.0
+        for c in legacy:
+            dur = float(c.get("duration") or 0)
+            tracks["video"].append({
+                **c, "kind": "video",
+                "start_time": t, "in": 0.0, "out": dur,
+            })
+            t += dur
+    state["tracks"] = tracks
+    state.pop("timeline", None)
+    return state
+
+
 @app.route("/api/videos/<int:vid>/editor/render", methods=["POST"])
 def render_editor_timeline(vid):
-    """Compose the timeline clips into a single MP4. v1: sequential concat with
-    optional re-encode for codec/dim consistency."""
-    import tempfile, subprocess, shutil
+    """Compose timeline into a single MP4.
+    - Video lane: per-clip trim (in/out), gaps padded to black, sequential concat
+    - Audio lane: per-clip trim, gaps padded with silence, mixed/replaces video audio
+    Both lanes time-aligned via the clip's `start_time`. Final length = longest lane."""
+    import tempfile, shutil
 
     conn = get_db()
     conn.row_factory = sqlite3.Row
@@ -4437,73 +4467,187 @@ def render_editor_timeline(vid):
         state = json.loads(row["editor_state"] or "{}")
     except Exception:
         return jsonify({"error": "editor state corrupt"}), 500
-    timeline = state.get("timeline", [])
-    if not timeline:
+    state = _editor_normalize_state(state)
+    video_clips = state["tracks"]["video"]
+    audio_clips = state["tracks"]["audio"]
+    if not video_clips and not audio_clips:
         return jsonify({"error": "timeline is empty"}), 400
 
+    def total_end(clips):
+        end = 0.0
+        for c in clips:
+            e = float(c.get("start_time") or 0) + max(0.0, float(c.get("out") or 0) - float(c.get("in") or 0))
+            if e > end: end = e
+        return end
+    total_dur = max(total_end(video_clips), total_end(audio_clips))
+    if total_dur <= 0:
+        return jsonify({"error": "timeline has zero duration"}), 400
+
     job_id = uuid.uuid4().hex[:12]
-    work_dir = Path(tempfile.mkdtemp(prefix=f"editor_{job_id}_"))
+    work = Path(tempfile.mkdtemp(prefix=f"editor_{job_id}_"))
     try:
-        # Resolve clip paths
-        clip_paths = []
-        for item in timeline:
-            url = (item.get("asset_url") or "").lstrip("/")
-            if not url:
-                continue
-            abs_path = Path(app.root_path) / url
-            if abs_path.exists():
-                clip_paths.append(abs_path)
-        if not clip_paths:
-            return jsonify({"error": "no resolvable clips on timeline"}), 400
+        # ── Build the video lane as a single MP4 (gaps padded with black) ──
+        video_lane_path = None
+        if video_clips:
+            # Sort by start_time
+            ordered = sorted(video_clips, key=lambda c: float(c.get("start_time") or 0))
+            parts = []  # list of (in_path or None for gap, duration_sec, in_offset)
+            cursor = 0.0
+            for c in ordered:
+                st = float(c.get("start_time") or 0)
+                inP = float(c.get("in") or 0)
+                outP = float(c.get("out") or 0)
+                clip_len = max(0.0, outP - inP)
+                if clip_len <= 0:
+                    continue
+                if st > cursor + 0.01:
+                    parts.append(("gap", st - cursor, 0.0))
+                src = _editor_resolve(c.get("asset_url"))
+                if not src:
+                    continue
+                parts.append((src, clip_len, inP))
+                cursor = st + clip_len
+            # Pad video lane to total_dur with black if shorter
+            if total_dur > cursor + 0.01:
+                parts.append(("gap", total_dur - cursor, 0.0))
 
-        # All clips are MP4s rendered by our pipeline, so they share the same
-        # codec/pixel-format/sample-rate. Use concat demuxer with stream copy.
-        concat_file = work_dir / "concat.txt"
-        with concat_file.open("w") as f:
-            for p in clip_paths:
-                f.write(f"file '{str(p).replace(chr(39), chr(92)+chr(39))}'\n")
+            # Convert each part to a normalized 1920x1080 30fps mp4 (re-encode), then concat
+            normalized = []
+            for i, (src, dur, off) in enumerate(parts):
+                out_part = work / f"vpart_{i}.mp4"
+                if src == "gap":
+                    # Black filler with silent audio so concat stays aligned
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-f", "lavfi", "-i", f"color=c=black:s=1920x1080:d={dur:.3f}:r=30",
+                        "-f", "lavfi", "-i", f"anullsrc=channel_layout=stereo:sample_rate=44100",
+                        "-shortest",
+                        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-r", "30",
+                        "-c:a", "aac", "-b:a", "128k",
+                        str(out_part),
+                    ]
+                else:
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-ss", f"{off:.3f}", "-t", f"{dur:.3f}", "-i", str(src),
+                        "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1",
+                        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-r", "30",
+                        "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "44100",
+                        str(out_part),
+                    ]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                if r.returncode != 0:
+                    return jsonify({"error": "ffmpeg video-part failed",
+                                    "stderr": r.stderr[-2000:]}), 500
+                normalized.append(out_part)
 
-        out_path = work_dir / "out.mp4"
-        # Re-encode for safety (different durations, b-frames, GOP can break stream copy)
-        cmd = [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file),
-            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k",
-            "-r", "30",
-            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-            str(out_path),
-        ]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        if r.returncode != 0:
-            return jsonify({"error": "ffmpeg failed", "stderr": r.stderr[-2000:]}), 500
+            video_lane_path = work / "video_lane.mp4"
+            list_file = work / "vconcat.txt"
+            list_file.write_text("\n".join(
+                "file '" + str(p).replace("'", "'\\''") + "'" for p in normalized
+            ))
+            r = subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                                "-i", str(list_file), "-c", "copy", str(video_lane_path)],
+                               capture_output=True, text=True, timeout=600)
+            if r.returncode != 0:
+                return jsonify({"error": "ffmpeg video-concat failed",
+                                "stderr": r.stderr[-2000:]}), 500
 
+        # ── Build the audio lane (gaps = silence), full timeline length ──
+        audio_lane_path = None
+        if audio_clips:
+            inputs = []     # ffmpeg -i list
+            filter_in = []  # delayed+trimmed labels
+            for i, c in enumerate(audio_clips):
+                src = _editor_resolve(c.get("asset_url"))
+                if not src: continue
+                st = float(c.get("start_time") or 0)
+                inP = float(c.get("in") or 0)
+                outP = float(c.get("out") or 0)
+                if outP - inP <= 0: continue
+                inputs += ["-i", str(src)]
+                # Trim, then delay so the clip lands at its timeline position
+                delay_ms = int(st * 1000)
+                filter_in.append(
+                    f"[{len(inputs)//2 - 1}:a]atrim={inP:.3f}:{outP:.3f},asetpts=PTS-STARTPTS"
+                    f",adelay={delay_ms}|{delay_ms}[a{i}]"
+                )
+            if filter_in:
+                audio_lane_path = work / "audio_lane.m4a"
+                amix = "".join(f"[a{i}]" for i in range(len(filter_in)))
+                # apad ensures the mix is at least total_dur long; atrim caps it
+                filter_complex = ";".join(filter_in) + ";" + \
+                    f"{amix}amix=inputs={len(filter_in)}:normalize=0,apad,atrim=0:{total_dur:.3f}[aout]"
+                cmd = ["ffmpeg", "-y"] + inputs + [
+                    "-filter_complex", filter_complex,
+                    "-map", "[aout]",
+                    "-c:a", "aac", "-b:a", "192k",
+                    str(audio_lane_path),
+                ]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                if r.returncode != 0:
+                    return jsonify({"error": "ffmpeg audio-lane failed",
+                                    "stderr": r.stderr[-2000:]}), 500
+
+        # ── Combine: video lane + audio lane (audio lane replaces clip audio) ──
         out_dir = Path(app.root_path) / "static" / "uploads" / "editor"
         out_dir.mkdir(parents=True, exist_ok=True)
         final_path = out_dir / f"v{vid}_{job_id}.mp4"
-        shutil.move(str(out_path), str(final_path))
+        if video_lane_path and audio_lane_path:
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(video_lane_path),
+                "-i", str(audio_lane_path),
+                "-map", "0:v", "-map", "1:a",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                "-shortest",
+                str(final_path),
+            ]
+        elif video_lane_path:
+            shutil.move(str(video_lane_path), str(final_path))
+            cmd = None
+        elif audio_lane_path:
+            # No video — produce a black-video MP4 the length of the audio
+            cmd = [
+                "ffmpeg", "-y",
+                "-f", "lavfi", "-i", f"color=c=black:s=1920x1080:d={total_dur:.3f}:r=30",
+                "-i", str(audio_lane_path),
+                "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k", "-shortest",
+                str(final_path),
+            ]
+        else:
+            return jsonify({"error": "no resolvable clips"}), 400
+        if cmd:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            if r.returncode != 0:
+                return jsonify({"error": "ffmpeg final mux failed",
+                                "stderr": r.stderr[-2000:]}), 500
+
         rel = str(final_path.relative_to(Path(app.root_path)))
         result_url = "/" + rel
-
-        # Persist last_render onto editor_state
         state["last_render"] = {
             "url": result_url,
             "at": datetime.now(timezone.utc).isoformat(),
-            "clips": len(clip_paths),
+            "video_clips": len(video_clips),
+            "audio_clips": len(audio_clips),
+            "duration": round(total_dur, 2),
         }
         conn = get_db()
         conn.execute("UPDATE videos SET editor_state=? WHERE id=?",
                      (json.dumps(state), vid))
         conn.commit()
         conn.close()
-
-        return jsonify({"url": result_url, "clips": len(clip_paths)})
+        return jsonify({"url": result_url,
+                        "video_clips": len(video_clips),
+                        "audio_clips": len(audio_clips),
+                        "duration": round(total_dur, 2)})
     except Exception as e:
-        return jsonify({"error": f"render exception: {type(e).__name__}: {e}"}), 500
+        import traceback
+        return jsonify({"error": f"render exception: {type(e).__name__}: {e}",
+                        "trace": traceback.format_exc()[-1500:]}), 500
     finally:
-        try:
-            shutil.rmtree(work_dir)
-        except Exception:
-            pass
+        shutil.rmtree(work, ignore_errors=True)
 
 
 if __name__ == "__main__":
