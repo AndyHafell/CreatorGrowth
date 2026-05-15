@@ -3833,71 +3833,37 @@ def chapter_render(vid):
             pass
 
 
-# ── Vocal doc (Benson 3x tonality) ───────────────────────────────────────
+# ── SAY doc (ElevenLabs-ready plain narration) ───────────────────────────
 
-VOCAL_DOC_SYSTEM_PROMPT = """You convert a finished content doc into a VOCAL DOC — a stripped-down read-aloud script with John Benson's 3x tonality codes baked in. The vocal doc is what Andy reads on camera and what gets sent to ElevenLabs for TTS.
+VOCAL_DOC_SYSTEM_PROMPT = """You extract the SAY doc from a content doc — ONLY the words Andy actually says aloud, in narration order, as plain prose. This text goes directly into ElevenLabs for TTS, so any markdown markers (asterisks, underscores, pipes, dashes) would be SPOKEN ALOUD literally. Do not use any.
 
-THE 5 TONALITY CODES (apply sparingly):
-- **bold** = PUNCH. Voice goes up. Apply to power words (buy, real, secret, every, single, free, now, plus), feeling/sense words (desire, see, feel, watch, imagine), numbers/proof (9 percent, 14, 70x, 30 seconds), and the dynamic word in a story moment.
-- __underline__ = ELONGATE. Slow + stretch. Apply to driving force / USP / primary benefit phrase, complex/vital terminology, words right before action words.
-- (parens) = WHISPER. Voice drops, listener leans in. Once or twice per video MAX. Apply to "the (real reason)…" / "(the secret) behind this…".
-- name-?- = PRE-RECOGNITION. Say as a question, implies listener already knows it. Apply to product/brand/concept names after first introduction. Never on first introduction.
-- ||| = STRATEGIC PAUSE. 1-2 second silent beat. Apply after a vital statement that needs to sink in, or after a split-second-agreement word (right, deal, make sense?).
+INCLUDE (every word Andy speaks, in order):
+- The hook / intro spoken paragraph (typically under "🎤 SAY THIS")
+- The body of every spoken block (typically under "🗣️ Say:")
+- Any bridges, transitions, or asides that are clearly spoken
+- The closing / CTA spoken content
 
-DENSITY BUDGET PER VIDEO (do NOT exceed):
-- 8-15 punches
-- 4-8 elongations
-- 1-2 whispers
-- 0-2 pre-recognitions
-- 3-6 strategic pauses
-Bias toward SPARINGNESS. If every word is marked, nothing stands out.
+STRIP (do not include any of this):
+- Title, packaging variants, thumbnail copy, video description
+- 5P framework labels, 💎 BENEFITS prep, 📋 STEPS recap lists, 🔒 WHY STAY notes, 🎁 GIFT prep
+- 🖥️ Show cues, B-roll cues, image prompts, frame notes, stage directions
+- Chapter labels, STEP headings, section dividers
+- Sources, references, checklists
+- ALL emoji
+- ALL markdown headings (# ## ###)
+- ALL list bullets (-, *, 1.)
+- ALL bold/italic/underline markers (**, *, __)
+- ALL code fences and inline code
+- Metadata blocks (CHAPTERS, CODES, INTRO labels)
 
-WHAT TO STRIP FROM THE CONTENT DOC (do not include):
-- Title lists, one-liners, thumbnail ideas, 5P framework
-- 💎 BENEFITS / 📋 STEPS bullet lists / 🖥️ Show cues / Key points / Source links / Checklists
-- 🔒 WHY STAY / 🎁 GIFT prep notes (only the spoken version inside the Say block counts)
-- B-roll cues, image captions, stage directions, frame notes
+OUTPUT FORMAT:
+Plain prose. Natural paragraph breaks (one blank line) between distinct beats. Nothing else.
+- Spell out symbols that would be read awkwardly: "30 percent" not "30%", "and" not "&", "for example" not "e.g."
+- Keep natural contractions ("it's", "we'll", "don't").
+- Use commas and ellipses for natural pauses — never insert codes like "|||" or "[pause]".
+- No headings, no labels, no bullets, no emoji, no markdown formatting whatsoever.
 
-WHAT TO KEEP (the only spoken content):
-- Title (clean, no "VOCAL DOC —" prefix)
-- Chapter overview (1 line per step)
-- 🎤 SAY THIS intro → becomes the INTRO section
-- Each 🗣️ Say: block → becomes the body of its STEP section
-- Closing/CTA spoken text (usually inside the final Say block)
-
-OUTPUT FORMAT (exact structure, plain markdown — NO bullet lists, use paragraph breaks):
-
-# [Clean Title]
-
-## CODES
-
-**bold** = punch (voice up)
-__underline__ = elongate (slow + stretch)
-(parens) = whisper (lean in, lower voice)
-name-?- = pre-recognition (say as question)
-||| = strategic pause (1-2 sec beat)
-
-Read it like you're talking to your best friend. Stand up. Energy high.
-
-## CHAPTERS
-
-1 — [Step 1 name]
-2 — [Step 2 name]
-...
-
-## INTRO
-
-[The SAY THIS intro paragraph with codes applied.]
-
-## STEP 1 — [Step name]
-
-[The Say block content with codes applied.]
-
-## STEP 2 — [Step name]
-
-[…]
-
-CRITICAL: Return ONLY the vocal doc markdown. No preamble, no code fence, no commentary. Start with the # title and end with the last step's spoken content."""
+CRITICAL: Return ONLY the spoken text. No preamble, no code fence, no commentary, no closing remarks. Start with the first spoken word of the intro and end with the final spoken word of the closing/CTA. The output should be fully self-contained — do not truncate mid-sentence."""
 
 
 @app.route("/api/videos/<int:vid>/vocal-doc", methods=["GET"])
@@ -3946,18 +3912,18 @@ def generate_vocal_doc(vid):
 
     payload = {
         "contents": [{
-            "parts": [{"text": VOCAL_DOC_SYSTEM_PROMPT + "\n\n---\nCONTENT DOC TO CONVERT:\n\n" + content_doc}]
+            "parts": [{"text": VOCAL_DOC_SYSTEM_PROMPT + "\n\n---\nCONTENT DOC TO EXTRACT FROM:\n\n" + content_doc}]
         }],
         "generationConfig": {
-            "temperature": 0.6,
-            "maxOutputTokens": 8192,
+            "temperature": 0.2,
+            "maxOutputTokens": 32768,
         }
     }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
     req = Request(url, data=json.dumps(payload).encode("utf-8"),
                   headers={"Content-Type": "application/json"}, method="POST")
     try:
-        with urlopen(req, timeout=120) as resp:
+        with urlopen(req, timeout=180) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except HTTPError as e:
         return jsonify({"error": f"gemini http {e.code}", "detail": e.read().decode("utf-8", "ignore")[:500]}), 502
@@ -3965,9 +3931,17 @@ def generate_vocal_doc(vid):
         return jsonify({"error": f"gemini network: {e.reason}"}), 502
 
     try:
-        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        candidate = data["candidates"][0]
+        text = candidate["content"]["parts"][0]["text"].strip()
+        finish = candidate.get("finishReason", "")
     except (KeyError, IndexError, TypeError):
         return jsonify({"error": "gemini response malformed", "raw": data}), 502
+    if finish and finish not in ("STOP", "MODEL_LENGTH"):
+        return jsonify({
+            "error": f"gemini incomplete (finishReason={finish})",
+            "partial": text,
+            "hint": "Output was cut off. Content doc may be too long for one call.",
+        }), 502
 
     # Strip an accidental ```markdown fence if Gemini adds one
     if text.startswith("```"):
