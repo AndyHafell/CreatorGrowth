@@ -2160,15 +2160,13 @@
     <div id="editorStudio" style="display:none; position:fixed; inset:0; background:#0a0a14; z-index:600; color:#ddd;">
         <div style="display:flex; align-items:center; gap:10px; padding:10px 22px; border-bottom:1px solid #1f1f30; background:#0d0d1a;">
             <div style="font-weight:700; letter-spacing:2px; color:#7ad17a; font-size:12px;">EDITOR</div>
-            <!-- Workspace tabs (DaVinci-style) -->
-            <div style="display:inline-flex; border:1px solid #2a2a4a; border-radius:4px; overflow:hidden; margin-left:10px;">
-                <button id="editorWorkspaceTabEdit" onclick="setEditorWorkspace('edit')"
-                        style="background:#1c1c2e; color:#c8c8d0; border:none; padding:5px 12px; font-size:10px; letter-spacing:1.5px; cursor:pointer;">EDIT</button>
-                <button id="editorWorkspaceTabDiagrams" onclick="setEditorWorkspace('diagrams')"
-                        style="background:none; color:#666; border:none; border-left:1px solid #2a2a4a; padding:5px 12px; font-size:10px; letter-spacing:1.5px; cursor:pointer;">DIAGRAMS</button>
-                <button id="editorWorkspaceTabChapters" onclick="setEditorWorkspace('chapters')"
-                        style="background:none; color:#666; border:none; border-left:1px solid #2a2a4a; padding:5px 12px; font-size:10px; letter-spacing:1.5px; cursor:pointer;">CHAPTERS</button>
-            </div>
+            <!-- Open companion studios (overlay over editor) -->
+            <button onclick="setEditorWorkspace('diagrams')"
+                    title="Open Diagram Studio (overlays over the editor)"
+                    style="background:none; border:1px solid #2a2a4a; color:#f5b942; padding:5px 12px; font-size:10px; letter-spacing:1.5px; border-radius:3px; cursor:pointer; margin-left:10px;">DIAGRAMS</button>
+            <button onclick="setEditorWorkspace('chapters')"
+                    title="Open Chapter Studio (overlays over the editor)"
+                    style="background:none; border:1px solid #2a2a4a; color:#5b9bd5; padding:5px 12px; font-size:10px; letter-spacing:1.5px; border-radius:3px; cursor:pointer;">CHAPTERS</button>
             <div id="editorStudioTitle" style="color:#666; font-size:12px; border-left:1px solid #2a2a4a; padding-left:14px; margin-left:6px;"></div>
             <div style="flex:1;"></div>
             <span id="editorStatus" style="color:#555; font-size:11px;"></span>
@@ -7241,13 +7239,8 @@
             editorPlayhead = 0;
             renderEditorAssetGallery();
             renderEditorTimeline();
-            // restore last-render preview if any
-            if (editorState.last_render && editorState.last_render.url) {
-                var v = document.getElementById('editorPreview');
-                v.src = editorState.last_render.url;
-                v.style.display = 'block';
-                document.getElementById('editorPreviewEmpty').style.display = 'none';
-            }
+            // Preview starts blank — playhead will populate it as user scrubs,
+            // and EXPORT MP4 swaps in the final render. Don't auto-show stale renders.
             setEditorStatus('Saved', '#4caf50');
         }).catch(function(err) { setEditorStatus('Load failed: ' + err, '#e07070'); });
     }
@@ -7792,28 +7785,24 @@
         });
     }
 
-    // ─── Workspace tabs: EDIT (default body) / DIAGRAMS / CHAPTERS ────────
+    // ─── Workspace tabs: DIAGRAMS / CHAPTERS open the respective studio
+    //     over the editor. They're action buttons, not stateful pills —
+    //     editor body remains the "home" view. ─────────────────────────────
     function setEditorWorkspace(name) {
-        var tabs = {
-            edit:     document.getElementById('editorWorkspaceTabEdit'),
-            diagrams: document.getElementById('editorWorkspaceTabDiagrams'),
-            chapters: document.getElementById('editorWorkspaceTabChapters'),
-        };
-        Object.keys(tabs).forEach(function(k) {
-            var b = tabs[k];
-            if (!b) return;
-            if (k === name) { b.style.background = '#1c1c2e'; b.style.color = '#c8c8d0'; }
-            else { b.style.background = 'none'; b.style.color = '#666'; }
-        });
         if (name === 'diagrams') {
+            var ds = document.getElementById('diagramsStudio');
+            // Editor lives later in DOM with same z-index, so bump diagrams above it.
+            if (ds) ds.style.zIndex = '610';
             if (typeof openDiagrams === 'function') openDiagrams();
-            // Diagrams studio overlays the editor; when user closes it, the EDIT
-            // tab becomes the active workspace again.
-            setTimeout(function() { setEditorWorkspace('edit'); }, 50);
-        } else if (name === 'chapters') {
-            if (typeof openChapters === 'function') openChapters();
-            setTimeout(function() { setEditorWorkspace('edit'); }, 50);
+            return;
         }
+        if (name === 'chapters') {
+            var cs = document.getElementById('chaptersStudio');
+            if (cs) cs.style.zIndex = '610';
+            if (typeof openChapters === 'function') openChapters();
+            return;
+        }
+        // 'edit' = no-op (we're already in the editor)
     }
 
     // ─── Multi-track timeline engine ──────────────────────────────────────
