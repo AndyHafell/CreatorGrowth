@@ -7217,6 +7217,12 @@
     function openEditor() {
         var vid = (typeof modalVideoId !== 'undefined' && modalVideoId) ? modalVideoId : null;
         if (!vid) { alert('Open a video first.'); return; }
+        // Default: jump to OpenCut bridge (creates a project seeded with this card's script + assets).
+        // Set localStorage.cg_use_old_editor='1' to fall back to the old overlay during transition.
+        if (localStorage.getItem('cg_use_old_editor') !== '1') {
+            window.location.href = '/editor/from-card?vid=' + vid;
+            return;
+        }
         editorVideoId = vid;
         try { localStorage.setItem('cg_editor_open', '1'); } catch (e) {}
         document.getElementById('editorStudio').style.display = 'block';
