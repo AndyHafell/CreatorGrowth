@@ -2158,9 +2158,18 @@
 
     <!-- ============ EDITOR (CapCut-style timeline) ============ -->
     <div id="editorStudio" style="display:none; position:fixed; inset:0; background:#0a0a14; z-index:600; color:#ddd;">
-        <div style="display:flex; align-items:center; gap:14px; padding:12px 22px; border-bottom:1px solid #1f1f30; background:#0d0d1a;">
+        <div style="display:flex; align-items:center; gap:10px; padding:10px 22px; border-bottom:1px solid #1f1f30; background:#0d0d1a;">
             <div style="font-weight:700; letter-spacing:2px; color:#7ad17a; font-size:12px;">EDITOR</div>
-            <div id="editorStudioTitle" style="color:#666; font-size:12px; border-left:1px solid #2a2a4a; padding-left:14px;"></div>
+            <!-- Workspace tabs (DaVinci-style) -->
+            <div style="display:inline-flex; border:1px solid #2a2a4a; border-radius:4px; overflow:hidden; margin-left:10px;">
+                <button id="editorWorkspaceTabEdit" onclick="setEditorWorkspace('edit')"
+                        style="background:#1c1c2e; color:#c8c8d0; border:none; padding:5px 12px; font-size:10px; letter-spacing:1.5px; cursor:pointer;">EDIT</button>
+                <button id="editorWorkspaceTabDiagrams" onclick="setEditorWorkspace('diagrams')"
+                        style="background:none; color:#666; border:none; border-left:1px solid #2a2a4a; padding:5px 12px; font-size:10px; letter-spacing:1.5px; cursor:pointer;">DIAGRAMS</button>
+                <button id="editorWorkspaceTabChapters" onclick="setEditorWorkspace('chapters')"
+                        style="background:none; color:#666; border:none; border-left:1px solid #2a2a4a; padding:5px 12px; font-size:10px; letter-spacing:1.5px; cursor:pointer;">CHAPTERS</button>
+            </div>
+            <div id="editorStudioTitle" style="color:#666; font-size:12px; border-left:1px solid #2a2a4a; padding-left:14px; margin-left:6px;"></div>
             <div style="flex:1;"></div>
             <span id="editorStatus" style="color:#555; font-size:11px;"></span>
             <button onclick="renderEditor()" style="background:#7ad17a; color:#000; border:none; padding:7px 16px; border-radius:4px; font-size:11px; font-weight:700; letter-spacing:1px; cursor:pointer;">EXPORT MP4</button>
@@ -7310,10 +7319,10 @@
             var realIdx = editorAudioGenerations.length - 1 - displayIdx;
             var genNum = realIdx + 1;
             var card = document.createElement('div');
-            card.draggable = true;
-            card.style.cssText = 'background:#15151f; border:1px solid #1f1f30; border-radius:6px; padding:12px 14px; margin-bottom:10px; cursor:grab;';
-            card.ondragstart = function(ev) {
-                // Best-effort duration: we wrote a hidden <audio> for the card below; read its duration if loaded
+            card.style.cssText = 'background:#15151f; border:1px solid #1f1f30; border-radius:6px; padding:12px 14px; margin-bottom:10px; position:relative;';
+            // The whole card is NOT draggable — the audio control surface eats drags.
+            // Instead, a dedicated handle pill is the drag source.
+            var makeDragStart = function(ev) {
                 var audioEl = card.querySelector('audio');
                 var dur = (audioEl && isFinite(audioEl.duration)) ? audioEl.duration : 0;
                 var payload = {
@@ -7326,9 +7335,9 @@
                 };
                 ev.dataTransfer.effectAllowed = 'copy';
                 ev.dataTransfer.setData('application/json', JSON.stringify(payload));
-                card.style.opacity = '0.5';
+                card.style.opacity = '0.6';
             };
-            card.ondragend = function(){ card.style.opacity = '1'; };
+            var makeDragEnd = function(){ card.style.opacity = '1'; };
 
             var when = g.generated_at || '';
             try { when = new Date(when).toLocaleString(); } catch(e) {}
@@ -7339,12 +7348,19 @@
             var chunkBadge = (g.chunks && g.chunks > 1)
                 ? ' <span style="color:#5b9bd5; font-size:9.5px;">(' + g.chunks + ' chunks)</span>' : '';
             head.innerHTML =
+                '<span class="_gen-drag" draggable="true" title="Drag onto the audio lane in the timeline" ' +
+                ' style="background:#5b9bd5; color:#0a0a14; font-size:10px; font-weight:700; letter-spacing:1px; padding:3px 9px; border-radius:3px; cursor:grab; user-select:none;">⇣ DRAG TO AUDIO LANE</span>' +
                 '<span style="color:#f5b942; font-size:10px; font-weight:700; letter-spacing:1.5px;">GEN ' + genNum + '</span>' +
                 '<span style="color:#666; font-size:10.5px;">' + (g.words || 0) + ' words &middot; ' + kb + chunkBadge + '</span>' +
                 '<span style="flex:1;"></span>' +
                 '<span style="color:#444; font-size:10px;">' + when + '</span>' +
                 '<button title="Delete this generation" data-idx="' + realIdx + '" ' +
                 'style="background:none; border:1px solid #2a2a4a; color:#888; padding:2px 7px; font-size:11px; border-radius:3px; cursor:pointer; line-height:1.2;">×</button>';
+            var dragChip = head.querySelector('._gen-drag');
+            if (dragChip) {
+                dragChip.addEventListener('dragstart', makeDragStart);
+                dragChip.addEventListener('dragend', makeDragEnd);
+            }
             head.querySelector('button').onclick = function() {
                 if (!confirm('Delete Generation ' + genNum + '?')) return;
                 deleteAudioGen(realIdx);
@@ -7353,6 +7369,7 @@
 
             var audio = document.createElement('audio');
             audio.controls = true;
+            audio.draggable = false;  // belt-and-suspenders — don't let the audio compete with the chip
             audio.src = g.url;
             audio.style.cssText = 'width:100%; margin-bottom:6px;';
             card.appendChild(audio);
@@ -7773,6 +7790,30 @@
             card.appendChild(meta);
             c.appendChild(card);
         });
+    }
+
+    // ─── Workspace tabs: EDIT (default body) / DIAGRAMS / CHAPTERS ────────
+    function setEditorWorkspace(name) {
+        var tabs = {
+            edit:     document.getElementById('editorWorkspaceTabEdit'),
+            diagrams: document.getElementById('editorWorkspaceTabDiagrams'),
+            chapters: document.getElementById('editorWorkspaceTabChapters'),
+        };
+        Object.keys(tabs).forEach(function(k) {
+            var b = tabs[k];
+            if (!b) return;
+            if (k === name) { b.style.background = '#1c1c2e'; b.style.color = '#c8c8d0'; }
+            else { b.style.background = 'none'; b.style.color = '#666'; }
+        });
+        if (name === 'diagrams') {
+            if (typeof openDiagrams === 'function') openDiagrams();
+            // Diagrams studio overlays the editor; when user closes it, the EDIT
+            // tab becomes the active workspace again.
+            setTimeout(function() { setEditorWorkspace('edit'); }, 50);
+        } else if (name === 'chapters') {
+            if (typeof openChapters === 'function') openChapters();
+            setTimeout(function() { setEditorWorkspace('edit'); }, 50);
+        }
     }
 
     // ─── Multi-track timeline engine ──────────────────────────────────────
