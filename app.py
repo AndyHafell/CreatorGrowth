@@ -4208,6 +4208,93 @@ def get_say_voiceover(vid):
     return jsonify(_load_voiceover_state(vid))
 
 
+@app.route("/api/videos/<int:vid>/say/voiceover/<int:idx>/compute-segments",
+           methods=["POST"])
+def compute_voiceover_segments(vid, idx):
+    """Backfill step segments on an existing voiceover take without re-calling
+    ElevenLabs. Uses ffprobe for duration + linear char→time interpolation
+    against the current vocal_doc. Marker accuracy: roughly within speech-rate
+    variation (~1-2s drift per step). Good enough for placement; not exact."""
+    state = _load_voiceover_state(vid)
+    gens = state.get("generations", [])
+    if idx < 0 or idx >= len(gens):
+        return jsonify({"error": "take not found"}), 404
+    gen = gens[idx]
+
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT vocal_doc FROM videos WHERE id=?", (vid,)
+    ).fetchone()
+    conn.close()
+    raw_text = (row["vocal_doc"] or "") if row else ""
+    if not raw_text:
+        return jsonify({"error": "vocal_doc is empty"}), 400
+
+    cleaned, segments = _strip_and_segment(raw_text)
+
+    # If this take was max-words-truncated, clip the doc to the same length so
+    # the linear interpolation maps onto the audio that actually exists.
+    target_words = int(gen.get("words") or 0)
+    if target_words > 0:
+        words = cleaned.split()
+        if len(words) > target_words:
+            count = 0
+            in_word = False
+            cut_at = len(cleaned)
+            for i, ch in enumerate(cleaned):
+                if ch.isspace():
+                    if in_word:
+                        count += 1
+                        if count >= target_words:
+                            cut_at = i
+                            break
+                    in_word = False
+                else:
+                    in_word = True
+            cleaned = cleaned[:cut_at]
+            segments = [s for s in segments if s["char_start"] < cut_at]
+            for s in segments:
+                s["char_end"] = min(s["char_end"], cut_at)
+            segments = [s for s in segments if s["char_end"] > s["char_start"]]
+
+    if not segments:
+        return jsonify({"error": "no === STEP === markers in vocal_doc"}), 400
+
+    audio_rel = (gen.get("url") or "").lstrip("/")
+    if not audio_rel:
+        return jsonify({"error": "take has no audio url"}), 400
+    audio_path = Path(app.root_path) / audio_rel
+    if not audio_path.exists():
+        return jsonify({"error": f"audio file missing: {audio_rel}"}), 404
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        duration = float(r.stdout.strip())
+    except Exception as e:
+        return jsonify({"error": f"ffprobe failed: {e}"}), 500
+
+    total_chars = max(1, len(cleaned))
+    timed = []
+    for s in segments:
+        timed.append({
+            "name": s["name"],
+            "char_start": s["char_start"],
+            "char_end": s["char_end"],
+            "start": round(s["char_start"] / total_chars * duration, 3),
+            "end": round(s["char_end"] / total_chars * duration, 3),
+        })
+
+    gen["segments"] = timed
+    gen["duration"] = duration
+    gen["segments_method"] = "linear-approx"
+    _save_voiceover_state(vid, state)
+    return jsonify({"ok": True, "segments": timed, "duration": duration})
+
+
 @app.route("/api/videos/<int:vid>/say/voiceover/<int:idx>", methods=["DELETE"])
 def delete_say_voiceover(vid, idx):
     state = _load_voiceover_state(vid)
