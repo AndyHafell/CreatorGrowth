@@ -4074,6 +4074,103 @@ def _strip_say_markers(text):
     return cleaned
 
 
+def _strip_and_segment(text):
+    """Like _strip_say_markers but also returns step boundaries as character offsets
+    into the stripped text.
+
+    Returns (stripped_text, segments) where segments is a list of
+    {name, char_start, char_end}. char_end is the offset of the char AFTER the
+    segment's last char (so cleaned[char_start:char_end] is the segment body).
+
+    A leading body before the first marker is labelled "INTRO" so it isn't lost.
+    """
+    if not text:
+        return "", []
+
+    raw_segments = []
+    out_lines = []
+    joined_len = 0  # always equals len("\n".join(out_lines))
+
+    def push_segment(name, start):
+        if raw_segments and raw_segments[-1].get("char_end") is None:
+            raw_segments[-1]["char_end"] = start
+        raw_segments.append({"name": name, "char_start": start, "char_end": None})
+
+    for line in text.split("\n"):
+        m = re.match(r"^\s*=+\s*([A-Z0-9][^=]*?)\s*=+\s*$", line)
+        if m:
+            # Next non-marker char will land at: joined_len + (1 if there's already
+            # a line, since "\n".join inserts a newline before appending).
+            marker_pos = joined_len + (1 if out_lines else 0)
+            push_segment(m.group(1).strip(), marker_pos)
+            continue
+        sep = 1 if out_lines else 0
+        out_lines.append(line)
+        joined_len += sep + len(line)
+
+    if raw_segments and raw_segments[-1].get("char_end") is None:
+        raw_segments[-1]["char_end"] = joined_len
+
+    cleaned = "\n".join(out_lines)
+
+    # If the doc has body before the first marker, prepend an INTRO segment so
+    # the marker timing covers the full audio.
+    if (not raw_segments) or (raw_segments and raw_segments[0]["char_start"] > 0):
+        raw_segments.insert(0, {
+            "name": "INTRO",
+            "char_start": 0,
+            "char_end": raw_segments[0]["char_start"] if raw_segments else len(cleaned),
+        })
+
+    # Drop empty segments (consecutive markers with nothing between them).
+    raw_segments = [s for s in raw_segments
+                    if (s.get("char_end") or 0) > s["char_start"]]
+
+    # Mirror the lstrip() that the original cleaner does, shifting offsets.
+    prefix = len(cleaned) - len(cleaned.lstrip())
+    if prefix:
+        cleaned = cleaned[prefix:]
+        for s in raw_segments:
+            s["char_start"] = max(0, s["char_start"] - prefix)
+            if s["char_end"] is not None:
+                s["char_end"] = max(0, s["char_end"] - prefix)
+
+    # Trailing rstrip — clamp to cleaned length.
+    cleaned = cleaned.rstrip()
+    n = len(cleaned)
+    for s in raw_segments:
+        s["char_start"] = min(s["char_start"], n)
+        if s["char_end"] is not None:
+            s["char_end"] = min(s["char_end"], n)
+    raw_segments = [s for s in raw_segments if s["char_end"] > s["char_start"]]
+
+    return cleaned, raw_segments
+
+
+def _segments_to_times(segments, char_start_seconds, char_end_seconds, total_chars):
+    """Convert character-offset segments into time-offset segments using an
+    ElevenLabs alignment.
+
+    char_start_seconds / char_end_seconds are parallel arrays whose length matches
+    the total character count sent to TTS. total_chars is len(char_start_seconds).
+    Returns segments with extra fields start (s), end (s), and a clipped char range.
+    """
+    if not segments or not char_start_seconds:
+        return []
+    out = []
+    for s in segments:
+        cs = max(0, min(s["char_start"], total_chars - 1))
+        ce = max(cs + 1, min(s["char_end"], total_chars))
+        out.append({
+            "name": s["name"],
+            "char_start": cs,
+            "char_end": ce,
+            "start": float(char_start_seconds[cs]),
+            "end": float(char_end_seconds[ce - 1]),
+        })
+    return out
+
+
 def _load_voiceover_state(vid):
     """Return state dict with a `generations` list. Migrates old single-record
     shape `{url, voice_id, ...}` to `{generations: [{...}]}` transparently."""
@@ -4150,8 +4247,15 @@ def _tts_job_get(job_id):
     return dict(row) if row else None
 
 
-def _tts_run(job_id, vid, text, voice_id, model_id, api_key):
-    """Background worker — synthesize chunks via ElevenLabs, stitch, save, update voiceover_state."""
+def _tts_run(job_id, vid, text, voice_id, model_id, api_key, segments=None):
+    """Background worker — synthesize chunks via ElevenLabs (with-timestamps),
+    stitch, save, persist voiceover_state including step segments + alignment.
+
+    `segments` is a list of {name, char_start, char_end} into `text` (the same
+    text we send to TTS). When provided, we compute time-offsets per segment
+    using the alignment returned by /v1/text-to-speech/<v>/with-timestamps.
+    """
+    import base64
     from urllib.error import HTTPError, URLError
     try:
         chunks = _split_text_for_tts(text, max_chars=9500)
@@ -4164,8 +4268,13 @@ def _tts_run(job_id, vid, text, voice_id, model_id, api_key):
             "use_speaker_boost": True,
         }
         chunk_audio = []
+        # Parallel arrays, one entry per character ElevenLabs reported (across all chunks).
+        all_chars = []
+        all_char_starts = []   # global seconds
+        all_char_ends = []     # global seconds
+        time_offset = 0.0
         prev_ids = []
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/with-timestamps"
         for i, chunk in enumerate(chunks):
             payload = {
                 "text": chunk,
@@ -4178,11 +4287,11 @@ def _tts_run(job_id, vid, text, voice_id, model_id, api_key):
                           headers={
                               "xi-api-key": api_key,
                               "Content-Type": "application/json",
-                              "Accept": "audio/mpeg",
+                              "Accept": "application/json",
                           })
             try:
                 with urlopen(req, timeout=180) as resp:
-                    chunk_audio.append(resp.read())
+                    body = json.loads(resp.read().decode("utf-8"))
                     rid = resp.getheader("request-id") or resp.getheader("x-request-id") or ""
                     if rid:
                         prev_ids.append(rid)
@@ -4195,6 +4304,24 @@ def _tts_run(job_id, vid, text, voice_id, model_id, api_key):
                 _tts_job_set(job_id, status="error",
                              error=f"elevenlabs network: {e.reason}")
                 return
+
+            try:
+                chunk_audio.append(base64.b64decode(body["audio_base64"]))
+            except Exception as e:
+                _tts_job_set(job_id, status="error",
+                             error=f"audio decode failed: {e}",
+                             detail=json.dumps(body)[:600])
+                return
+
+            align = body.get("alignment") or {}
+            chars = align.get("characters") or []
+            starts = align.get("character_start_times_seconds") or []
+            ends = align.get("character_end_times_seconds") or []
+            if chars and starts and ends and len(chars) == len(starts) == len(ends):
+                all_chars.extend(chars)
+                all_char_starts.extend(s + time_offset for s in starts)
+                all_char_ends.extend(e + time_offset for e in ends)
+                time_offset += float(ends[-1])
             _tts_job_set(job_id, chunks_done=i + 1)
 
         _tts_job_set(job_id, status="stitching")
@@ -4235,6 +4362,13 @@ def _tts_run(job_id, vid, text, voice_id, model_id, api_key):
         rel = str(out_path.relative_to(Path(app.root_path)))
         audio_url = "/" + rel
 
+        duration_s = float(all_char_ends[-1]) if all_char_ends else 0.0
+        timed_segments = []
+        if segments and all_char_starts and all_char_ends:
+            timed_segments = _segments_to_times(
+                segments, all_char_starts, all_char_ends, len(all_chars),
+            )
+
         generation = {
             "url": audio_url,
             "voice_id": voice_id,
@@ -4243,8 +4377,16 @@ def _tts_run(job_id, vid, text, voice_id, model_id, api_key):
             "chars": len(text),
             "bytes": len(audio_bytes),
             "chunks": len(chunks),
+            "duration": duration_s,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "preview": text[:140] + ("…" if len(text) > 140 else ""),
+            "segments": timed_segments,
+            # Alignment kept for future per-word features (captions, hover-to-seek).
+            # Compact form: skip ends (start[i+1] is a fine approximation).
+            "alignment": {
+                "characters": all_chars,
+                "char_start_seconds": [round(s, 3) for s in all_char_starts],
+            } if all_chars else None,
         }
         state = _load_voiceover_state(vid)
         state.setdefault("generations", []).append(generation)
@@ -4267,15 +4409,15 @@ def synthesize_say(vid):
         return jsonify({"error": "ELEVENLABS_API_KEY not set on server"}), 500
 
     body = request.get_json(force=True, silent=True) or {}
-    text = (body.get("text") or "").strip()
-    if not text:
+    raw_text = (body.get("text") or "").strip()
+    if not raw_text:
         conn = get_db()
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT vocal_doc FROM videos WHERE id=?", (vid,)).fetchone()
         conn.close()
-        text = _strip_say_markers((row["vocal_doc"] or "") if row else "")
-    else:
-        text = _strip_say_markers(text)
+        raw_text = (row["vocal_doc"] or "") if row else ""
+
+    text, segments = _strip_and_segment(raw_text)
     if not text:
         return jsonify({"error": "no SAY text to synthesize"}), 400
 
@@ -4283,7 +4425,24 @@ def synthesize_say(vid):
     if max_words > 0:
         words = text.split()
         if len(words) > max_words:
-            text = " ".join(words[:max_words])
+            # Find where the max_words-th word ends so we can clip segments cleanly.
+            count = 0
+            in_word = False
+            cut_at = len(text)
+            for idx, ch in enumerate(text):
+                if ch.isspace():
+                    if in_word:
+                        count += 1
+                        if count >= max_words:
+                            cut_at = idx
+                            break
+                    in_word = False
+                else:
+                    in_word = True
+            text = text[:cut_at]
+            segments = [s for s in segments if s["char_start"] < cut_at]
+            for s in segments:
+                s["char_end"] = min(s["char_end"], cut_at)
 
     voice_id = (body.get("voice_id") or os.environ.get("ELEVENLABS_VOICE_ID")
                 or "21m00Tcm4TlvDq8ikWAM").strip()
@@ -4301,7 +4460,7 @@ def synthesize_say(vid):
     conn.close()
 
     t = threading.Thread(target=_tts_run,
-                         args=(job_id, vid, text, voice_id, model_id, api_key),
+                         args=(job_id, vid, text, voice_id, model_id, api_key, segments),
                          daemon=True)
     t.start()
 
