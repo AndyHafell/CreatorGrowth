@@ -5650,8 +5650,49 @@
         el.style.color = color || '#555';
     }
     function tsGenerate(kind) {
-        var nudge = document.getElementById('tsNudge').value || '(empty)';
-        alert('Generate ' + kind + ' — backend wiring next iteration.\nNudge: ' + nudge);
+        var vid = _getStudioVideoId();
+        if (!vid) { alert('Open a video first.'); return; }
+        if (kind !== 'pixel_face' && kind !== 'faceless') {
+            tsSetStatus('Unknown kind: ' + kind, '#e07070');
+            return;
+        }
+        var label = (kind === 'pixel_face') ? '3 pixel face' : '3 faceless';
+        var nudge = (document.getElementById('tsNudge').value || '').trim();
+        tsSetStatus('Queueing ' + label + '…', '#f5b942');
+        fetch('/api/videos/' + vid + '/queue-thumb', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({kind: kind, nudge: nudge})
+        }).then(function(r) { return r.json(); })
+          .then(function(j) {
+              if (j.error) throw new Error(j.error);
+              var msg = j.already
+                  ? (label + ' already queued (#' + j.queue_id + ')')
+                  : (label + ' queued (#' + j.queue_id + ') — agent spawns within ~60s');
+              tsSetStatus(msg, '#4caf50');
+              tsAppendBatch(j.queue_id, kind, nudge, !!j.already);
+          })
+          .catch(function(err) { tsSetStatus('Queue failed: ' + err.message, '#e07070'); });
+    }
+    function tsAppendBatch(qid, kind, nudge, already) {
+        var list = document.getElementById('tsBatchList');
+        if (!list) return;
+        var placeholder = list.querySelector('div[data-placeholder]');
+        if (!placeholder && list.firstChild && /No batches yet/.test(list.firstChild.textContent || '')) {
+            list.firstChild.remove();
+        } else if (placeholder) {
+            placeholder.remove();
+        }
+        var row = document.createElement('div');
+        var color = (kind === 'faceless') ? '#5b9bd5' : '#e87a5b';
+        row.style.cssText = 'padding:8px 10px; background:#15151f; border:1px solid #1f1f30; border-left:3px solid ' + color + '; border-radius:4px; font-size:11px; color:#bbb;';
+        var label = (kind === 'pixel_face') ? '3 pixel face' : '3 faceless';
+        var status = already ? 'queued (dupe)' : 'queued';
+        row.innerHTML =
+            '<div style="color:' + color + '; font-weight:700; letter-spacing:1px; font-size:10px;">' + label.toUpperCase() + '</div>' +
+            '<div style="color:#888; margin-top:2px;">#' + qid + ' · ' + status + '</div>' +
+            (nudge ? '<div style="color:#666; margin-top:3px; font-style:italic;">' + nudge.replace(/</g,'&lt;') + '</div>' : '');
+        list.appendChild(row);
     }
     function openDiagrams() {
         var vid = _getStudioVideoId();
