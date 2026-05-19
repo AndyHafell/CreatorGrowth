@@ -1048,6 +1048,35 @@
             margin-bottom: 10px;
         }
 
+        .section-label-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .section-label-row .modal-section-label { margin-bottom: 0; }
+        .slot-toggle {
+            display: inline-flex;
+            gap: 4px;
+        }
+        .slot-toggle button {
+            width: 22px;
+            height: 22px;
+            border-radius: 4px;
+            border: 1px solid #2a2a3a;
+            background: #11111e;
+            color: #aaa;
+            font-size: 14px;
+            line-height: 1;
+            cursor: pointer;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .slot-toggle button:hover:not(:disabled) { background: #1a1a2a; color: #fff; border-color: #3a3a4a; }
+        .slot-toggle button:disabled { opacity: 0.35; cursor: not-allowed; }
+
         .thumb-row {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
@@ -1783,13 +1812,14 @@
             <div class="title-row inspo-titles" id="inspoTitleRow0"></div>
 
             <!-- Original Row -->
-            <div class="modal-section-label">My Thumbnails</div>
-            <div class="thumb-row" id="originalThumbRow0"></div>
-            <div class="title-row original-titles" id="originalTitleRow0"></div>
-            <div class="thumb-row" id="originalThumbRow1"></div>
-            <div class="title-row original-titles" id="originalTitleRow1"></div>
-            <div class="thumb-row" id="originalThumbRow2"></div>
-            <div class="title-row original-titles" id="originalTitleRow2"></div>
+            <div class="section-label-row">
+                <div class="modal-section-label">My Thumbnails</div>
+                <div class="slot-toggle">
+                    <button type="button" id="originalSlotMinus" onclick="collapseOriginalSlots()" title="Remove 9 slots">&minus;</button>
+                    <button type="button" id="originalSlotPlus" onclick="expandOriginalSlots()" title="Add 9 more slots">+</button>
+                </div>
+            </div>
+            <div id="originalThumbsContainer"></div>
 
             <hr class="modal-divider">
 
@@ -3423,9 +3453,64 @@
             }).join('');
         }
 
-        const SLOT_COUNT = { inspo: 3, original: 9 };
+        const SLOT_COUNT = { inspo: 3 };
+        const ORIGINAL_SLOT_STEP = 9;
+
+        function originalSlotCount() {
+            if (!modalDetails) return ORIGINAL_SLOT_STEP;
+            const len = Math.max(
+                (modalDetails.original_thumbs || []).length,
+                (modalDetails.original_titles || []).length,
+                ORIGINAL_SLOT_STEP,
+            );
+            return Math.ceil(len / ORIGINAL_SLOT_STEP) * ORIGINAL_SLOT_STEP;
+        }
+
+        function ensureOriginalContainer(rows) {
+            const container = document.getElementById('originalThumbsContainer');
+            if (!container) return;
+            const existingRows = container.querySelectorAll('.thumb-row').length;
+            if (existingRows === rows) return;
+            container.innerHTML = '';
+            for (let r = 0; r < rows; r++) {
+                container.insertAdjacentHTML('beforeend',
+                    `<div class="thumb-row" id="originalThumbRow${r}"></div>` +
+                    `<div class="title-row original-titles" id="originalTitleRow${r}"></div>`
+                );
+            }
+        }
+
+        function updateOriginalSlotToggle() {
+            const minusBtn = document.getElementById('originalSlotMinus');
+            const plusBtn = document.getElementById('originalSlotPlus');
+            if (!minusBtn || !plusBtn || !modalDetails) return;
+            const count = originalSlotCount();
+            const thumbs = modalDetails.original_thumbs || [];
+            const titles = modalDetails.original_titles || [];
+            const trailingHasData = (() => {
+                if (count <= ORIGINAL_SLOT_STEP) return true; // disabled at min
+                for (let i = count - ORIGINAL_SLOT_STEP; i < count; i++) {
+                    if ((thumbs[i] || '').trim() || (titles[i] || '').trim()) return true;
+                }
+                return false;
+            })();
+            minusBtn.disabled = count <= ORIGINAL_SLOT_STEP || trailingHasData;
+            minusBtn.title = count <= ORIGINAL_SLOT_STEP
+                ? 'Minimum 9 slots'
+                : (trailingHasData ? 'Clear the bottom row first' : 'Remove 9 slots');
+        }
 
         function renderThumbs(prefix, thumbs) {
+            if (prefix === 'original') {
+                const count = originalSlotCount();
+                const rows = count / 3;
+                ensureOriginalContainer(rows);
+                for (let r = 0; r < rows; r++) {
+                    renderThumbRow(`originalThumbRow${r}`, thumbs, 'original', r * 3, (r + 1) * 3);
+                }
+                updateOriginalSlotToggle();
+                return;
+            }
             const rows = SLOT_COUNT[prefix] / 3;
             for (let r = 0; r < rows; r++) {
                 renderThumbRow(`${prefix}ThumbRow${r}`, thumbs, prefix, r * 3, (r + 1) * 3);
@@ -3433,10 +3518,48 @@
         }
 
         function renderTitles(prefix, titles) {
+            if (prefix === 'original') {
+                const count = originalSlotCount();
+                const rows = count / 3;
+                ensureOriginalContainer(rows);
+                for (let r = 0; r < rows; r++) {
+                    renderTitleRow(`originalTitleRow${r}`, titles, 'original', r * 3, (r + 1) * 3);
+                }
+                updateOriginalSlotToggle();
+                return;
+            }
             const rows = SLOT_COUNT[prefix] / 3;
             for (let r = 0; r < rows; r++) {
                 renderTitleRow(`${prefix}TitleRow${r}`, titles, prefix, r * 3, (r + 1) * 3);
             }
+        }
+
+        function expandOriginalSlots() {
+            if (!modalDetails) return;
+            modalDetails.original_thumbs = (modalDetails.original_thumbs || []).concat(Array(ORIGINAL_SLOT_STEP).fill(''));
+            modalDetails.original_titles = (modalDetails.original_titles || []).concat(Array(ORIGINAL_SLOT_STEP).fill(''));
+            renderThumbs('original', modalDetails.original_thumbs);
+            renderTitles('original', modalDetails.original_titles);
+            saveModalData();
+        }
+
+        function collapseOriginalSlots() {
+            if (!modalDetails) return;
+            const count = originalSlotCount();
+            if (count <= ORIGINAL_SLOT_STEP) return;
+            const thumbs = modalDetails.original_thumbs || [];
+            const titles = modalDetails.original_titles || [];
+            for (let i = count - ORIGINAL_SLOT_STEP; i < count; i++) {
+                if ((thumbs[i] || '').trim() || (titles[i] || '').trim()) {
+                    showToast('Clear the bottom row first', true);
+                    return;
+                }
+            }
+            modalDetails.original_thumbs = thumbs.slice(0, count - ORIGINAL_SLOT_STEP);
+            modalDetails.original_titles = titles.slice(0, count - ORIGINAL_SLOT_STEP);
+            renderThumbs('original', modalDetails.original_thumbs);
+            renderTitles('original', modalDetails.original_titles);
+            saveModalData();
         }
 
         async function toggleAbcChoice(url, event) {

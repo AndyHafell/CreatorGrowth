@@ -1294,6 +1294,10 @@ def get_video_details(vid):
     conn.close()
     def _pad(arr, n):
         return (arr + [""] * n)[:n]
+    def _pad_multiple(arr, step):
+        # Pad to nearest multiple of `step`, minimum `step`.
+        target = max(step, ((len(arr) + step - 1) // step) * step)
+        return arr + [""] * (target - len(arr))
     try:
         abc_choices = json.loads(row["abc_choices"]) if row["abc_choices"] else []
     except (TypeError, ValueError, IndexError):
@@ -1306,8 +1310,8 @@ def get_video_details(vid):
         "video_id": row["video_id"],
         "inspo_thumbs": _pad(json.loads(row["inspo_thumbs"]), 3),
         "inspo_titles": _pad(json.loads(row["inspo_titles"]), 3),
-        "original_thumbs": _pad(json.loads(row["original_thumbs"]), 9),
-        "original_titles": _pad(json.loads(row["original_titles"]), 9),
+        "original_thumbs": _pad_multiple(json.loads(row["original_thumbs"]), 9),
+        "original_titles": _pad_multiple(json.loads(row["original_titles"]), 9),
         "custom_fields": json.loads(row["custom_fields"]),
         "abc_choices": abc_choices,
         "meta": meta,
