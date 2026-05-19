@@ -2243,6 +2243,7 @@
                     <div style="display:flex; gap:10px; flex-wrap:wrap;">
                         <button onclick="tsGenerate('pixel_face')" style="background:#1a1018; border:1px solid #e87a5b; color:#e87a5b; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GENERATE 3 PIXEL FACE</button>
                         <button onclick="tsGenerate('faceless')" style="background:#0d1620; border:1px solid #5b9bd5; color:#5b9bd5; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GENERATE 3 FACELESS</button>
+                        <button onclick="tsGeminiDirect('faceless')" title="Pure Gemini, no Claude judgment, faceless SOP as prompt. ~$0.04, ~30s, runs on VPS." style="background:#101820; border:1px solid #7ad17a; color:#7ad17a; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GEMINI DIRECT (FACELESS)</button>
                     </div>
                 </div>
 
@@ -5673,6 +5674,32 @@
               tsAppendBatch(j.queue_id, kind, nudge, !!j.already);
           })
           .catch(function(err) { tsSetStatus('Queue failed: ' + err.message, '#e07070'); });
+    }
+    function tsGeminiDirect(variant) {
+        var vid = _getStudioVideoId();
+        if (!vid) { alert('Open a video first.'); return; }
+        if (variant !== 'faceless') {
+            tsSetStatus('Unknown variant: ' + variant, '#e07070');
+            return;
+        }
+        tsSetStatus('Gemini direct (' + variant + ') — generating (~30s)…', '#f5b942');
+        fetch('/api/videos/' + vid + '/gemini-' + variant, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: '{}'
+        }).then(function(r) { return r.json(); })
+          .then(function(j) {
+              if (j.error) throw new Error(j.error);
+              tsSetStatus('Gemini direct → slot ' + j.slot_label + ' (' + j.prompt_chars + ' prompt chars)', '#4caf50');
+              tsAppendBatch('gemini', 'gemini_' + variant, 'slot ' + j.slot_label, false);
+              if (typeof modalDetails !== 'undefined' && modalDetails) {
+                  if (!modalDetails.original_thumbs) modalDetails.original_thumbs = [];
+                  while (modalDetails.original_thumbs.length <= j.slot_index) modalDetails.original_thumbs.push('');
+                  modalDetails.original_thumbs[j.slot_index] = j.url;
+                  if (typeof renderThumbs === 'function') renderThumbs('original', modalDetails.original_thumbs);
+              }
+          })
+          .catch(function(err) { tsSetStatus('Gemini direct failed: ' + err.message, '#e07070'); });
     }
     function tsAppendBatch(qid, kind, nudge, already) {
         var list = document.getElementById('tsBatchList');
