@@ -4036,6 +4036,282 @@ def generate_vocal_doc(vid):
     return jsonify({"vocal_doc": text})
 
 
+# ---------------------------------------------------------------------------
+# Visuals doc — vocal_doc augmented with inline [AVATAR]/[DIAGRAM]/[SCREEN] tags
+# that drive what plays over the avatar at each point in the timeline.
+# ---------------------------------------------------------------------------
+
+VISUALS_DOC_SYSTEM_PROMPT = """You are tagging a YouTube script with VISUAL MODE markers.
+
+Given a vocal doc (already split into === STEP N: TITLE === sections), you insert ONE of three tags on its own line before each paragraph block:
+
+[AVATAR]   — the talking-head avatar carries this beat; no extra visual needed. Use for hooks, transitions, personal anecdotes, opinion lines.
+[DIAGRAM]  — a pre-built diagram should be on screen. Use for any moment where the speaker is explaining a concept, listing items, comparing options, walking through a framework, or showing the structure of an idea.
+[SCREEN]   — the speaker is referring to a live screen-recording / app demo. Use whenever the script says "let me show you", "watch this", "here's what it looks like", or describes clicking, typing, navigating, opening tabs, or any literal on-screen interaction.
+
+RULES:
+1. Output the ENTIRE vocal doc back, unchanged, with tags inserted. Do NOT rewrite, summarize, or skip text.
+2. Preserve every `=== STEP N: TITLE ===` marker exactly as-is.
+3. Each tag goes on its own line, with a blank line before and after. Place tags BEFORE the paragraph block they apply to.
+4. Every paragraph block must have exactly one tag. Multiple paragraphs in a row with the same intended visual should be wrapped under ONE tag (don't repeat the tag).
+5. Default to [AVATAR] when uncertain. Only use [DIAGRAM] or [SCREEN] when the text clearly calls for it.
+6. Do not invent text. Do not add commentary, code fences, or preamble.
+
+Output ONLY the tagged vocal doc."""
+
+
+@app.route("/api/videos/<int:vid>/visuals-doc", methods=["GET"])
+def get_visuals_doc(vid):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT visuals_doc FROM videos WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "video not found"}), 404
+    return jsonify({"visuals_doc": row["visuals_doc"] or ""})
+
+
+@app.route("/api/videos/<int:vid>/visuals-doc", methods=["POST"])
+def save_visuals_doc(vid):
+    body = request.get_json(force=True, silent=True) or {}
+    text = body.get("visuals_doc", "")
+    conn = get_db()
+    conn.execute("UPDATE videos SET visuals_doc=? WHERE id=?", (text, vid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/videos/<int:vid>/visuals-doc/generate", methods=["POST"])
+def generate_visuals_doc(vid):
+    """Read the stored vocal_doc and run a single Gemini pass that inserts
+    [AVATAR]/[DIAGRAM]/[SCREEN] tags before each paragraph block. Saves to
+    visuals_doc and returns the tagged text."""
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT vocal_doc FROM videos WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    vocal_doc = (row["vocal_doc"] or "").strip() if row else ""
+    if not vocal_doc:
+        return jsonify({"error": "vocal_doc is empty — generate the Say doc first"}), 400
+
+    payload = {
+        "contents": [{
+            "parts": [{"text": VISUALS_DOC_SYSTEM_PROMPT + "\n\n---\nVOCAL DOC TO TAG:\n\n" + vocal_doc}]
+        }],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 32768,
+        }
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(url, data=json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        return jsonify({"error": f"gemini http {e.code}", "detail": e.read().decode("utf-8", "ignore")[:500]}), 502
+    except URLError as e:
+        return jsonify({"error": f"gemini network: {e.reason}"}), 502
+
+    try:
+        candidate = data["candidates"][0]
+        text = candidate["content"]["parts"][0]["text"].strip()
+        finish = candidate.get("finishReason", "")
+    except (KeyError, IndexError, TypeError):
+        return jsonify({"error": "gemini response malformed", "raw": data}), 502
+    if finish and finish not in ("STOP", "MODEL_LENGTH"):
+        return jsonify({
+            "error": f"gemini incomplete (finishReason={finish})",
+            "partial": text,
+        }), 502
+
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines[0].startswith("```"): lines = lines[1:]
+        if lines and lines[-1].strip() == "```": lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    conn = get_db()
+    conn.execute("UPDATE videos SET visuals_doc=? WHERE id=?", (text, vid))
+    conn.commit()
+    conn.close()
+    return jsonify({"visuals_doc": text})
+
+
+VISUAL_TAG_RE = re.compile(r"^\s*\[(AVATAR|DIAGRAM|SCREEN)\]\s*$", re.IGNORECASE)
+
+
+def _parse_visuals_blocks(text):
+    """Split a tagged visuals_doc into ordered [TAG] blocks with char offsets
+    into the STRIPPED text (no === STEP N === lines, no [TAG] lines, just the
+    spoken body — same shape as `_strip_and_segment` produces).
+
+    Returns (cleaned_text, blocks) where blocks is a list of:
+        {tag, step, char_start, char_end, text}
+
+    `step` is the 1-based step number this block falls under (1 if before the
+    first marker; matches the numbering in `Step N: Title` diagram names).
+    Untagged paragraphs (before the first tag in a section) implicitly inherit
+    AVATAR so timing math still covers them.
+    """
+    if not text:
+        return "", []
+
+    blocks = []
+    out_lines = []
+    joined_len = 0
+    current_tag = "AVATAR"
+    current_step = 0  # 0 = pre-step (treated as step 1 below)
+    block_open = False
+
+    def open_block(tag, step, start):
+        nonlocal block_open
+        if block_open and blocks and blocks[-1].get("char_end") is None:
+            blocks[-1]["char_end"] = start
+        blocks.append({
+            "tag": tag.upper(),
+            "step": max(1, step),
+            "char_start": start,
+            "char_end": None,
+        })
+        block_open = True
+
+    for line in text.split("\n"):
+        # === STEP N: TITLE === marker
+        m_step = re.match(r"^\s*=+\s*STEP\s*(\d+)[:\s]([^=]*?)\s*=+\s*$", line, re.IGNORECASE)
+        if m_step:
+            current_step = int(m_step.group(1))
+            # close any open block at this boundary so the new step starts fresh
+            marker_pos = joined_len + (1 if out_lines else 0)
+            if block_open and blocks and blocks[-1].get("char_end") is None:
+                blocks[-1]["char_end"] = marker_pos
+                block_open = False
+            continue
+        # Non-step `=== HOOK ===` style marker (skip but don't reset step)
+        if re.match(r"^\s*=+\s*[A-Z0-9][^=]*?\s*=+\s*$", line):
+            marker_pos = joined_len + (1 if out_lines else 0)
+            if block_open and blocks and blocks[-1].get("char_end") is None:
+                blocks[-1]["char_end"] = marker_pos
+                block_open = False
+            continue
+        # [TAG] line
+        m_tag = VISUAL_TAG_RE.match(line)
+        if m_tag:
+            current_tag = m_tag.group(1).upper()
+            marker_pos = joined_len + (1 if out_lines else 0)
+            open_block(current_tag, current_step, marker_pos)
+            continue
+        # Body line — if we haven't opened a block yet, open one with current_tag
+        if not block_open:
+            marker_pos = joined_len + (1 if out_lines else 0)
+            open_block(current_tag, current_step, marker_pos)
+        sep = 1 if out_lines else 0
+        out_lines.append(line)
+        joined_len += sep + len(line)
+
+    if block_open and blocks and blocks[-1].get("char_end") is None:
+        blocks[-1]["char_end"] = joined_len
+
+    cleaned = "\n".join(out_lines)
+
+    # Mirror the lstrip the Say pipeline does so offsets line up with the
+    # take's char-aligned timing.
+    prefix = len(cleaned) - len(cleaned.lstrip())
+    if prefix:
+        cleaned = cleaned[prefix:]
+        for b in blocks:
+            b["char_start"] = max(0, b["char_start"] - prefix)
+            if b["char_end"] is not None:
+                b["char_end"] = max(0, b["char_end"] - prefix)
+
+    cleaned = cleaned.rstrip()
+    n = len(cleaned)
+    for b in blocks:
+        b["char_start"] = min(b["char_start"], n)
+        if b["char_end"] is not None:
+            b["char_end"] = min(b["char_end"], n)
+    blocks = [b for b in blocks if (b["char_end"] or 0) > b["char_start"]]
+
+    # Attach the body text for each block so the editor can show a preview.
+    for b in blocks:
+        b["text"] = cleaned[b["char_start"]:b["char_end"]].strip()
+
+    return cleaned, blocks
+
+
+@app.route("/api/videos/<int:vid>/visuals-doc/compute-blocks", methods=["POST"])
+def compute_visuals_blocks(vid):
+    """Parse the saved visuals_doc and return time-aligned blocks ready for
+    timeline placement. Uses the latest voiceover take's duration via linear
+    interpolation (matches compute-segments fallback)."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT visuals_doc FROM videos WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    text = (row["visuals_doc"] or "") if row else ""
+    if not text.strip():
+        return jsonify({"error": "visuals_doc is empty"}), 400
+
+    cleaned, blocks = _parse_visuals_blocks(text)
+    if not blocks:
+        return jsonify({"error": "no [TAG] blocks found in visuals_doc"}), 400
+
+    # Pull the most recent take that has a duration (or segments we can derive
+    # duration from). Fall back to a synthetic 60s/step estimate so the editor
+    # gets *something* back even pre-synth.
+    state = _load_voiceover_state(vid)
+    gens = state.get("generations", [])
+    duration = 0.0
+    for g in reversed(gens):
+        d = g.get("duration") or g.get("audio_duration") or 0
+        if d:
+            duration = float(d)
+            break
+        segs = g.get("segments") or []
+        if segs:
+            duration = float(segs[-1].get("end", 0)) or duration
+            if duration:
+                break
+
+    if duration <= 0:
+        # Last-resort estimate: 13 chars/sec speaking rate.
+        duration = max(30.0, len(cleaned) / 13.0)
+        method = "estimate-13cps"
+    else:
+        method = "linear-from-take-duration"
+
+    total_chars = max(1, len(cleaned))
+    out = []
+    for b in blocks:
+        start = duration * (b["char_start"] / total_chars)
+        end = duration * (b["char_end"] / total_chars)
+        out.append({
+            "tag": b["tag"],
+            "step": b["step"],
+            "char_start": b["char_start"],
+            "char_end": b["char_end"],
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "text": b["text"][:200],
+        })
+
+    return jsonify({
+        "blocks": out,
+        "duration": duration,
+        "method": method,
+        "total_chars": total_chars,
+    })
+
+
 def _split_text_for_tts(text, max_chars=9500):
     """Split into chunks <= max_chars, preferring paragraph > sentence > word boundaries.
     ElevenLabs free/Creator/Pro endpoint caps each request at 10k chars; we chunk and stitch."""
