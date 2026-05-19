@@ -196,6 +196,14 @@ def init_db():
         conn.execute("ALTER TABLE thumb_queue ADD COLUMN clicked_by_email TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE thumb_queue ADD COLUMN kind TEXT DEFAULT 'pixel_face'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE thumb_queue ADD COLUMN nudge TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS diagrams (
@@ -737,6 +745,11 @@ def queue_thumb(vid):
     email = (session.get("email") or "").strip().lower()
     if not email:
         return jsonify({"error": "No session email"}), 400
+    body = request.get_json(silent=True) or {}
+    kind = (body.get("kind") or "pixel_face").strip().lower()
+    if kind not in ("pixel_face", "faceless"):
+        kind = "pixel_face"
+    nudge = (body.get("nudge") or "").strip()
     conn = get_db()
     row = conn.execute("SELECT title FROM videos WHERE id = ?", (vid,)).fetchone()
     if not row:
@@ -747,20 +760,20 @@ def queue_thumb(vid):
         conn.close()
         return jsonify({"error": "Video has no title"}), 400
     existing = conn.execute(
-        "SELECT id FROM thumb_queue WHERE video_id = ? AND clicked_by_email = ? AND status = 'queued'",
-        (vid, email),
+        "SELECT id FROM thumb_queue WHERE video_id = ? AND clicked_by_email = ? AND kind = ? AND status = 'queued'",
+        (vid, email, kind),
     ).fetchone()
     if existing:
         conn.close()
-        return jsonify({"ok": True, "queued": True, "queue_id": existing["id"], "already": True})
+        return jsonify({"ok": True, "queued": True, "queue_id": existing["id"], "kind": kind, "already": True})
     cur = conn.execute(
-        "INSERT INTO thumb_queue (video_id, title, clicked_by_email) VALUES (?, ?, ?)",
-        (vid, title, email),
+        "INSERT INTO thumb_queue (video_id, title, clicked_by_email, kind, nudge) VALUES (?, ?, ?, ?, ?)",
+        (vid, title, email, kind, nudge),
     )
     conn.commit()
     qid = cur.lastrowid
     conn.close()
-    return jsonify({"ok": True, "queued": True, "queue_id": qid})
+    return jsonify({"ok": True, "queued": True, "queue_id": qid, "kind": kind})
 
 
 def _bearer_user_email():
@@ -783,12 +796,22 @@ def thumb_queue_list():
         return jsonify({"error": "Unauthorized"}), 401
     conn = get_db()
     rows = conn.execute(
-        "SELECT id, video_id, title, created_at FROM thumb_queue "
+        "SELECT id, video_id, title, kind, nudge, created_at FROM thumb_queue "
         "WHERE status = 'queued' AND clicked_by_email = ? ORDER BY id ASC",
         (user_email,),
     ).fetchall()
     conn.close()
-    return jsonify([{"id": r["id"], "video_id": r["video_id"], "title": r["title"], "created_at": r["created_at"]} for r in rows])
+    return jsonify([
+        {
+            "id": r["id"],
+            "video_id": r["video_id"],
+            "title": r["title"],
+            "kind": r["kind"] or "pixel_face",
+            "nudge": r["nudge"] or "",
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ])
 
 
 @app.route("/api/thumb-queue/<int:qid>/done", methods=["POST"])
