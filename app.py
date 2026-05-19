@@ -241,6 +241,10 @@ def init_db():
         conn.execute("ALTER TABLE videos ADD COLUMN voiceover_state TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE videos ADD COLUMN visuals_doc TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # Background TTS jobs — async synthesis with progress tracking
     conn.execute("""
@@ -5494,41 +5498,45 @@ def diagram_pixel_art(diagram_id):
 
 
 _FACELESS_SOP_PATH = Path(__file__).resolve().parent / "prompts" / "thumbnail_faceless.md"
+_PIXEL_FACE_SOP_PATH = Path(__file__).resolve().parent / "prompts" / "thumbnail_pixel_face.md"
+_FACE_REFS_DIR = Path(__file__).resolve().parent / "assets" / "face_references"
 
 
-@app.route("/api/videos/<int:vid>/gemini-faceless", methods=["POST"])
-@login_required
-def gemini_faceless(vid):
-    """Direct-to-Gemini faceless thumbnails — no Claude judgment layer, no face refs.
-    Sends `{title + faceless SOP}` to Nano Banana Pro N times in parallel and writes
-    the PNGs into the next N empty original_thumbs slots (extending the array if
-    needed). Experimental — quality A/B against the Claude Code flow."""
-    from concurrent.futures import ThreadPoolExecutor
-    api_key = os.environ.get("GEMINI_API_KEY", "")
-    if not api_key:
-        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
-    if not _FACELESS_SOP_PATH.exists():
-        return jsonify({"error": f"SOP missing: {_FACELESS_SOP_PATH}"}), 500
-    sop_text = _FACELESS_SOP_PATH.read_text()
+def _load_face_refs():
+    """Return list of (mime_type, png_bytes) for the bundled face references."""
+    import mimetypes
+    refs = []
+    if not _FACE_REFS_DIR.exists():
+        return refs
+    for p in sorted(_FACE_REFS_DIR.glob("face_*.png")):
+        mime = mimetypes.guess_type(str(p))[0] or "image/png"
+        refs.append((mime, p.read_bytes()))
+    return refs
 
-    body = request.get_json(silent=True) or {}
-    try:
-        n = int(body.get("count", 3))
-    except (TypeError, ValueError):
-        n = 3
-    n = max(1, min(n, 6))
 
-    conn = get_db()
+def _allocate_thumb_slots(thumbs, titles, n):
+    """Walk thumbs left-to-right, return n empty indices, extending the array by 9
+    (and padding titles to match) as needed. Mutates thumbs and titles in place."""
+    empty_slots = []
+    i = 0
+    while len(empty_slots) < n:
+        if i >= len(thumbs):
+            thumbs.extend([""] * 9)
+        if not thumbs[i]:
+            empty_slots.append(i)
+        i += 1
+    while len(titles) < len(thumbs):
+        titles.append("")
+    return empty_slots
+
+
+def _read_video_thumb_state(conn, vid):
+    """Return (title, thumbs_list, titles_list, drow_exists)."""
     conn.row_factory = sqlite3.Row
     vrow = conn.execute("SELECT title FROM videos WHERE id=?", (vid,)).fetchone()
     if not vrow:
-        conn.close()
-        return jsonify({"error": "video not found"}), 404
+        return None
     title = (vrow["title"] or "").strip()
-    if not title:
-        conn.close()
-        return jsonify({"error": "video has no title"}), 400
-
     drow = conn.execute(
         "SELECT original_thumbs, original_titles FROM video_details WHERE video_id=?",
         (vid,),
@@ -5545,31 +5553,79 @@ def gemini_faceless(vid):
         titles = ["", "", "", "", "", "", "", "", ""]
     if not isinstance(titles, list):
         titles = ["", "", "", "", "", "", "", "", ""]
+    return title, thumbs, titles, bool(drow)
 
-    empty_slots = []
-    i = 0
-    while len(empty_slots) < n:
-        if i >= len(thumbs):
-            thumbs.extend([""] * 9)
-        if not thumbs[i]:
-            empty_slots.append(i)
-        i += 1
-    while len(titles) < len(thumbs):
-        titles.append("")
+
+def _persist_thumb_state(conn, vid, thumbs, titles, drow_exists):
+    if drow_exists:
+        conn.execute(
+            "UPDATE video_details SET original_thumbs=?, original_titles=? WHERE video_id=?",
+            (json.dumps(thumbs), json.dumps(titles), vid),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO video_details (video_id, original_thumbs, original_titles) VALUES (?, ?, ?)",
+            (vid, json.dumps(thumbs), json.dumps(titles)),
+        )
+    conn.commit()
+
+
+def _gemini_thumb_direct(vid, *, kind, sop_path, prompt_intro, image_refs, slug):
+    """Shared direct-to-Gemini thumbnail generator. Returns (jsonify_payload, http_status).
+
+    kind: short identifier used in filenames + telemetry (e.g. 'faceless', 'pixel_face')
+    sop_path: Path to the SOP markdown to embed in the prompt
+    prompt_intro: text shown before the SOP and after the title
+    image_refs: list of (mime_type, bytes) inline_data parts to send before the text (face refs etc.); pass [] for text-only
+    slug: filename prefix for outputs
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    import base64
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+    if not sop_path.exists():
+        return jsonify({"error": f"SOP missing: {sop_path}"}), 500
+    sop_text = sop_path.read_text()
+
+    body = request.get_json(silent=True) or {}
+    try:
+        n = int(body.get("count", 3))
+    except (TypeError, ValueError):
+        n = 3
+    n = max(1, min(n, 6))
+
+    conn = get_db()
+    state = _read_video_thumb_state(conn, vid)
+    if state is None:
+        conn.close()
+        return jsonify({"error": "video not found"}), 404
+    title, thumbs, titles, drow_exists = state
+    if not title:
+        conn.close()
+        return jsonify({"error": "video has no title"}), 400
+
+    empty_slots = _allocate_thumb_slots(thumbs, titles, n)
 
     prompt = (
         f"Make a YouTube thumbnail for a video titled: \"{title}\".\n\n"
-        f"Follow this SOP exactly — the channel signature, locked style constants, "
-        f"and one of the 6 layout patterns. Pick the layout pattern that best fits "
-        f"the title. Output 16:9, 1920x1080.\n\n"
+        f"{prompt_intro}\n\n"
         f"=== SOP START ===\n{sop_text}\n=== SOP END ==="
     )
 
+    image_parts = [
+        {"inline_data": {
+            "mime_type": mime,
+            "data": base64.b64encode(b).decode("ascii"),
+        }}
+        for mime, b in image_refs
+    ]
+
     def _gen(variant_idx):
-        parts_payload = [{"text": prompt}]
+        parts_payload = image_parts + [{"text": prompt}]
         return _gemini_image_call(
             parts_payload, api_key, "gemini-3-pro-image-preview",
-            f"thumb.gemini-faceless.{variant_idx}",
+            f"thumb.gemini-{kind}.{variant_idx}",
         )
 
     with ThreadPoolExecutor(max_workers=n) as ex:
@@ -5583,7 +5639,7 @@ def gemini_faceless(vid):
         if not png:
             continue
         slot = empty_slots[variant_idx]
-        out_path = out_root / f"gemini_faceless_{ts}_{variant_idx + 1}.png"
+        out_path = out_root / f"{slug}_{ts}_{variant_idx + 1}.png"
         out_path.write_bytes(png)
         rel_url = "/" + str(out_path.relative_to(Path(app.root_path))).replace(os.sep, "/")
         thumbs[slot] = rel_url
@@ -5593,27 +5649,65 @@ def gemini_faceless(vid):
         conn.close()
         return jsonify({"error": "all gemini calls failed (see server logs)"}), 502
 
-    if drow:
-        conn.execute(
-            "UPDATE video_details SET original_thumbs=?, original_titles=? WHERE video_id=?",
-            (json.dumps(thumbs), json.dumps(titles), vid),
-        )
-    else:
-        conn.execute(
-            "INSERT INTO video_details (video_id, original_thumbs, original_titles) VALUES (?, ?, ?)",
-            (vid, json.dumps(thumbs), json.dumps(titles)),
-        )
-    conn.commit()
+    _persist_thumb_state(conn, vid, thumbs, titles, drow_exists)
     conn.close()
     return jsonify({
         "ok": True,
+        "kind": kind,
         "count": len(written),
         "requested": n,
         "thumbs": written,
         "original_thumbs": thumbs,
         "original_titles": titles,
         "prompt_chars": len(prompt),
+        "image_refs": len(image_refs),
     })
+
+
+@app.route("/api/videos/<int:vid>/gemini-faceless", methods=["POST"])
+@login_required
+def gemini_faceless(vid):
+    """Direct-to-Gemini faceless thumbnails — no Claude judgment, no face refs.
+    SOP-only text prompt fired N times in parallel."""
+    return _gemini_thumb_direct(
+        vid,
+        kind="faceless",
+        sop_path=_FACELESS_SOP_PATH,
+        prompt_intro=(
+            "Follow this SOP exactly — the channel signature, locked style "
+            "constants, and one of the 6 layout patterns. Pick the layout pattern "
+            "that best fits the title. Output 16:9, 1920x1080."
+        ),
+        image_refs=[],
+        slug="gemini_faceless",
+    )
+
+
+@app.route("/api/videos/<int:vid>/gemini-pixel-face", methods=["POST"])
+@login_required
+def gemini_pixel_face(vid):
+    """Direct-to-Gemini pixel-face thumbnails — sends the pixel-face SOP plus 4
+    bundled face references. No Claude in the loop. No brand logo (Gemini may
+    omit the bottom-right slot or improvise a small themed icon)."""
+    refs = _load_face_refs()
+    if not refs:
+        return jsonify({"error": "no face references found in assets/face_references/"}), 500
+    return _gemini_thumb_direct(
+        vid,
+        kind="pixel_face",
+        sop_path=_PIXEL_FACE_SOP_PATH,
+        prompt_intro=(
+            "The first 4 attached images are Andy's face references — long flowing "
+            "brown hair past the shoulders and a full beard. Follow this SOP exactly: "
+            "Andy's pixel-art face fills the left 1/3, bold gold pixel title top-right, "
+            "dark navy pixel background with a few sparkles. NO BRAND LOGO this time — "
+            "leave the bottom-right slot empty or fill it with a small themed pixel icon "
+            "(lightning bolt, gear, cloud, etc.) that fits the title. Pick a punchy 2-4 "
+            "word TITLE TEXT yourself based on the video title. Output 16:9, 1920x1080."
+        ),
+        image_refs=refs,
+        slug="gemini_pixel_face",
+    )
 
 
 @app.route("/api/videos/<int:vid>/editor-bootstrap", methods=["GET"])
