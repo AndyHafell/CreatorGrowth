@@ -1048,16 +1048,15 @@
             margin-bottom: 10px;
         }
 
-        .section-label-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 10px;
-        }
-        .section-label-row .modal-section-label { margin-bottom: 0; }
         .slot-toggle {
             display: inline-flex;
             gap: 4px;
+        }
+        .slot-toggle-bottom {
+            display: flex;
+            justify-content: flex-end;
+            gap: 4px;
+            margin-top: 4px;
         }
         .slot-toggle button {
             width: 22px;
@@ -1812,14 +1811,12 @@
             <div class="title-row inspo-titles" id="inspoTitleRow0"></div>
 
             <!-- Original Row -->
-            <div class="section-label-row">
-                <div class="modal-section-label">My Thumbnails</div>
-                <div class="slot-toggle">
-                    <button type="button" id="originalSlotMinus" onclick="collapseOriginalSlots()" title="Remove 9 slots">&minus;</button>
-                    <button type="button" id="originalSlotPlus" onclick="expandOriginalSlots()" title="Add 9 more slots">+</button>
-                </div>
-            </div>
+            <div class="modal-section-label">My Thumbnails</div>
             <div id="originalThumbsContainer"></div>
+            <div class="slot-toggle slot-toggle-bottom">
+                <button type="button" id="originalSlotMinus" onclick="collapseOriginalSlots()" title="Remove 9 slots">&minus;</button>
+                <button type="button" id="originalSlotPlus" onclick="expandOriginalSlots()" title="Add 9 more slots">+</button>
+            </div>
 
             <hr class="modal-divider">
 
@@ -4023,11 +4020,16 @@
                         const latestResp = await fetch(`/api/videos/${modalVideoId}/details`);
                         const latest = await latestResp.json();
                         const arrFields = ['inspo_thumbs', 'inspo_titles', 'original_thumbs', 'original_titles'];
+                        const resizable = new Set(['original_thumbs', 'original_titles']);
                         arrFields.forEach(field => {
                             const cur = modalDetails[field] || [];
                             const init = modalInitialDetails[field] || [];
                             const srv = latest[field] || [];
-                            const n = Math.max(cur.length, init.length, srv.length);
+                            // For resizable fields, respect the user's current length —
+                            // don't grow `cur` back to server length, that would undo a collapse.
+                            const n = resizable.has(field)
+                                ? cur.length
+                                : Math.max(cur.length, init.length, srv.length);
                             for (let i = 0; i < n; i++) {
                                 const userTouched = (cur[i] || '') !== (init[i] || '');
                                 if (!userTouched && srv[i] !== undefined) {
