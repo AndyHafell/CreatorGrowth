@@ -5695,9 +5695,20 @@
             body: JSON.stringify({count: 3})
         }).then(function(r) { return r.json(); })
           .then(function(j) {
-              if (j.error) throw new Error(j.error);
+              if (j.error) {
+                  var failMsg = j.error;
+                  if (j.failures && j.failures.length) {
+                      failMsg += ' — ' + j.failures.map(function(f) { return 'slot ' + f.slot_label + ': ' + f.error; }).join('; ');
+                  }
+                  throw new Error(failMsg);
+              }
               var slots = (j.thumbs || []).map(function(t) { return t.slot_label; }).join(', ');
-              tsSetStatus('Gemini direct → ' + j.count + '/' + j.requested + ' thumbs in slots ' + slots, '#4caf50');
+              var msg = 'Gemini direct → ' + j.count + '/' + j.requested + ' thumbs in slots ' + slots;
+              if (j.failures && j.failures.length) {
+                  msg += ' (failed: ' + j.failures.map(function(f) { return 'slot ' + f.slot_label + ' [' + f.error + ']'; }).join(', ') + ')';
+                  console.warn('Gemini direct partial failures:', j.failures);
+              }
+              tsSetStatus(msg, j.failures && j.failures.length ? '#f5b942' : '#4caf50');
               tsAppendBatch('gemini', 'gemini_' + variant, 'slots ' + slots, false);
               if (typeof modalDetails !== 'undefined' && modalDetails) {
                   modalDetails.original_thumbs = j.original_thumbs || modalDetails.original_thumbs;

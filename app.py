@@ -4446,9 +4446,20 @@ def diagrams_auto_place(vid):
     raw_text = (vrow["vocal_doc"] or "") if vrow else ""
     if not raw_text.strip():
         return jsonify({"error": "vocal_doc is empty — generate the Say doc first"}), 400
-    cleaned, _segments = _strip_and_segment(raw_text)
+    cleaned, doc_segments = _strip_and_segment(raw_text)
     if not cleaned:
         return jsonify({"error": "vocal_doc has no spoken text"}), 400
+
+    # Build a step-number → segment lookup for fallback placement when a
+    # diagram has no `script` (auto-generated diagrams skip it).
+    def _step_num(s: str):
+        m = re.search(r"step\s*(\d+)", s or "", re.IGNORECASE)
+        return int(m.group(1)) if m else None
+    step_segments = {}
+    for s in doc_segments:
+        n = _step_num(s.get("name") or "")
+        if n is not None and n not in step_segments:
+            step_segments[n] = s
 
     state = _load_voiceover_state(vid)
     gens = state.get("generations", [])
@@ -4484,22 +4495,32 @@ def diagrams_auto_place(vid):
                 "reason": "no rendered result_url (diagram not rendered yet)",
             })
             continue
-        if not script:
-            placements.append({
-                "diagram_id": d["id"],
-                "name": d.get("name"),
-                "matched": False,
-                "reason": "no script field on diagram",
-            })
-            continue
-        hit = _find_script_in_doc(script, cleaned)
+        match_method = None
+        hit = None
+        if script:
+            hit = _find_script_in_doc(script, cleaned)
+            if hit:
+                match_method = "verbatim_script"
+        # Fallback: no script (or script didn't match) → look up the step
+        # segment from the diagram's name (e.g. "Step 2: ..." → step 2 span).
         if not hit:
+            step_n = _step_num(d.get("name") or "")
+            seg = step_segments.get(step_n) if step_n is not None else None
+            if seg is not None and seg.get("char_end") is not None:
+                hit = (int(seg["char_start"]), int(seg["char_end"]))
+                match_method = "step_fallback"
+        if not hit:
+            reason = (
+                "script not found in vocal_doc"
+                if script
+                else f"no script + no Step N match in name (got '{d.get('name')}')"
+            )
             placements.append({
                 "diagram_id": d["id"],
                 "name": d.get("name"),
                 "matched": False,
-                "reason": "script not found in vocal_doc",
-                "script_preview": script[:120],
+                "reason": reason,
+                "script_preview": script[:120] if script else None,
             })
             continue
         char_start, char_end = hit
@@ -5855,6 +5876,69 @@ def _gemini_image_call(parts_payload, api_key, model, tag):
     return None
 
 
+def _gemini_image_call_detail(parts_payload, api_key, model, tag):
+    """Like _gemini_image_call but returns (bytes_or_None, error_reason_or_None)
+    so callers can surface why a call failed."""
+    from urllib.error import HTTPError, URLError
+    import base64
+    payload = {
+        "contents": [{"parts": parts_payload}],
+        "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
+    }
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{model}:generateContent?key={api_key}")
+    req = Request(url, data=json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "ignore")[:200]
+        except Exception:
+            pass
+        reason = f"http {e.code}: {detail}"
+        app.logger.warning(f"{tag}: gemini {reason}")
+        return None, reason
+    except URLError as e:
+        reason = f"network: {e.reason}"
+        app.logger.warning(f"{tag}: gemini {reason}")
+        return None, reason
+    except Exception as e:
+        reason = f"unexpected: {type(e).__name__}: {e}"
+        app.logger.warning(f"{tag}: gemini {reason}")
+        return None, reason
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError):
+        finish = ""
+        try:
+            finish = data["candidates"][0].get("finishReason", "")
+        except (KeyError, IndexError, TypeError):
+            pass
+        reason = f"no candidate parts (finishReason={finish or 'unknown'}, raw={str(data)[:200]})"
+        app.logger.warning(f"{tag}: {reason}")
+        return None, reason
+    for p in parts:
+        inline = p.get("inlineData") or p.get("inline_data")
+        if inline and inline.get("data"):
+            try:
+                return base64.b64decode(inline["data"]), None
+            except Exception as e:
+                reason = f"b64 decode: {e}"
+                app.logger.warning(f"{tag}: {reason}")
+                return None, reason
+    finish = ""
+    try:
+        finish = data["candidates"][0].get("finishReason", "")
+    except (KeyError, IndexError, TypeError):
+        pass
+    reason = f"no image in response (finishReason={finish or 'unknown'})"
+    app.logger.warning(f"{tag}: {reason}")
+    return None, reason
+
+
 _DIAGRAM_PIXEL_PROMPT = (
     "Transform this diagram into 16-bit SNES pixel art. Keep every box, arrow, "
     "label, and the overall layout EXACTLY where they are — do not rearrange "
@@ -6121,33 +6205,63 @@ def _gemini_thumb_direct(vid, *, kind, sop_path, prompt_intro, image_refs, slug)
         for mime, b in image_refs
     ]
 
-    def _gen(variant_idx):
+    def _gen(variant_idx, attempt):
         parts_payload = image_parts + [{"text": prompt}]
-        return _gemini_image_call(
+        return _gemini_image_call_detail(
             parts_payload, api_key, "gemini-3-pro-image-preview",
-            f"thumb.gemini-{kind}.{variant_idx}",
+            f"thumb.gemini-{kind}.v{variant_idx}.a{attempt}",
         )
 
+    # Pass 1: fire all n in parallel
+    results = [None] * n  # each entry: {"png": bytes|None, "error": str|None, "attempts": int}
     with ThreadPoolExecutor(max_workers=n) as ex:
-        pngs = list(ex.map(_gen, range(n)))
+        futures = {ex.submit(_gen, i, 1): i for i in range(n)}
+        for fut in futures:
+            i = futures[fut]
+            png, err = fut.result()
+            results[i] = {"png": png, "error": err, "attempts": 1}
+
+    # Pass 2: retry each failed slot once
+    retry_idxs = [i for i, r in enumerate(results) if r["png"] is None]
+    if retry_idxs:
+        with ThreadPoolExecutor(max_workers=len(retry_idxs)) as ex:
+            futures = {ex.submit(_gen, i, 2): i for i in retry_idxs}
+            for fut in futures:
+                i = futures[fut]
+                png, err = fut.result()
+                results[i] = {"png": png, "error": err, "attempts": 2}
 
     out_root = UPLOAD_DIR / "thumbs" / str(vid)
     out_root.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
     written = []
-    for variant_idx, png in enumerate(pngs):
-        if not png:
-            continue
+    failures = []
+    for variant_idx, res in enumerate(results):
         slot = empty_slots[variant_idx]
-        out_path = out_root / f"{slug}_{ts}_{variant_idx + 1}.png"
-        out_path.write_bytes(png)
-        rel_url = "/" + str(out_path.relative_to(Path(app.root_path))).replace(os.sep, "/")
-        thumbs[slot] = rel_url
-        written.append({"slot_index": slot, "slot_label": slot + 1, "url": rel_url})
+        if res["png"]:
+            out_path = out_root / f"{slug}_{ts}_{variant_idx + 1}.png"
+            out_path.write_bytes(res["png"])
+            rel_url = "/" + str(out_path.relative_to(Path(app.root_path))).replace(os.sep, "/")
+            thumbs[slot] = rel_url
+            written.append({
+                "slot_index": slot,
+                "slot_label": slot + 1,
+                "url": rel_url,
+                "attempts": res["attempts"],
+            })
+        else:
+            failures.append({
+                "slot_label": slot + 1,
+                "attempts": res["attempts"],
+                "error": res["error"] or "unknown",
+            })
 
     if not written:
         conn.close()
-        return jsonify({"error": "all gemini calls failed (see server logs)"}), 502
+        return jsonify({
+            "error": "all gemini calls failed",
+            "failures": failures,
+        }), 502
 
     _persist_thumb_state(conn, vid, thumbs, titles, drow_exists)
     conn.close()
@@ -6157,6 +6271,7 @@ def _gemini_thumb_direct(vid, *, kind, sop_path, prompt_intro, image_refs, slug)
         "count": len(written),
         "requested": n,
         "thumbs": written,
+        "failures": failures,
         "original_thumbs": thumbs,
         "original_titles": titles,
         "prompt_chars": len(prompt),
