@@ -1857,6 +1857,14 @@
                 <button class="add-field-btn" onclick="addCustomField()">+ Add Field</button>
             </div>
 
+            <!-- Studios row (whole-video assets) -->
+            <div class="studios-section" style="display:flex; gap:8px; flex-wrap:wrap; margin-top:18px; padding-top:14px; border-top:1px solid #1f1f30;">
+                <button onclick="openDiagrams()" title="Animate diagrams + images from script" style="background:#0d0d1a; border:1px solid #2a2a4a; color:#f5b942; padding:8px 16px; border-radius:6px; font-size:11px; letter-spacing:1px; font-weight:700; cursor:pointer;">DIAGRAMS</button>
+                <button onclick="openChapters()" title="Chapter Animation studio" style="background:#0d0d1a; border:1px solid #2a2a4a; color:#5b9bd5; padding:8px 16px; border-radius:6px; font-size:11px; letter-spacing:1px; font-weight:700; cursor:pointer;">CHAPTERS</button>
+                <button onclick="openEditor()" title="Timeline editor — compose all assets into one video (CapCut-style)" style="background:#0d0d1a; border:1px solid #2a2a4a; color:#7ad17a; padding:8px 16px; border-radius:6px; font-size:11px; letter-spacing:1px; font-weight:700; cursor:pointer;">EDITOR</button>
+                <button onclick="openThumbnails()" title="Thumbnail studio — generate + manage thumbnails" style="background:#0d0d1a; border:1px solid #2a2a4a; color:#e87a5b; padding:8px 16px; border-radius:6px; font-size:11px; letter-spacing:1px; font-weight:700; cursor:pointer;">THUMBNAILS</button>
+            </div>
+
             <div id="modalInlineDoc" style="display:none; margin-top:12px;">
                 <hr class="modal-divider">
                 <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
@@ -1882,9 +1890,6 @@
                     <button onclick="openTeleprompter()" title="Teleprompter mode" style="font-size:11px; letter-spacing:0.5px;">TELEPROMPTER</button>
                     <button onclick="openAllImages()" title="Open all images in new tabs" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">OPEN IMAGES</button>
                     <button onclick="openAllLinks()" title="Open all links in new tabs" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">OPEN LINKS</button>
-                    <button onclick="openDiagrams()" title="Animate diagrams + images from script" style="font-size:11px; letter-spacing:0.5px; color:#f5b942;">DIAGRAMS</button>
-                    <button onclick="openChapters()" title="Chapter Animation studio" style="font-size:11px; letter-spacing:0.5px; color:#5b9bd5;">CHAPTERS</button>
-                    <button onclick="openEditor()" title="Timeline editor — compose all assets into one video (CapCut-style)" style="font-size:11px; letter-spacing:0.5px; color:#7ad17a;">EDITOR</button>
                 </div>
                 <div id="modalDocEditor" class="modal-doc-editor" contenteditable="true" spellcheck="true" oninput="modalDocChanged()" style="min-height:400px; max-height:80vh; overflow-y:auto; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px; padding:16px; color:#ddd; font-size:14px; line-height:1.7; outline:none;"></div>
             </div>
@@ -5540,6 +5545,11 @@
         }, 700);
     }
 
+    function openThumbnails() {
+        var vid = _getStudioVideoId();
+        if (!vid) { alert('Open a video first.'); return; }
+        alert('Thumbnails Studio — coming next iteration. video_id=' + vid);
+    }
     function openDiagrams() {
         var vid = _getStudioVideoId();
         if (!vid) { alert('Open a video first.'); return; }
