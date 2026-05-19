@@ -1213,12 +1213,12 @@
             color: #555;
         }
 
-        /* Studio-only: bump title text to match YouTube homepage feel (~16px, slightly bolder) */
+        /* Studio-only: bump title text to match YouTube homepage feel */
         #thumbnailsStudio .title-input {
-            font-size: 16px;
+            font-size: 18px;
             font-weight: 600;
-            line-height: 22px;
-            min-height: 44px;
+            line-height: 25px;
+            min-height: 56px;
         }
 
         /* Video upload */
@@ -3499,7 +3499,10 @@
             if (endIdx === undefined) endIdx = thumbs.length;
             const currentCard = (videos.find(v => v.id === modalVideoId) || {}).thumbnail_url || '';
             const choices = (modalDetails && modalDetails.abc_choices) || [];
-            const html = thumbs.slice(startIdx, endIdx).map((src, localI) => {
+            // Pad to full row length so empty slots still render upload tiles
+            const padded = [];
+            for (let k = startIdx; k < endIdx; k++) padded.push(thumbs[k] || '');
+            const html = padded.map((src, localI) => {
                 const i = startIdx + localI;
                 const isCurrent = src && src === currentCard;
                 const abcIdx = src ? choices.indexOf(src) : -1;
