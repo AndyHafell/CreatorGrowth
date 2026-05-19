@@ -4086,10 +4086,12 @@
                     const newTitle = titleEl.textContent.trim();
                     if (newTitle) modalDetails.title = newTitle;
                 }
-                document.querySelectorAll('.inspo-titles .title-input').forEach((inp, i) => {
+                // Scope to #modalCard only — the studio mirror has duplicate .title-input
+                // elements with the same content, which used to double the data each save.
+                document.querySelectorAll('#modalCard .inspo-titles .title-input').forEach((inp, i) => {
                     modalDetails.inspo_titles[i] = inp.textContent.trim();
                 });
-                document.querySelectorAll('.original-titles .title-input').forEach((inp, i) => {
+                document.querySelectorAll('#modalCard .original-titles .title-input').forEach((inp, i) => {
                     modalDetails.original_titles[i] = inp.textContent.trim();
                 });
                 document.querySelectorAll('.custom-field-row').forEach((row, i) => {
