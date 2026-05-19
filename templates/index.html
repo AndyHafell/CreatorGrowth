@@ -2243,7 +2243,8 @@
                     <div style="display:flex; gap:10px; flex-wrap:wrap;">
                         <button onclick="tsGenerate('pixel_face')" style="background:#1a1018; border:1px solid #e87a5b; color:#e87a5b; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GENERATE 3 PIXEL FACE</button>
                         <button onclick="tsGenerate('faceless')" style="background:#0d1620; border:1px solid #5b9bd5; color:#5b9bd5; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GENERATE 3 FACELESS</button>
-                        <button onclick="tsGeminiDirect('faceless')" title="Pure Gemini, no Claude judgment, faceless SOP as prompt. ~$0.04, ~30s, runs on VPS." style="background:#101820; border:1px solid #7ad17a; color:#7ad17a; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GEMINI DIRECT (FACELESS)</button>
+                        <button onclick="tsGeminiDirect('faceless')" title="Pure Gemini, no Claude judgment, faceless SOP as prompt. ~$0.12 / 3 thumbs, ~30s, runs on VPS." style="background:#101820; border:1px solid #7ad17a; color:#7ad17a; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GEMINI DIRECT (FACELESS)</button>
+                        <button onclick="tsGeminiDirect('pixel-face')" title="Pure Gemini + 4 face refs, no Claude judgment, pixel-face SOP as prompt. ~$0.12 / 3 thumbs, ~30s, runs on VPS. No brand logo." style="background:#1a1410; border:1px solid #f5b942; color:#f5b942; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GEMINI DIRECT (PIXEL FACE)</button>
                     </div>
                 </div>
 
@@ -5683,7 +5684,7 @@
     function tsGeminiDirect(variant) {
         var vid = _getStudioVideoId();
         if (!vid) { alert('Open a video first.'); return; }
-        if (variant !== 'faceless') {
+        if (variant !== 'faceless' && variant !== 'pixel-face') {
             tsSetStatus('Unknown variant: ' + variant, '#e07070');
             return;
         }
