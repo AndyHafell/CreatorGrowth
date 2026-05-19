@@ -5499,16 +5499,24 @@ _FACELESS_SOP_PATH = Path(__file__).resolve().parent / "prompts" / "thumbnail_fa
 @app.route("/api/videos/<int:vid>/gemini-faceless", methods=["POST"])
 @login_required
 def gemini_faceless(vid):
-    """Direct-to-Gemini faceless thumbnail — no Claude judgment layer, no face refs.
-    Sends `{title + faceless SOP}` to Nano Banana Pro and writes the PNG into the
-    next empty original_thumbs slot. Experimental — quality A/B against the Claude
-    Code flow."""
+    """Direct-to-Gemini faceless thumbnails — no Claude judgment layer, no face refs.
+    Sends `{title + faceless SOP}` to Nano Banana Pro N times in parallel and writes
+    the PNGs into the next N empty original_thumbs slots (extending the array if
+    needed). Experimental — quality A/B against the Claude Code flow."""
+    from concurrent.futures import ThreadPoolExecutor
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
         return jsonify({"error": "GEMINI_API_KEY not set"}), 500
     if not _FACELESS_SOP_PATH.exists():
         return jsonify({"error": f"SOP missing: {_FACELESS_SOP_PATH}"}), 500
     sop_text = _FACELESS_SOP_PATH.read_text()
+
+    body = request.get_json(silent=True) or {}
+    try:
+        n = int(body.get("count", 3))
+    except (TypeError, ValueError):
+        n = 3
+    n = max(1, min(n, 6))
 
     conn = get_db()
     conn.row_factory = sqlite3.Row
@@ -5522,7 +5530,8 @@ def gemini_faceless(vid):
         return jsonify({"error": "video has no title"}), 400
 
     drow = conn.execute(
-        "SELECT original_thumbs FROM video_details WHERE video_id=?", (vid,)
+        "SELECT original_thumbs, original_titles FROM video_details WHERE video_id=?",
+        (vid,),
     ).fetchone()
     if drow and drow["original_thumbs"]:
         thumbs = json.loads(drow["original_thumbs"])
@@ -5530,11 +5539,23 @@ def gemini_faceless(vid):
         thumbs = ["", "", "", "", "", "", "", "", ""]
     if not isinstance(thumbs, list):
         thumbs = ["", "", "", "", "", "", "", "", ""]
-    try:
-        empty_idx = next(i for i, t in enumerate(thumbs) if not t)
-    except StopIteration:
-        thumbs.extend([""] * 9)
-        empty_idx = next(i for i, t in enumerate(thumbs) if not t)
+    if drow and drow["original_titles"]:
+        titles = json.loads(drow["original_titles"])
+    else:
+        titles = ["", "", "", "", "", "", "", "", ""]
+    if not isinstance(titles, list):
+        titles = ["", "", "", "", "", "", "", "", ""]
+
+    empty_slots = []
+    i = 0
+    while len(empty_slots) < n:
+        if i >= len(thumbs):
+            thumbs.extend([""] * 9)
+        if not thumbs[i]:
+            empty_slots.append(i)
+        i += 1
+    while len(titles) < len(thumbs):
+        titles.append("")
 
     prompt = (
         f"Make a YouTube thumbnail for a video titled: \"{title}\".\n\n"
@@ -5543,39 +5564,54 @@ def gemini_faceless(vid):
         f"the title. Output 16:9, 1920x1080.\n\n"
         f"=== SOP START ===\n{sop_text}\n=== SOP END ==="
     )
-    parts_payload = [{"text": prompt}]
-    png = _gemini_image_call(parts_payload, api_key,
-                             "gemini-3-pro-image-preview",
-                             "thumb.gemini-faceless")
-    if not png:
-        conn.close()
-        return jsonify({"error": "gemini generation failed (see server logs)"}), 502
+
+    def _gen(variant_idx):
+        parts_payload = [{"text": prompt}]
+        return _gemini_image_call(
+            parts_payload, api_key, "gemini-3-pro-image-preview",
+            f"thumb.gemini-faceless.{variant_idx}",
+        )
+
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        pngs = list(ex.map(_gen, range(n)))
 
     out_root = UPLOAD_DIR / "thumbs" / str(vid)
     out_root.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
-    out_path = out_root / f"gemini_faceless_{ts}.png"
-    out_path.write_bytes(png)
-    rel_url = "/" + str(out_path.relative_to(Path(app.root_path))).replace(os.sep, "/")
+    written = []
+    for variant_idx, png in enumerate(pngs):
+        if not png:
+            continue
+        slot = empty_slots[variant_idx]
+        out_path = out_root / f"gemini_faceless_{ts}_{variant_idx + 1}.png"
+        out_path.write_bytes(png)
+        rel_url = "/" + str(out_path.relative_to(Path(app.root_path))).replace(os.sep, "/")
+        thumbs[slot] = rel_url
+        written.append({"slot_index": slot, "slot_label": slot + 1, "url": rel_url})
 
-    thumbs[empty_idx] = rel_url
+    if not written:
+        conn.close()
+        return jsonify({"error": "all gemini calls failed (see server logs)"}), 502
+
     if drow:
         conn.execute(
-            "UPDATE video_details SET original_thumbs=? WHERE video_id=?",
-            (json.dumps(thumbs), vid),
+            "UPDATE video_details SET original_thumbs=?, original_titles=? WHERE video_id=?",
+            (json.dumps(thumbs), json.dumps(titles), vid),
         )
     else:
         conn.execute(
-            "INSERT INTO video_details (video_id, original_thumbs) VALUES (?, ?)",
-            (vid, json.dumps(thumbs)),
+            "INSERT INTO video_details (video_id, original_thumbs, original_titles) VALUES (?, ?, ?)",
+            (vid, json.dumps(thumbs), json.dumps(titles)),
         )
     conn.commit()
     conn.close()
     return jsonify({
         "ok": True,
-        "url": rel_url,
-        "slot_index": empty_idx,
-        "slot_label": empty_idx + 1,
+        "count": len(written),
+        "requested": n,
+        "thumbs": written,
+        "original_thumbs": thumbs,
+        "original_titles": titles,
         "prompt_chars": len(prompt),
     })
 
