@@ -1805,10 +1805,20 @@
             </div>
             <hr class="modal-divider">
 
-            <!-- Inspiration + My Thumbnails moved to PACKAGING Studio.
-                 The rows below stay rendered into here so the existing
-                 renderThumbs() flow keeps working — they're relocated into
-                 #thumbnailsStudio via DOM placement, not duplicated. -->
+            <!-- Inspiration Row -->
+            <div class="modal-section-label">Inspiration Thumbnails</div>
+            <div class="thumb-row" id="inspoThumbRow0"></div>
+            <div class="title-row inspo-titles" id="inspoTitleRow0"></div>
+
+            <!-- Original Row -->
+            <div class="modal-section-label">My Thumbnails</div>
+            <div id="originalThumbsContainer"></div>
+            <div class="slot-toggle slot-toggle-bottom">
+                <button type="button" id="originalSlotMinus" onclick="collapseOriginalSlots()" title="Remove 9 slots">&minus;</button>
+                <button type="button" id="originalSlotPlus" onclick="expandOriginalSlots()" title="Add 9 more slots">+</button>
+            </div>
+
+            <hr class="modal-divider">
 
             <!-- Video Upload -->
             <div class="video-upload-section">
@@ -1852,7 +1862,7 @@
                 <button onclick="openDiagrams()" title="Animate diagrams + images from script" style="background:#0d0d1a; border:1px solid #2a2a4a; color:#f5b942; padding:8px 16px; border-radius:6px; font-size:11px; letter-spacing:1px; font-weight:700; cursor:pointer;">DIAGRAMS</button>
                 <button onclick="openChapters()" title="Chapter Animation studio" style="background:#0d0d1a; border:1px solid #2a2a4a; color:#5b9bd5; padding:8px 16px; border-radius:6px; font-size:11px; letter-spacing:1px; font-weight:700; cursor:pointer;">CHAPTERS</button>
                 <button onclick="openEditor()" title="Timeline editor — compose all assets into one video (CapCut-style)" style="background:#0d0d1a; border:1px solid #2a2a4a; color:#7ad17a; padding:8px 16px; border-radius:6px; font-size:11px; letter-spacing:1px; font-weight:700; cursor:pointer;">EDITOR</button>
-                <button onclick="openThumbnails()" title="Packaging studio — inspiration, thumbnails, titles" style="background:#0d0d1a; border:1px solid #2a2a4a; color:#e87a5b; padding:8px 16px; border-radius:6px; font-size:11px; letter-spacing:1px; font-weight:700; cursor:pointer;">PACKAGING</button>
+                <button onclick="openThumbnails()" title="Thumbnail studio — inspiration, thumbnails, titles" style="background:#0d0d1a; border:1px solid #2a2a4a; color:#e87a5b; padding:8px 16px; border-radius:6px; font-size:11px; letter-spacing:1px; font-weight:700; cursor:pointer;">THUMBNAIL</button>
             </div>
 
             <div id="modalInlineDoc" style="display:none; margin-top:12px;">
@@ -2182,7 +2192,7 @@
     <div id="thumbnailsStudio" style="display:none; position:fixed; inset:0; background:#0a0a14; z-index:600; color:#ddd;">
         <!-- Header bar -->
         <div style="display:flex; align-items:center; gap:14px; padding:12px 22px; border-bottom:1px solid #1f1f30; background:#0d0d1a;">
-            <div style="font-weight:700; letter-spacing:2px; color:#e87a5b; font-size:12px;">PACKAGING STUDIO</div>
+            <div style="font-weight:700; letter-spacing:2px; color:#e87a5b; font-size:12px;">THUMBNAIL STUDIO</div>
             <div id="tsVideoTitle" style="color:#666; font-size:12px; border-left:1px solid #2a2a4a; padding-left:14px;"></div>
             <div style="flex:1;"></div>
             <span id="tsStatus" style="color:#555; font-size:11px;"></span>
@@ -2201,17 +2211,17 @@
 
             <!-- Main canvas -->
             <div style="flex:1; overflow-y:auto; padding:28px 36px 80px;">
-                <!-- Inspiration Row (moved from modal — same IDs, same render flow) -->
+                <!-- Inspiration Row (studio mirror — render targets get `_studio` suffix) -->
                 <div class="modal-section-label">Inspiration Thumbnails</div>
-                <div class="thumb-row" id="inspoThumbRow0"></div>
-                <div class="title-row inspo-titles" id="inspoTitleRow0"></div>
+                <div class="thumb-row" id="inspoThumbRow0_studio"></div>
+                <div class="title-row inspo-titles" id="inspoTitleRow0_studio"></div>
 
-                <!-- Original Row (moved from modal — same IDs, same render flow) -->
+                <!-- Original Row (studio mirror — `_studio` suffix) -->
                 <div class="modal-section-label" style="margin-top:24px;">My Thumbnails</div>
-                <div id="originalThumbsContainer"></div>
+                <div id="originalThumbsContainer_studio"></div>
                 <div class="slot-toggle slot-toggle-bottom">
-                    <button type="button" id="originalSlotMinus" onclick="collapseOriginalSlots()" title="Remove 9 slots">&minus;</button>
-                    <button type="button" id="originalSlotPlus" onclick="expandOriginalSlots()" title="Add 9 more slots">+</button>
+                    <button type="button" id="originalSlotMinus_studio" onclick="collapseOriginalSlots()" title="Remove 9 slots">&minus;</button>
+                    <button type="button" id="originalSlotPlus_studio" onclick="expandOriginalSlots()" title="Add 9 more slots">+</button>
                 </div>
 
                 <hr style="border:none; border-top:1px solid #1f1f30; margin:30px 0;">
@@ -3479,10 +3489,9 @@
 
         function renderThumbRow(containerId, thumbs, prefix, startIdx = 0, endIdx) {
             if (endIdx === undefined) endIdx = thumbs.length;
-            const container = document.getElementById(containerId);
             const currentCard = (videos.find(v => v.id === modalVideoId) || {}).thumbnail_url || '';
             const choices = (modalDetails && modalDetails.abc_choices) || [];
-            container.innerHTML = thumbs.slice(startIdx, endIdx).map((src, localI) => {
+            const html = thumbs.slice(startIdx, endIdx).map((src, localI) => {
                 const i = startIdx + localI;
                 const isCurrent = src && src === currentCard;
                 const abcIdx = src ? choices.indexOf(src) : -1;
@@ -3503,6 +3512,10 @@
                 </div>
                 `;
             }).join('');
+            const primary = document.getElementById(containerId);
+            if (primary) primary.innerHTML = html;
+            const mirror = document.getElementById(containerId + '_studio');
+            if (mirror) mirror.innerHTML = html;
         }
 
         const SLOT_COUNT = { inspo: 3 };
@@ -3519,37 +3532,44 @@
         }
 
         function ensureOriginalContainer(rows) {
-            const container = document.getElementById('originalThumbsContainer');
-            if (!container) return;
-            const existingRows = container.querySelectorAll('.thumb-row').length;
-            if (existingRows === rows) return;
-            container.innerHTML = '';
-            for (let r = 0; r < rows; r++) {
-                container.insertAdjacentHTML('beforeend',
-                    `<div class="thumb-row" id="originalThumbRow${r}"></div>` +
-                    `<div class="title-row original-titles" id="originalTitleRow${r}"></div>`
-                );
-            }
+            [['originalThumbsContainer', ''], ['originalThumbsContainer_studio', '_studio']].forEach(([cid, sfx]) => {
+                const container = document.getElementById(cid);
+                if (!container) return;
+                const existingRows = container.querySelectorAll('.thumb-row').length;
+                if (existingRows === rows) return;
+                container.innerHTML = '';
+                for (let r = 0; r < rows; r++) {
+                    container.insertAdjacentHTML('beforeend',
+                        `<div class="thumb-row" id="originalThumbRow${r}${sfx}"></div>` +
+                        `<div class="title-row original-titles" id="originalTitleRow${r}${sfx}"></div>`
+                    );
+                }
+            });
         }
 
         function updateOriginalSlotToggle() {
-            const minusBtn = document.getElementById('originalSlotMinus');
-            const plusBtn = document.getElementById('originalSlotPlus');
-            if (!minusBtn || !plusBtn || !modalDetails) return;
+            if (!modalDetails) return;
             const count = originalSlotCount();
             const thumbs = modalDetails.original_thumbs || [];
             const titles = modalDetails.original_titles || [];
             const trailingHasData = (() => {
-                if (count <= ORIGINAL_SLOT_STEP) return true; // disabled at min
+                if (count <= ORIGINAL_SLOT_STEP) return true;
                 for (let i = count - ORIGINAL_SLOT_STEP; i < count; i++) {
                     if ((thumbs[i] || '').trim() || (titles[i] || '').trim()) return true;
                 }
                 return false;
             })();
-            minusBtn.disabled = count <= ORIGINAL_SLOT_STEP || trailingHasData;
-            minusBtn.title = count <= ORIGINAL_SLOT_STEP
+            const disabled = count <= ORIGINAL_SLOT_STEP || trailingHasData;
+            const minusTitle = count <= ORIGINAL_SLOT_STEP
                 ? 'Minimum 9 slots'
                 : (trailingHasData ? 'Clear the bottom row first' : 'Remove 9 slots');
+            ['', '_studio'].forEach(sfx => {
+                const minusBtn = document.getElementById('originalSlotMinus' + sfx);
+                const plusBtn = document.getElementById('originalSlotPlus' + sfx);
+                if (!minusBtn || !plusBtn) return;
+                minusBtn.disabled = disabled;
+                minusBtn.title = minusTitle;
+            });
         }
 
         function renderThumbs(prefix, thumbs) {
@@ -3675,14 +3695,17 @@
 
         function renderTitleRow(containerId, titles, prefix, startIdx = 0, endIdx) {
             if (endIdx === undefined) endIdx = titles.length;
-            const container = document.getElementById(containerId);
-            container.innerHTML = titles.slice(startIdx, endIdx).map((t, localI) => {
+            const html = titles.slice(startIdx, endIdx).map((t, localI) => {
                 const i = startIdx + localI;
                 return `
                 <div class="title-input" contenteditable="true" data-placeholder="Title ${i + 1}"
                      onblur="updateTitle('${prefix}', ${i}, this.textContent.trim())">${esc(t)}</div>
                 `;
             }).join('');
+            const primary = document.getElementById(containerId);
+            if (primary) primary.innerHTML = html;
+            const mirror = document.getElementById(containerId + '_studio');
+            if (mirror) mirror.innerHTML = html;
         }
 
         function triggerThumbUpload(prefix, index) {
