@@ -3707,7 +3707,12 @@
 
         function renderTitleRow(containerId, titles, prefix, startIdx = 0, endIdx) {
             if (endIdx === undefined) endIdx = titles.length;
-            const html = titles.slice(startIdx, endIdx).map((t, localI) => {
+            // Pad to full row length so placeholders show even when titles array
+            // is shorter than thumbs (e.g. agent extended original_thumbs but not
+            // original_titles).
+            const padded = [];
+            for (let k = startIdx; k < endIdx; k++) padded.push(titles[k] || '');
+            const html = padded.map((t, localI) => {
                 const i = startIdx + localI;
                 return `
                 <div class="title-input" contenteditable="true" data-placeholder="Title ${i + 1}"
@@ -5682,21 +5687,22 @@
             tsSetStatus('Unknown variant: ' + variant, '#e07070');
             return;
         }
-        tsSetStatus('Gemini direct (' + variant + ') — generating (~30s)…', '#f5b942');
+        tsSetStatus('Gemini direct (' + variant + ') — generating 3 in parallel (~30s)…', '#f5b942');
         fetch('/api/videos/' + vid + '/gemini-' + variant, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: '{}'
+            body: JSON.stringify({count: 3})
         }).then(function(r) { return r.json(); })
           .then(function(j) {
               if (j.error) throw new Error(j.error);
-              tsSetStatus('Gemini direct → slot ' + j.slot_label + ' (' + j.prompt_chars + ' prompt chars)', '#4caf50');
-              tsAppendBatch('gemini', 'gemini_' + variant, 'slot ' + j.slot_label, false);
+              var slots = (j.thumbs || []).map(function(t) { return t.slot_label; }).join(', ');
+              tsSetStatus('Gemini direct → ' + j.count + '/' + j.requested + ' thumbs in slots ' + slots, '#4caf50');
+              tsAppendBatch('gemini', 'gemini_' + variant, 'slots ' + slots, false);
               if (typeof modalDetails !== 'undefined' && modalDetails) {
-                  if (!modalDetails.original_thumbs) modalDetails.original_thumbs = [];
-                  while (modalDetails.original_thumbs.length <= j.slot_index) modalDetails.original_thumbs.push('');
-                  modalDetails.original_thumbs[j.slot_index] = j.url;
+                  modalDetails.original_thumbs = j.original_thumbs || modalDetails.original_thumbs;
+                  modalDetails.original_titles = j.original_titles || modalDetails.original_titles;
                   if (typeof renderThumbs === 'function') renderThumbs('original', modalDetails.original_thumbs);
+                  if (typeof renderTitles === 'function') renderTitles('original', modalDetails.original_titles || []);
               }
           })
           .catch(function(err) { tsSetStatus('Gemini direct failed: ' + err.message, '#e07070'); });
