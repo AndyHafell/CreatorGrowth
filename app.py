@@ -4312,6 +4312,230 @@ def compute_visuals_blocks(vid):
     })
 
 
+# ---------------------------------------------------------------------------
+# Auto-place diagrams on the editor timeline by verbatim-matching each
+# diagram's stored `script` against the spoken vocal_doc.
+# ---------------------------------------------------------------------------
+
+def _normalize_for_match(s: str) -> str:
+    """Lowercase, collapse whitespace, strip most punctuation. Returns a
+    (normalized_text, idx_map) pair via the wrapper below. This helper just
+    produces the normalized string; positions are computed by the wrapper."""
+    out = []
+    for ch in s.lower():
+        if ch.isalnum() or ch == " ":
+            out.append(ch)
+        elif ch.isspace():
+            out.append(" ")
+        # drop everything else (punctuation, symbols)
+    # collapse runs of spaces
+    norm = re.sub(r"\s+", " ", "".join(out)).strip()
+    return norm
+
+
+def _normalize_with_index_map(s: str):
+    """Like _normalize_for_match but also returns a parallel array `idx_map`
+    where idx_map[i] = the index in the ORIGINAL string corresponding to the
+    i-th char of the normalized string. Used to map a match back to the
+    original cleaned vocal_doc's char offsets."""
+    norm_chars = []
+    idx_map = []
+    last_was_space = True  # so leading whitespace is collapsed away
+    for i, ch in enumerate(s):
+        if ch.isalnum():
+            norm_chars.append(ch.lower())
+            idx_map.append(i)
+            last_was_space = False
+        elif ch.isspace() or not ch.isalnum():
+            if not last_was_space:
+                norm_chars.append(" ")
+                idx_map.append(i)
+                last_was_space = True
+            # else skip (collapse)
+    # trim trailing space
+    while norm_chars and norm_chars[-1] == " ":
+        norm_chars.pop()
+        idx_map.pop()
+    return "".join(norm_chars), idx_map
+
+
+def _find_script_in_doc(script: str, cleaned_doc: str):
+    """Locate `script` inside `cleaned_doc` with whitespace/punctuation-tolerant
+    matching. Returns (char_start, char_end) into `cleaned_doc`, or None if no
+    confident match.
+
+    Strategy: normalize both, search for the full normalized script first; if
+    not found, fall back to the first ~12 words of the script as a key (handles
+    diagrams whose `script` drifted slightly from the final vocal doc)."""
+    if not script or not cleaned_doc:
+        return None
+    norm_doc, doc_map = _normalize_with_index_map(cleaned_doc)
+    norm_script_full = _normalize_for_match(script)
+    if not norm_script_full:
+        return None
+
+    def locate(needle: str):
+        if not needle or len(needle) < 8:
+            return None
+        idx = norm_doc.find(needle)
+        if idx < 0:
+            return None
+        end_idx = idx + len(needle) - 1
+        char_start = doc_map[idx] if idx < len(doc_map) else None
+        char_end = doc_map[end_idx] + 1 if end_idx < len(doc_map) else None
+        if char_start is None or char_end is None:
+            return None
+        return (char_start, char_end)
+
+    # 1) Full script
+    hit = locate(norm_script_full)
+    if hit:
+        return hit
+    # 2) First 12 words as anchor — extend end to match the script's word count
+    words = norm_script_full.split()
+    if len(words) >= 4:
+        anchor = " ".join(words[:min(12, len(words))])
+        anchor_hit = locate(anchor)
+        if anchor_hit:
+            # Estimate end by walking the same number of normalized words as
+            # the full script. Caps at end-of-doc.
+            start_in_norm = norm_doc.find(anchor)
+            if start_in_norm >= 0:
+                target_word_count = len(words)
+                remaining = norm_doc[start_in_norm:]
+                rem_words = remaining.split()
+                consumed_chars = 0
+                taken = 0
+                for w in rem_words:
+                    if taken >= target_word_count:
+                        break
+                    next_idx = remaining.find(w, consumed_chars)
+                    if next_idx < 0:
+                        break
+                    consumed_chars = next_idx + len(w)
+                    taken += 1
+                end_in_norm = start_in_norm + consumed_chars - 1
+                if end_in_norm < len(doc_map):
+                    end_char = doc_map[end_in_norm] + 1
+                    return (anchor_hit[0], end_char)
+            return anchor_hit
+    return None
+
+
+@app.route("/api/videos/<int:vid>/diagrams/auto-place", methods=["POST"])
+def diagrams_auto_place(vid):
+    """For each diagram with a stored `script`, verbatim-match it against the
+    cleaned vocal_doc and return its timestamped placement on the timeline.
+
+    Uses the latest voiceover take's stored duration for char→time mapping
+    (linear interpolation against cleaned_doc length). If you have segments
+    with `char_start_times_seconds` arrays we could swap to exact alignment;
+    for now the linear pass matches the rest of the editor's timing math
+    and ships in seconds per video."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    vrow = conn.execute(
+        "SELECT vocal_doc FROM videos WHERE id=?", (vid,)
+    ).fetchone()
+    drows = conn.execute(
+        "SELECT * FROM diagrams WHERE video_id=? ORDER BY position, created_at",
+        (vid,)
+    ).fetchall()
+    conn.close()
+
+    raw_text = (vrow["vocal_doc"] or "") if vrow else ""
+    if not raw_text.strip():
+        return jsonify({"error": "vocal_doc is empty — generate the Say doc first"}), 400
+    cleaned, _segments = _strip_and_segment(raw_text)
+    if not cleaned:
+        return jsonify({"error": "vocal_doc has no spoken text"}), 400
+
+    state = _load_voiceover_state(vid)
+    gens = state.get("generations", [])
+    duration = 0.0
+    for g in reversed(gens):
+        d = g.get("duration") or g.get("audio_duration") or 0
+        if d:
+            duration = float(d)
+            break
+        segs = g.get("segments") or []
+        if segs:
+            duration = float(segs[-1].get("end", 0)) or duration
+            if duration:
+                break
+    if duration <= 0:
+        duration = max(30.0, len(cleaned) / 13.0)
+        method = "estimate-13cps"
+    else:
+        method = "linear-from-take-duration"
+
+    total_chars = max(1, len(cleaned))
+
+    placements = []
+    for r in drows:
+        d = _diagram_row_to_dict(r)
+        script = (d.get("script") or "").strip()
+        result_url = _proxy_asset_url(d.get("result_url") or "")
+        if not result_url:
+            placements.append({
+                "diagram_id": d["id"],
+                "name": d.get("name"),
+                "matched": False,
+                "reason": "no rendered result_url (diagram not rendered yet)",
+            })
+            continue
+        if not script:
+            placements.append({
+                "diagram_id": d["id"],
+                "name": d.get("name"),
+                "matched": False,
+                "reason": "no script field on diagram",
+            })
+            continue
+        hit = _find_script_in_doc(script, cleaned)
+        if not hit:
+            placements.append({
+                "diagram_id": d["id"],
+                "name": d.get("name"),
+                "matched": False,
+                "reason": "script not found in vocal_doc",
+                "script_preview": script[:120],
+            })
+            continue
+        char_start, char_end = hit
+        start_sec = duration * (char_start / total_chars)
+        # Prefer the diagram's own audio_duration when known so the MP4 plays
+        # its full length even if the vocal_doc match is shorter. Fall back to
+        # the matched span otherwise.
+        own_dur = 0.0
+        try:
+            own_dur = float(d.get("audio_duration") or 0)
+        except (TypeError, ValueError):
+            own_dur = 0.0
+        span_sec = duration * ((char_end - char_start) / total_chars)
+        end_sec = start_sec + max(own_dur, span_sec, 1.0)
+        placements.append({
+            "diagram_id": d["id"],
+            "name": d.get("name"),
+            "matched": True,
+            "result_url": result_url,
+            "char_start": char_start,
+            "char_end": char_end,
+            "start": round(start_sec, 3),
+            "end": round(end_sec, 3),
+            "snippet": cleaned[char_start:min(char_end, char_start + 160)],
+        })
+
+    return jsonify({
+        "placements": placements,
+        "duration": duration,
+        "method": method,
+        "total_chars": total_chars,
+        "matched": sum(1 for p in placements if p.get("matched")),
+        "skipped": sum(1 for p in placements if not p.get("matched")),
+    })
+
+
 def _split_text_for_tts(text, max_chars=9500):
     """Split into chunks <= max_chars, preferring paragraph > sentence > word boundaries.
     ElevenLabs free/Creator/Pro endpoint caps each request at 10k chars; we chunk and stitch."""
