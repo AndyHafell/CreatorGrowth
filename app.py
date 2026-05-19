@@ -5493,6 +5493,93 @@ def diagram_pixel_art(diagram_id):
     return jsonify(_diagram_row_to_dict(row))
 
 
+_FACELESS_SOP_PATH = Path(__file__).resolve().parent / "prompts" / "thumbnail_faceless.md"
+
+
+@app.route("/api/videos/<int:vid>/gemini-faceless", methods=["POST"])
+@login_required
+def gemini_faceless(vid):
+    """Direct-to-Gemini faceless thumbnail — no Claude judgment layer, no face refs.
+    Sends `{title + faceless SOP}` to Nano Banana Pro and writes the PNG into the
+    next empty original_thumbs slot. Experimental — quality A/B against the Claude
+    Code flow."""
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+    if not _FACELESS_SOP_PATH.exists():
+        return jsonify({"error": f"SOP missing: {_FACELESS_SOP_PATH}"}), 500
+    sop_text = _FACELESS_SOP_PATH.read_text()
+
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    vrow = conn.execute("SELECT title FROM videos WHERE id=?", (vid,)).fetchone()
+    if not vrow:
+        conn.close()
+        return jsonify({"error": "video not found"}), 404
+    title = (vrow["title"] or "").strip()
+    if not title:
+        conn.close()
+        return jsonify({"error": "video has no title"}), 400
+
+    drow = conn.execute(
+        "SELECT original_thumbs FROM video_details WHERE video_id=?", (vid,)
+    ).fetchone()
+    if drow and drow["original_thumbs"]:
+        thumbs = json.loads(drow["original_thumbs"])
+    else:
+        thumbs = ["", "", "", "", "", "", "", "", ""]
+    if not isinstance(thumbs, list):
+        thumbs = ["", "", "", "", "", "", "", "", ""]
+    try:
+        empty_idx = next(i for i, t in enumerate(thumbs) if not t)
+    except StopIteration:
+        thumbs.extend([""] * 9)
+        empty_idx = next(i for i, t in enumerate(thumbs) if not t)
+
+    prompt = (
+        f"Make a YouTube thumbnail for a video titled: \"{title}\".\n\n"
+        f"Follow this SOP exactly — the channel signature, locked style constants, "
+        f"and one of the 6 layout patterns. Pick the layout pattern that best fits "
+        f"the title. Output 16:9, 1920x1080.\n\n"
+        f"=== SOP START ===\n{sop_text}\n=== SOP END ==="
+    )
+    parts_payload = [{"text": prompt}]
+    png = _gemini_image_call(parts_payload, api_key,
+                             "gemini-3-pro-image-preview",
+                             "thumb.gemini-faceless")
+    if not png:
+        conn.close()
+        return jsonify({"error": "gemini generation failed (see server logs)"}), 502
+
+    out_root = UPLOAD_DIR / "thumbs" / str(vid)
+    out_root.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time())
+    out_path = out_root / f"gemini_faceless_{ts}.png"
+    out_path.write_bytes(png)
+    rel_url = "/" + str(out_path.relative_to(Path(app.root_path))).replace(os.sep, "/")
+
+    thumbs[empty_idx] = rel_url
+    if drow:
+        conn.execute(
+            "UPDATE video_details SET original_thumbs=? WHERE video_id=?",
+            (json.dumps(thumbs), vid),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO video_details (video_id, original_thumbs) VALUES (?, ?)",
+            (vid, json.dumps(thumbs)),
+        )
+    conn.commit()
+    conn.close()
+    return jsonify({
+        "ok": True,
+        "url": rel_url,
+        "slot_index": empty_idx,
+        "slot_label": empty_idx + 1,
+        "prompt_chars": len(prompt),
+    })
+
+
 @app.route("/api/videos/<int:vid>/editor-bootstrap", methods=["GET"])
 def editor_bootstrap(vid):
     """Single payload the OpenCut bridge page needs to seed a new project:
