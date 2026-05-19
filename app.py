@@ -4539,6 +4539,7 @@ def diagrams_auto_place(vid):
             "diagram_id": d["id"],
             "name": d.get("name"),
             "matched": True,
+            "match_method": match_method,
             "result_url": result_url,
             "char_start": char_start,
             "char_end": char_end,
