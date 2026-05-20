@@ -2563,6 +2563,88 @@ BRIEF CHECKLIST SCORE: {score_line}{notes_section}{final_thoughts_section}
     return jsonify({"ok": True, "path": rel, "filename": filename, "exists": False, "auto_filled": auto_filled})
 
 
+@app.route("/api/videos/<int:vid>/bundle", methods=["GET"])
+def get_card_bundle(vid):
+    """Return a single JSON bundle for a card: metadata + Brief Doc markdown +
+    Screen Share To-Do markdown + Andy's last 5 / top 5 channel videos.
+    Designed for local Claude Code to fetch one URL and have everything needed
+    to generate a content doc via the CONTENT_DOC_PROCESS_SOP.
+    """
+    conn = get_db()
+    v = conn.execute("SELECT * FROM videos WHERE id = ?", (vid,)).fetchone()
+    if not v:
+        conn.close()
+        return jsonify({"error": "Video not found"}), 404
+
+    # Custom fields → paths to brief + todo
+    det = conn.execute(
+        "SELECT custom_fields FROM video_details WHERE video_id = ?", (vid,)
+    ).fetchone()
+    fields = json.loads(det["custom_fields"]) if det and det["custom_fields"] else []
+
+    def _field_path(key):
+        for f in fields:
+            if f.get("key") == key and f.get("value"):
+                return f["value"]
+        return None
+
+    def _read(rel):
+        if not rel:
+            return None
+        p = CONTENT_DIR / rel
+        try:
+            return p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    brief_path = _field_path("Brief Doc")
+    todo_path = _field_path("Screen Share To-Do")
+    brief_md = _read(brief_path)
+    todo_md = _read(todo_path)
+
+    # Channel context — last 5 + top 5 (for "what's been working" awareness)
+    try:
+        recent = [dict(r) for r in conn.execute(
+            "SELECT title, view_count, published_at FROM my_channel_videos "
+            "WHERE published_at != '' ORDER BY published_at DESC LIMIT 5"
+        ).fetchall()]
+        top = [dict(r) for r in conn.execute(
+            "SELECT title, view_count, published_at FROM my_channel_videos "
+            "WHERE published_at != '' ORDER BY view_count DESC LIMIT 5"
+        ).fetchall()]
+    except sqlite3.OperationalError:
+        recent, top = [], []
+    conn.close()
+
+    return jsonify({
+        "card": {
+            "id": v["id"],
+            "video_id": v["video_id"],
+            "title": v["title"],
+            "channel_title": v["channel_title"],
+            "view_count": v["view_count"],
+            "outlier_score": v["outlier_score"],
+            "published_at": v["published_at"],
+            "status": v["status"],
+            "youtube_url": f"https://youtube.com/watch?v={v['video_id']}" if v["video_id"] and not str(v["video_id"]).startswith("custom_") else None,
+        },
+        "brief": {
+            "path": brief_path,
+            "markdown": brief_md,
+            "exists": bool(brief_md),
+        },
+        "screen_share_todo": {
+            "path": todo_path,
+            "markdown": todo_md,
+            "exists": bool(todo_md),
+        },
+        "channel": {
+            "recent": recent,
+            "top": top,
+        },
+    })
+
+
 @app.route("/api/cards/batch-create-brief", methods=["POST"])
 def batch_create_brief():
     """Sequentially create briefs for a list of card IDs. Server-side serialization
