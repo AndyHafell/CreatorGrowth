@@ -1674,6 +1674,10 @@
     </div>
 
     <div class="sort-bar">
+        <button id="batchBriefBtn" onclick="batchCreateBriefs()" style="display:none; background:#1a1a3a; border:1px solid #3a3a5e; color:#9fb3ff; padding:6px 12px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:600; letter-spacing:1px; text-transform:uppercase; margin-right:12px;" title="Sequentially generate/regenerate briefs for every card visible in this tab. Server-side serial — slow but reliable.">
+            ↻ Briefs (this tab)
+        </button>
+        <span id="batchBriefStatus" style="font-size:11px; color:#888; margin-right:12px;"></span>
         <span class="sort-label">Sort:</span>
         <button class="sort-btn active" data-sort="added" onclick="setSort('added')">Date Added</button>
         <button class="sort-btn" data-sort="views" onclick="setSort('views')">Views</button>
@@ -2729,6 +2733,9 @@
             document.getElementById('twitterContainer').style.display = isTwitter ? 'block' : 'none';
             document.getElementById('channelsBar').style.display = isSpecial ? 'none' : '';
             document.querySelector('.sort-bar').style.display = isSpecial ? 'none' : '';
+            // Show "Briefs (this tab)" batch button on tabs where it makes sense
+            const briefBatchBtn = document.getElementById('batchBriefBtn');
+            if (briefBatchBtn) briefBatchBtn.style.display = (tab === 'best' || tab === 'brief') ? '' : 'none';
             if (isCreators) {
                 renderCreatorList();
             } else if (isKeywords) {
@@ -4526,19 +4533,76 @@
 
 
 
+        async function batchCreateBriefs() {
+            const btn = document.getElementById('batchBriefBtn');
+            const status = document.getElementById('batchBriefStatus');
+            if (!btn) return;
+            // Pull the IDs of every card currently visible in the active tab (not tucked).
+            const ids = videos.filter(v => v.status === currentTab && !v.tucked).map(v => v.id);
+            if (ids.length === 0) {
+                if (status) { status.textContent = 'No cards in this tab.'; status.style.color = '#888'; }
+                return;
+            }
+            const force = confirm(`Generate/regenerate briefs for ${ids.length} card(s) in the "${currentTab}" tab?\n\nOK = regenerate (overwrite existing briefs)\nCancel = skip cards that already have a brief`);
+            // OK=true → regenerate (force=true). User cancel from dialog returns false but they still want to proceed for new ones.
+            // Use a 2-step prompt? Simpler: just go with their answer. If they cancelled the dialog entirely, abort.
+            // confirm() can't distinguish "Cancel" from "X" — treat Cancel as "skip existing", proceed anyway.
+            btn.disabled = true;
+            const originalLabel = btn.textContent;
+            btn.textContent = `Working… 0/${ids.length}`;
+            if (status) { status.textContent = `Processing ${ids.length} card(s) sequentially…`; status.style.color = '#9fb3ff'; }
+            try {
+                const resp = await fetch('/api/cards/batch-create-brief', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({video_ids: ids, force: force}),
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    if (status) { status.textContent = data.error || 'Batch failed'; status.style.color = '#ff6b6b'; }
+                    return;
+                }
+                const succeeded = data.succeeded || 0;
+                const total = data.total || ids.length;
+                const failed = total - succeeded;
+                btn.textContent = `↻ Briefs (this tab)`;
+                if (status) {
+                    status.textContent = `Done — ${succeeded}/${total} succeeded` + (failed ? `, ${failed} failed (see console)` : '');
+                    status.style.color = failed ? '#ffa500' : '#4caf50';
+                }
+                if (failed && data.results) {
+                    console.warn('Batch brief failures:', data.results.filter(r => !r.ok));
+                }
+                showToast(`Batch briefs: ${succeeded}/${total} succeeded`);
+                // Refresh card list so newly-promoted cards land in the Brief tab.
+                await loadVideos();
+            } catch (e) {
+                if (status) { status.textContent = 'Batch failed: ' + e.message; status.style.color = '#ff6b6b'; }
+                showToast('Batch brief failed', true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = originalLabel;
+            }
+        }
+
         async function createScreenShareTodo() {
             if (!modalVideoId) return;
             const btn = document.getElementById('createTodoBtn');
             const status = document.getElementById('createTodoStatus');
             if (!btn) return;
             const isRegen = btn.dataset.regen === '1';
+            const expectedVid = modalVideoId;
             btn.disabled = true;
             const originalLabel = btn.textContent;
             btn.textContent = isRegen ? 'Regenerating…' : 'Auto-filling…';
             if (status) status.textContent = '';
             try {
-                const url = `/api/videos/${modalVideoId}/create-screen-share-todo` + (isRegen ? '?force=1' : '');
+                const url = `/api/videos/${expectedVid}/create-screen-share-todo` + (isRegen ? '?force=1' : '');
                 const resp = await fetch(url, { method: 'POST' });
+                if (modalVideoId !== expectedVid) {
+                    showToast(`To-do done for card ${expectedVid} (you've moved on)`);
+                    return;
+                }
                 const data = await resp.json();
                 if (!resp.ok) {
                     if (status) { status.textContent = data.error || 'Failed'; status.style.color = '#ff6b6b'; }
@@ -4575,14 +4639,20 @@
             const status = document.getElementById('createBriefStatus');
             if (!btn) return;
             const isRegen = btn.dataset.regen === '1';
+            const expectedVid = modalVideoId;  // snapshot to detect modal switching mid-fetch
             btn.disabled = true;
             const originalLabel = btn.textContent;
             btn.textContent = isRegen ? 'Regenerating…' : 'Auto-filling…';
             if (status) status.textContent = '';
             try {
-                const url = `/api/videos/${modalVideoId}/create-brief` + (isRegen ? '?force=1' : '');
+                const url = `/api/videos/${expectedVid}/create-brief` + (isRegen ? '?force=1' : '');
                 const resp = await fetch(url, { method: 'POST' });
                 const data = await resp.json();
+                // Bail if the user switched to a different card while we were waiting
+                if (modalVideoId !== expectedVid) {
+                    showToast(`Brief done for card ${expectedVid} (you've moved on)`);
+                    return;
+                }
                 if (!resp.ok) {
                     if (status) { status.textContent = data.error || 'Failed'; status.style.color = '#ff6b6b'; }
                     return;

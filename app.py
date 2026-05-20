@@ -2535,6 +2535,48 @@ BRIEF CHECKLIST SCORE: {score_line}{notes_section}{final_thoughts_section}
     return jsonify({"ok": True, "path": rel, "filename": filename, "exists": False, "auto_filled": auto_filled})
 
 
+@app.route("/api/cards/batch-create-brief", methods=["POST"])
+def batch_create_brief():
+    """Sequentially create briefs for a list of card IDs. Server-side serialization
+    avoids the race condition in the modal UI when multiple in-flight requests
+    land on stale state. Pass {"video_ids": [...], "force": bool}.
+    Returns {"results": [{"vid": int, "ok": bool, "path": str, "error": str|null}, ...]}.
+    """
+    data = request.get_json(silent=True) or {}
+    vids = data.get("video_ids") or []
+    force = bool(data.get("force"))
+    if not isinstance(vids, list) or not vids:
+        return jsonify({"error": "missing or empty video_ids list"}), 400
+    if len(vids) > 200:
+        return jsonify({"error": "too many video_ids; max 200 per batch"}), 400
+
+    # Forward the caller's session cookie so internal calls pass auth.
+    cookie_header = request.headers.get("Cookie", "")
+    results = []
+    with app.test_client() as client:
+        # Copy cookies onto the test client so login_required passes
+        for k, v in request.cookies.items():
+            client.set_cookie(k, v, domain="localhost")
+        for vid in vids:
+            try:
+                vid_int = int(vid)
+                url = f"/api/videos/{vid_int}/create-brief" + ("?force=1" if force else "")
+                resp = client.post(url, headers={"Cookie": cookie_header} if cookie_header else None)
+                payload = resp.get_json(silent=True) or {}
+                results.append({
+                    "vid": vid_int,
+                    "ok": resp.status_code == 200,
+                    "status": resp.status_code,
+                    "path": payload.get("path"),
+                    "exists": payload.get("exists"),
+                    "auto_filled": payload.get("auto_filled"),
+                    "error": payload.get("error"),
+                })
+            except Exception as e:
+                results.append({"vid": vid, "ok": False, "error": f"{type(e).__name__}: {e}"})
+    return jsonify({"results": results, "total": len(results), "succeeded": sum(1 for r in results if r["ok"])})
+
+
 current_image_url = {"url": None}
 
 @app.route("/api/set-image", methods=["POST"])
