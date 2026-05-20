@@ -707,7 +707,7 @@ def add_video():
 def update_status(vid):
     data = request.get_json(force=True)
     new_status = data.get("status", "options")
-    if new_status not in ("options", "best", "packaging", "script", "edited", "archived", "published"):
+    if new_status not in ("options", "best", "brief", "packaging", "script", "edited", "archived", "published"):
         return jsonify({"error": "Invalid status"}), 400
     conn = get_db()
     conn.execute("UPDATE videos SET status = ? WHERE id = ?", (new_status, vid))
@@ -2170,6 +2170,13 @@ BRIEF CHECKLIST SCORE: {score_line}{notes_section}{final_thoughts_section}
             (vid, json.dumps(fields)),
         )
         conn.commit()
+
+    # Auto-promote the card into the Brief tab if it's still upstream of brief stage
+    conn.execute(
+        "UPDATE videos SET status = 'brief' WHERE id = ? AND status IN ('options', 'best')",
+        (vid,),
+    )
+    conn.commit()
 
     conn.close()
     return jsonify({"ok": True, "path": rel, "filename": filename, "exists": False, "auto_filled": auto_filled})
