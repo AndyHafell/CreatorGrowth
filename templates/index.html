@@ -5150,6 +5150,13 @@
                 .then(data => {
                     if (data.error) {
                         editor.innerHTML = '<span style="color:#e74c3c;">File not found: ' + path + '</span>';
+                        // Recovery: if a brief was referenced but the file is missing, show the Recreate button
+                        if (path && path.startsWith('briefs/')) {
+                            const briefRow = document.getElementById('modalCreateBriefRow');
+                            const briefBtn = document.getElementById('createBriefBtn');
+                            if (briefRow) briefRow.style.display = 'block';
+                            if (briefBtn) briefBtn.textContent = '+ Recreate Brief';
+                        }
                         return;
                     }
                     editor.innerHTML = (typeof marked !== 'undefined' ? marked.parse(data.content || '') : data.content).replace(/<img /g, '<img style="width:30%;height:auto;display:block;margin:12px 0;border-radius:6px;" ');
