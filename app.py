@@ -1904,28 +1904,53 @@ You will return a JSON object with these exact keys. Each value is plain text (n
 
 1. "inspiration_plot" — 3-5 sentence summary of what the inspiration video ACTUALLY covers (the plot/narrative). You should absorb the source video's gist in 15 seconds without watching it. Include the central thesis, the main framework/rules/steps the creator introduces (NAME them explicitly — "Rule #1: X, Rule #2: Y…"), the tools or examples they show, and the closing payoff. Use the YouTube description's timestamps/chapter list as a structural guide if present. Be concrete, not vague. NEVER say "discusses prompt engineering best practices" — say "extracts 4 rules: (1) Prompt Skills not Claude, (2) Skills are more than prompts, (3) Build composable skills, (4) Skills get smarter every session." (Voice exception: this field describes the source video, so it can be in third-person referring to the inspiration creator — but don't refer to Andy as "Andy.")
 
-2. "screen_share_todo" — **A JSON array of 3-7 step strings** (sweet spot is 5). Each item is a **high-level milestone**, written in second-person imperative, that chains its concrete micro-actions inline. This is the brief's outline; the deeper atomic breakdown happens in the separate Screen Share To-Do doc.
+2. "screen_share_todo" — **A JSON array of 3-7 step strings** (sweet spot is 5). Each item is a **high-level milestone** that fits in 1-3 minutes of screen-share time, written in second-person imperative, that chains its concrete micro-actions inline. Total filming time across all steps: 10-15 minutes max.
 
-   Each step must be:
-   - **A clear milestone, not a creative leap.** GOOD: "Open Chrome, go to spline.design, sign in, create a new project, and pick the 3D website template." BAD: "Remix a simple 3D object" — that leaves Andy lost on what to remix and how to start.
-   - **Doable from the prior step's state.** If step 4 needs a file, step 2 created it. No magic ("use your generated image") allowed.
-   - **Anchored to real apps, URLs, file paths, button names.** Not "show the source" — "Open Chrome and navigate to docs.claude.com/en/docs/claude-code/skills."
+### HARD RULES — VIOLATING ANY OF THESE FAILS THE BRIEF
+
+**Rule 1 — Use existing tools' shipped features, NOT custom code Andy has to write on camera.** If the video is about Tool X, the steps use Tool X's actual UI, prompts, buttons, and outputs. Andy is NOT writing a new Python/Claude-Code skill on camera unless the entire video is explicitly about writing that skill (build-a-skill tutorials are the only exception).
+
+   - GOOD: "In AntiGravity, prompt the website build using your Spline asset; let it generate."
+   - BAD: "Write a Claude Code skill that takes a Spline export path and integrates it into a placeholder in an AntiGravity-generated website structure." (This is a 4-hour engineering task, not a screen-share step.)
+
+**Rule 2 — No step that requires Andy to write working code mid-take.** Writing code IS allowed only if (a) the code is ≤5 lines AND visibly trivial, OR (b) the code is pre-written and Andy is showing a pre-existing file. Never "write a simple skill that does X" as a single step — that's not a step, that's a multi-hour task.
+
+**Rule 3 — Each step must be doable in ~1-3 minutes of screen time.** If a step's success depends on a creative/engineering output ("write a skill that does Y", "design a 3D scene that looks great", "remix a simple object"), it FAILS this rule. Those need to either (a) be pre-baked before filming and the step is "show the pre-built thing," or (b) be split into "open the tool → click button → tool generates it."
+
+**Rule 4 — Don't force Claude Code skills into every video.** If the video's topic is Tool X (Spline, AntiGravity, etc.), the proof is using Tool X's actual features, NOT building a Claude-Code wrapper around it. The skills/ folder showcase is fine when the brief's topic IS skills; otherwise, AgentFlow appears as the workspace/file-viewer, not as the framework being demoed.
+
+**Rule 5 — Skool gift = packaging EXISTING artifacts, not creating new ones.** The gift is your existing skills/, an existing template, an existing repo — zipped and dropped into Skool. NOT "write a brand new skill pack on camera."
+
+### Step shape
+   - **Clear milestone, not a creative leap.** GOOD: "Open Chrome, go to spline.design, sign in, create a new project, and pick the 3D website template." BAD: "Remix a simple 3D object" — that leaves Andy lost on what to remix.
+   - **Doable from the prior step's state.** If step 4 needs a file, step 2 created it (or it pre-exists on Andy's machine — assume the skills/ folder, ~/Documents/Claude Folder/, AgentFlow, Chrome, Spline account already exist).
+   - **Anchored to real apps, URLs, file paths, button names.**
    - **Sequential.** Step N+1 builds on step N's state. Zero to end-result.
 
-   3-7 milestones total. Sweet spot is 5. Don't pad with sub-actions — those belong in the Screen Share To-Do doc.
+3-7 milestones total. Sweet spot is 5. Don't pad with sub-actions — those belong in the Screen Share To-Do doc.
 
-Example shape (generate steps relevant to the actual brief):
+### GOOD example (AntiGravity + Spline video):
 ```
 [
-  "Open Chrome, navigate to docs.claude.com/en/docs/claude-code/skills, and screenshot the 4 Skills rules section.",
-  "Switch to AgentFlow's Docs tab, open ~/Documents/Claude Folder/skills/CONTENT_DOC_PROCESS_SOP.md, and scroll to the Process section.",
-  "Walk through how each Anthropic rule maps to a real SOP in your skills/ folder — point at concrete lines on screen.",
-  "In Finder, create ~/Desktop/skills-starter-pack/, copy 5 SOPs into it, zip the folder.",
-  "Drag the .zip into a new Skool classroom post draft as the Skool gift, then run /test-skill on the pack in AgentFlow's terminal and show the green output."
+  "Open Chrome, go to spline.design, sign in, and create a new project from the 3D website template.",
+  "In a second tab, open antigravity.ai, sign in, and connect the Spline asset from step 1.",
+  "In AntiGravity, type the website prompt and click Generate; let it build the site with your Spline asset embedded.",
+  "Switch to AgentFlow's Docs tab, open ~/Documents/Claude Folder/skills/, zip 3 site-building SOPs as the Skool gift, and drop the zip into a new Skool classroom post draft.",
+  "Open the deployed AntiGravity URL in Chrome and show the 3D site running live with the Spline asset rotating."
 ]
 ```
 
-MUST include AgentFlow as the workspace at some point (workspace invariant). MUST include the Skool gift reveal moment.
+### BAD example — this is what to AVOID:
+```
+[
+  "Showcase a few stunning 3D website examples from Spline's gallery.",  // vague — what does showcase mean?
+  "Create a new Claude Code skill file named spline_asset_generator.py.", // unjustified — why are we writing code for a Spline video?
+  "Write a simple Claude Code skill that takes a text prompt and outputs a JSON object describing a 3D asset.", // multi-hour task pretending to be a step
+  "Run the skill in AgentFlow's terminal, showing the successful execution."  // depends on the unrealistic prior step
+]
+```
+
+MUST include AgentFlow as the workspace at some point (workspace invariant — Andy films inside AgentFlow's Docs tab / terminal, NOT raw Terminal or VS Code). MUST include the Skool gift reveal moment.
 
 **CRITICAL — proof-segment rule (locked 2026-05-19):** The FINAL step MUST be a **demonstrable end-result** voiceover can point to and say "look, it works." Acceptable: built thing running on real input / item installed + tested working in real environment / test outcome on real input / side-by-side comparison rendered / finished tutorial workflow on a real artifact. If you cannot name a demonstrable end-result step, include "PROOF SEGMENT MISSING" as the final step — the brief fails the gate. React-only setups DO NOT QUALIFY — they need a build/test tail.
 
@@ -5294,28 +5319,59 @@ def auto_suggest_visual_tags(vid):
             })
             continue
 
-        # Take a 2-3 sentence window starting at the first unclaimed sentence.
-        prior = used_steps_for_diagram.get(id(seg), 0)
-        start_offset = min(prior * 5, len(body_sents) - 1)
-        # Span 3-5 sentences so the diagram covers a proper paragraph chunk.
-        window_size = min(5, max(3, len(body_sents) - start_offset))
-        window = body_sents[start_offset:start_offset + window_size]
-        # Filter out claimed sentences from the window's edges.
-        while window and overlaps_claimed(*window[0]):
-            window = window[1:]
-        while window and overlaps_claimed(*window[-1]):
-            window = window[:-1]
-        if not window:
+        # Pick the best 3-sentence window in body_sents by keyword-matching
+        # the diagram name against the sentences. E.g. "Step 4: B-Roll: Cost"
+        # → keywords {broll, cost} → highest-scoring window in STEP 4 body.
+        _STOP_WORDS = {
+            "step", "diagram", "chapter", "with", "from", "into", "this",
+            "that", "the", "and", "for", "your", "you",
+        }
+        kw_source = re.sub(r"[^a-zA-Z\s]", " ", name)
+        keywords = [
+            w.lower()
+            for w in kw_source.split()
+            if len(w) >= 4 and w.lower() not in _STOP_WORDS
+        ]
+        # Slide a 3-sentence window across the body and score each.
+        best = None  # (score, cs, ce, window_start_idx)
+        for start in range(max(1, len(body_sents) - 2)):
+            window = body_sents[start:start + 3]
+            if not window:
+                continue
+            # Skip if any sentence in window is already claimed.
+            if any(overlaps_claimed(c, e) for (c, e) in window):
+                continue
+            wcs = window[0][0]
+            wce = window[-1][1]
+            window_text = cleaned[wcs:wce].lower()
+            # Keyword presence score (weighted).
+            score = 0
+            for kw in keywords:
+                hits = window_text.count(kw)
+                if hits:
+                    score += 20 + min(hits, 3) * 5
+            # Prefer the early-body chunk when there's no keyword signal at all
+            # (matches old behavior — landing right after intro is reasonable).
+            if start == 0:
+                score += 5
+            if best is None or score > best[0]:
+                best = (score, wcs, wce, start)
+        if best is None:
+            # Fall back: take any unclaimed window of 3 sentences.
+            for start in range(len(body_sents)):
+                window = body_sents[start:start + 3]
+                if window and not any(overlaps_claimed(c, e) for (c, e) in window):
+                    best = (0, window[0][0], window[-1][1], start)
+                    break
+        if best is None:
             skipped.append({
                 "diagram_id": r["id"],
                 "name": name,
                 "reason": "no free paragraph in step body",
             })
             continue
-        cs = window[0][0]
-        ce = window[-1][1]
+        _score, cs, ce, _start = best
         used_steps_for_diagram[id(seg)] = used_steps_for_diagram.get(id(seg), 0) + 1
-        claim(cs, ce)
         claim(cs, ce)
         suggested.append({
             "id": "vt" + uuid.uuid4().hex[:12],
@@ -5345,6 +5401,22 @@ def auto_suggest_visual_tags(vid):
     # 3) Avatar sprinkle — at most ONE per step. Avatar is "salt"; we want a
     #    short, punchy one-liner (≤ 100 chars) ending in a strong terminator.
     #    Score candidates and pick the best.
+    # Sweet spot for avatar: ~4-7s spoken = 50-100 chars at typical pace.
+    # Up to 130 chars (~10s) is acceptable. Avoid very short (<35) and very
+    # long (>130) sentences.
+    _AVATAR_OPENER_RE = re.compile(
+        r"^\s*(but|that's|that is|here's|here is|the truth|the trick|"
+        r"the reality|the result|the difference|the point|the thing|"
+        r"the magic|the moment|the way|what (?:happens|matters)|"
+        r"think about|imagine|now think|now imagine)\b",
+        re.IGNORECASE,
+    )
+    _AVATAR_EMPHATIC_RE = re.compile(
+        r"\b(?:never|always|literally|every|nobody|nothing|fast|free|"
+        r"forever|exactly|actually|really|truly|finally|magic|"
+        r"changes everything|game[- ]?changer|here'?s why)\b",
+        re.IGNORECASE,
+    )
     for seg, sents in seg_sentences:
         if not sents:
             continue
@@ -5353,26 +5425,27 @@ def auto_suggest_visual_tags(vid):
             if overlaps_claimed(cs, ce):
                 continue
             length = ce - cs
-            if length < 25 or length > 110:
+            if length < 35 or length > 130:
                 continue
             text = cleaned[cs:ce].strip()
             score = 0
-            # Reward short, complete sentences.
-            score += max(0, 110 - length)
+            # Reward sentences near the 70-char sweet spot.
+            score += 100 - abs(length - 75)
             # Reward strong terminators.
-            if text.endswith(("!", ".")):
+            if text.endswith("!"):
+                score += 40
+            elif text.endswith("."):
+                score += 15
+            # Big reward for emphatic openers.
+            if _AVATAR_OPENER_RE.search(text):
+                score += 50
+            # Reward emphatic content words.
+            if _AVATAR_EMPHATIC_RE.search(text):
                 score += 30
-            # Reward emphatic words.
-            if re.search(
-                r"\b(?:never|always|literally|every|nobody|nothing|done|fast|free|now)\b",
-                text,
-                re.IGNORECASE,
-            ):
-                score += 25
-            # Penalize first sentence of a step (likely intro).
+            # Penalize first sentence of a step (likely chapter intro).
             if idx == 0:
-                score -= 40
-            # Penalize last sentence of a step (likely chapter lead-in target).
+                score -= 60
+            # Penalize last sentence (might be chapter lead).
             if idx == len(sents) - 1:
                 score -= 30
             if best is None or score > best[0]:
