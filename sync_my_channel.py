@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.request import urlopen
 from urllib.error import HTTPError, URLError
 
-CHANNEL_ID = os.environ.get("MY_CHANNEL_ID", "UCjWpQlNWtRo_3zZtvyBsmdg")  # AI Andy Automation
+CHANNEL_ID = os.environ.get("MY_CHANNEL_ID", "UCn2RJFAA1ndipnVJsYAwWOw")  # AI Andy (@theaiandy)
 API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
 DB_PATH = os.environ.get("VIDEOS_DB_PATH", "/app/videos.db")
 
@@ -160,6 +160,83 @@ def upsert(rows):
     return inserted, updated
 
 
+def _normalize_title(t):
+    """Lowercase + strip non-alphanumeric for fuzzy title matching."""
+    return re.sub(r"[^a-z0-9]", "", (t or "").lower())[:80]
+
+
+def _first_n_words(t, n=5):
+    return " ".join(re.sub(r"[^a-z0-9\s]", "", (t or "").lower()).split()[:n])
+
+
+def _match_card_to_channel(card_title, channel_rows):
+    """Try several matching strategies, return the best my_channel_videos row or None.
+    Order: exact normalized → substring (either direction) → first-5-words match.
+    """
+    if not card_title:
+        return None
+    card_norm = _normalize_title(card_title)
+    card_words = _first_n_words(card_title, 5)
+
+    # 1. Exact normalized match
+    for r in channel_rows:
+        if _normalize_title(r["title"]) == card_norm:
+            return r
+
+    # 2. Substring match (one contains the other), prefer longer overlap
+    candidates = []
+    for r in channel_rows:
+        yt_norm = _normalize_title(r["title"])
+        if len(card_norm) >= 15 and (card_norm in yt_norm or yt_norm in card_norm):
+            overlap = min(len(card_norm), len(yt_norm))
+            candidates.append((overlap, r))
+    if candidates:
+        candidates.sort(reverse=True)
+        return candidates[0][1]
+
+    # 3. First-5-words match
+    if card_words and len(card_words) >= 12:
+        for r in channel_rows:
+            if _first_n_words(r["title"], 5) == card_words:
+                return r
+
+    return None
+
+
+def bridge_to_published_cards():
+    """Match rows in the `videos` table (Andy's published cards, channel='AI Andy')
+    to rows in my_channel_videos via fuzzy title matching, then copy real
+    view_count + published_at over. Makes the Published tab show actual current
+    YouTube view counts.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    channel_rows = conn.execute("SELECT * FROM my_channel_videos").fetchall()
+
+    matched = 0
+    unmatched_cards = []
+    for card in conn.execute(
+        "SELECT id, video_id, title FROM videos WHERE channel_title = 'AI Andy'"
+    ).fetchall():
+        hit = _match_card_to_channel(card["title"], channel_rows)
+        if hit:
+            conn.execute(
+                "UPDATE videos SET view_count = ?, published_at = ? WHERE id = ?",
+                (hit["view_count"], hit["published_at"], card["id"]),
+            )
+            matched += 1
+        else:
+            unmatched_cards.append(card["title"])
+
+    conn.commit()
+    conn.close()
+    print(f"  bridged {matched} published cards to real YouTube stats")
+    if unmatched_cards:
+        print(f"  {len(unmatched_cards)} cards unmatched (need manual link or title edit):")
+        for t in unmatched_cards[:15]:
+            print(f"    - {t}")
+
+
 def main():
     print(f"[{datetime.now(timezone.utc).isoformat()}] syncing channel {CHANNEL_ID}")
     playlist_id = get_uploads_playlist_id(CHANNEL_ID)
@@ -170,6 +247,7 @@ def main():
     print(f"  fetched details for {len(details)}")
     inserted, updated = upsert(details)
     print(f"  inserted {inserted}, updated {updated}")
+    bridge_to_published_cards()
     return 0
 
 

@@ -4661,7 +4661,7 @@ def compute_visuals_blocks(vid):
 # Each tag stores: {id, char_start, char_end, type, asset_id?, label?, color?}.
 # ---------------------------------------------------------------------------
 
-_VISUAL_TAG_TYPES = {"diagram", "avatar", "text_anim", "screen"}
+_VISUAL_TAG_TYPES = {"diagram", "avatar", "text_anim", "screen", "chapters"}
 
 
 def _sanitize_visual_tags(raw):
@@ -4725,15 +4725,65 @@ def save_visual_tags(vid):
     return jsonify({"ok": True, "tags": tags})
 
 
+_SCREEN_PHRASE_RE = re.compile(
+    r"\b(let me show|i'?ll show|here'?s what|here is what|watch (?:this|me|how)|"
+    r"you'?ll see|you can see|i'?ll demonstrate|let me demo|"
+    r"on (?:my |the )?screen|in (?:my |the )?(?:browser|terminal)|"
+    r"click (?:on |the )|type (?:in|into)|open (?:up )?(?:my |the )?)",
+    re.IGNORECASE,
+)
+
+
+def _sentence_spans(cleaned, seg):
+    """Return list of (char_start, char_end) for each sentence inside `seg`,
+    in coords of the cleaned vocal_doc. Uses simple `.!?` splitting which is
+    good enough for narration."""
+    cs0 = int(seg["char_start"])
+    ce0 = int(seg["char_end"])
+    body = cleaned[cs0:ce0]
+    out = []
+    i = 0
+    n = len(body)
+    while i < n:
+        while i < n and body[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        start = i
+        # Walk forward to next sentence terminator (with min length so
+        # initialisms like "I." don't split prematurely).
+        j = i + 8
+        while j < n and body[j] not in ".!?":
+            j += 1
+        if j < n:
+            j += 1  # include punctuation
+        end = min(n, j)
+        if end <= start:
+            break
+        out.append((cs0 + start, cs0 + end))
+        i = end
+    return out
+
+
 @app.route("/api/videos/<int:vid>/visual-tags/auto-suggest", methods=["POST"])
 def auto_suggest_visual_tags(vid):
-    """Suggest diagram tags by mapping each diagram to its step segment in the
-    cleaned vocal_doc and tagging the first sentence of that step. Saves the
-    merged result and returns the new tag list.
+    """Generate a sprinkled mix of diagram + avatar + text_anim + screen tags.
 
-    Body: {replace: bool=true}  // when true, drop prior diagram tags before
-    merging the suggestions in. Manual avatar/screen/text_anim tags are
-    preserved unless they overlap a suggestion (in which case suggestion wins).
+    Rules:
+      - Diagrams: only RENDERED diagrams (skips not-rendered). Each lands on
+        one sentence; first sentence of the step matched by `Step N` /
+        `Diagram N` in the name, or position+1 as fallback. Extras (more
+        diagrams than steps) land at later sentences of the same step.
+      - Avatar: maximum ONE sentence per step (Andy's "salt" rule), preferring
+        a mid-step sentence that's not already tagged.
+      - Screen: any sentence containing a screen-recording trigger phrase
+        ("let me show", "watch this", "click on", "type into", etc).
+      - Text_anim: up to N sentences sprinkled in remaining un-tagged spots
+        across the doc (default ~3 + 1 per 4 steps).
+      - All other text stays untagged.
+
+    Body: {replace: bool=true}  // replace prior auto-tag types (diagram,
+    avatar, screen, text_anim). Manual `chapters` tags are preserved.
     """
     body = request.get_json(force=True, silent=True) or {}
     replace = bool(body.get("replace", True))
@@ -4757,78 +4807,97 @@ def auto_suggest_visual_tags(vid):
     if not cleaned:
         return jsonify({"error": "vocal_doc has no spoken text"}), 400
 
+    # Drop INTRO if it sits before any real step segment with body — most
+    # narrations open straight into Step 1 with no separate hook.
+    real_segs = [s for s in doc_segments if (s.get("char_end") or 0) > s["char_start"]]
+
     def _ord(s):
         m = re.search(r"(?:step|diagram)\s*(\d+)", s or "", re.IGNORECASE)
         return int(m.group(1)) if m else None
-    step_segs = {}
-    for s in doc_segments:
+
+    step_segs_by_num = {}
+    for s in real_segs:
         n = _ord(s.get("name") or "")
-        if n is not None and n not in step_segs:
-            step_segs[n] = s
+        if n is not None and n not in step_segs_by_num:
+            step_segs_by_num[n] = s
 
-    def _first_sentence_span(seg):
-        cs = int(seg["char_start"])
-        ce = int(seg["char_end"])
-        body_text = cleaned[cs:ce]
-        i = 0
-        while i < len(body_text) and body_text[i].isspace():
-            i += 1
-        if i >= len(body_text):
-            return None
-        m = re.search(r"[.!?]", body_text[i + 8:]) if len(body_text) > i + 8 else None
-        if m:
-            end = i + 8 + m.end()
-        else:
-            end = min(len(body_text), i + 120)
-        return (cs + i, cs + end)
+    # All sentences in the doc, grouped by which segment they fall in.
+    seg_sentences = []  # list[(seg, [(cs, ce), ...])]
+    for s in real_segs:
+        sents = _sentence_spans(cleaned, s)
+        seg_sentences.append((s, sents))
 
-    used_steps = set()
+    # Track which (char_start, char_end) ranges are already claimed.
+    claimed = []
+    def claim(cs, ce):
+        claimed.append((cs, ce))
+    def overlaps_claimed(cs, ce):
+        return any(cs < e and ce > s for (s, e) in claimed)
+
     suggested = []
     skipped = []
+    used_steps_for_diagram = {}  # step_num → count of diagrams placed in this step
+
+    # 1) Diagrams (rendered only). One per step preferred; extras get later
+    #    sentences of the same step.
+    rendered_diagrams = [r for r in drows if r["result_url"]]
     for r in drows:
+        if not r["result_url"]:
+            skipped.append({
+                "diagram_id": r["id"],
+                "name": r["name"],
+                "reason": "not rendered — skipped",
+            })
+
+    for r in rendered_diagrams:
         name = r["name"] or ""
         step_n = _ord(name)
         if step_n is None:
             step_n = (r["position"] or 0) + 1
-            implicit = True
-        else:
-            implicit = False
-        if step_n in used_steps:
-            skipped.append({
-                "diagram_id": r["id"],
-                "name": name,
-                "reason": f"step {step_n} already claimed by an earlier diagram",
-            })
-            continue
-        seg = step_segs.get(step_n)
+        seg = step_segs_by_num.get(step_n)
+        if seg is None:
+            # Fall back to any segment by position rank.
+            rank = (r["position"] or 0)
+            if rank < len(real_segs):
+                seg = real_segs[rank]
         if seg is None:
             skipped.append({
                 "diagram_id": r["id"],
                 "name": name,
-                "reason": (
-                    f"no segment for step {step_n} in vocal_doc"
-                    if not implicit
-                    else f"no step number in name; position-fallback step {step_n} not found"
-                ),
+                "reason": "no segment to place it in",
             })
             continue
-        if not r["result_url"]:
+        sents = _sentence_spans(cleaned, seg)
+        if not sents:
             skipped.append({
                 "diagram_id": r["id"],
                 "name": name,
-                "reason": "not rendered yet",
+                "reason": "step has no body text",
             })
             continue
-        span = _first_sentence_span(seg)
-        if not span:
-            skipped.append({
-                "diagram_id": r["id"],
-                "name": name,
-                "reason": "step segment has no body text",
-            })
-            continue
-        used_steps.add(step_n)
-        cs, ce = span
+        # Pick first available sentence within this step.
+        target_idx = used_steps_for_diagram.get(id(seg), 0)
+        if target_idx >= len(sents):
+            # No more sentences in this step — put it back at the last sentence.
+            target_idx = len(sents) - 1
+        cs, ce = sents[target_idx]
+        if overlaps_claimed(cs, ce):
+            # Find next free sentence.
+            placed = False
+            for s2 in sents[target_idx + 1:]:
+                if not overlaps_claimed(*s2):
+                    cs, ce = s2
+                    placed = True
+                    break
+            if not placed:
+                skipped.append({
+                    "diagram_id": r["id"],
+                    "name": name,
+                    "reason": "step's sentences all claimed",
+                })
+                continue
+        used_steps_for_diagram[id(seg)] = target_idx + 1
+        claim(cs, ce)
         suggested.append({
             "id": "vt" + uuid.uuid4().hex[:12],
             "char_start": cs,
@@ -4838,25 +4907,99 @@ def auto_suggest_visual_tags(vid):
             "label": name,
         })
 
+    # 2) Screen tags from trigger phrases — any sentence containing one.
+    for seg, sents in seg_sentences:
+        for (cs, ce) in sents:
+            if overlaps_claimed(cs, ce):
+                continue
+            sentence_text = cleaned[cs:ce]
+            if _SCREEN_PHRASE_RE.search(sentence_text):
+                claim(cs, ce)
+                suggested.append({
+                    "id": "vt" + uuid.uuid4().hex[:12],
+                    "char_start": cs,
+                    "char_end": ce,
+                    "type": "screen",
+                    "label": None,
+                })
+
+    # 3) Avatar sprinkle — at most ONE per step. Picks a mid-step sentence
+    #    that isn't already claimed.
+    for seg, sents in seg_sentences:
+        if not sents:
+            continue
+        # Try mid-step first, then walk outwards.
+        mid = len(sents) // 2
+        order = [mid]
+        for off in range(1, len(sents)):
+            if mid + off < len(sents):
+                order.append(mid + off)
+            if mid - off >= 0:
+                order.append(mid - off)
+        placed = False
+        for idx in order:
+            cs, ce = sents[idx]
+            # Skip very short sentences (probably "And.", "Yes.", etc).
+            if (ce - cs) < 18:
+                continue
+            if overlaps_claimed(cs, ce):
+                continue
+            claim(cs, ce)
+            suggested.append({
+                "id": "vt" + uuid.uuid4().hex[:12],
+                "char_start": cs,
+                "char_end": ce,
+                "type": "avatar",
+                "label": None,
+            })
+            placed = True
+            break
+        if not placed:
+            continue
+
+    # 4) Text-anim sprinkle: a few sentences scattered across all-doc sentences
+    #    that haven't been claimed. Cap at ~3 + 1 per 4 steps.
+    all_sentences = [s for (_seg, sents) in seg_sentences for s in sents]
+    text_anim_cap = 3 + max(0, len(real_segs) // 4)
+    # Pick every Nth sentence to spread them out.
+    if all_sentences:
+        unclaimed = [s for s in all_sentences if not overlaps_claimed(*s)]
+        if unclaimed and text_anim_cap > 0:
+            stride = max(1, len(unclaimed) // text_anim_cap)
+            picks = unclaimed[::stride][:text_anim_cap]
+            for (cs, ce) in picks:
+                if overlaps_claimed(cs, ce):
+                    continue
+                # skip ultra-short
+                if (ce - cs) < 20:
+                    continue
+                claim(cs, ce)
+                suggested.append({
+                    "id": "vt" + uuid.uuid4().hex[:12],
+                    "char_start": cs,
+                    "char_end": ce,
+                    "type": "text_anim",
+                    "label": None,
+                })
+
+    # Merge with existing tags. Preserve manual `chapters` tags entirely;
+    # drop the other auto types if replace=true.
     try:
         existing = json.loads(vrow["visual_tags"]) if vrow["visual_tags"] else []
     except (TypeError, ValueError):
         existing = []
     if not isinstance(existing, list):
         existing = []
+    auto_types = {"diagram", "avatar", "screen", "text_anim"}
     if replace:
-        existing = [t for t in existing if t.get("type") != "diagram"]
-    def _overlaps(a, b):
-        return a["char_start"] < b["char_end"] and a["char_end"] > b["char_start"]
-    keep = []
-    for t in existing:
+        existing = [t for t in existing if t.get("type") not in auto_types]
+
+    def _overlaps_tag(a, b):
         try:
-            tt = {"char_start": int(t["char_start"]), "char_end": int(t["char_end"])}
+            return int(a["char_start"]) < int(b["char_end"]) and int(a["char_end"]) > int(b["char_start"])
         except (TypeError, ValueError, KeyError):
-            continue
-        if any(_overlaps(tt, s) for s in suggested):
-            continue
-        keep.append(t)
+            return False
+    keep = [t for t in existing if not any(_overlaps_tag(t, s) for s in suggested)]
 
     merged = _sanitize_visual_tags(keep + suggested)
 
@@ -4868,9 +5011,13 @@ def auto_suggest_visual_tags(vid):
     conn.commit()
     conn.close()
 
+    counts = {}
+    for t in suggested:
+        counts[t["type"]] = counts.get(t["type"], 0) + 1
     return jsonify({
         "tags": merged,
         "suggested_count": len(suggested),
+        "counts": counts,
         "skipped": skipped,
     })
 
