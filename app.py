@@ -1900,9 +1900,11 @@ Tool-launch videos produce ~5x bigger paying cohorts than tips videos. Default p
     field_specs = """
 You will return a JSON object with these exact keys. Each value is plain text (no markdown, no quotes inside unless needed for natural prose). Be specific, opinionated, and concise — these are decisions Andy will review, not menus of options.
 
-1. "inspiration_plot" — 3-5 sentence summary of what the inspiration video ACTUALLY covers (the plot/narrative). Andy should be able to absorb the source video's gist in 15 seconds without watching it. Include the central thesis, the main framework/rules/steps the creator introduces (NAME them explicitly — "Rule #1: X, Rule #2: Y…"), the tools or examples they show, and the closing payoff. Use the YouTube description's timestamps/chapter list as your structural guide if present. Be concrete, not vague. NEVER say "discusses prompt engineering best practices" — say "extracts 4 rules: (1) Prompt Skills not Claude, (2) Skills are more than prompts, (3) Build composable skills, (4) Skills get smarter every session."
+**VOICE — applies to every field:** Write in **second-person imperative**, addressing Andy directly. "First, open Anthropic's Skills docs. Then switch to AgentFlow…" NEVER write "Andy will open…" / "Andy opens…" / "Anders integrates…" — that third-person reporter voice reads cold. The brief is Andy talking to Andy. Where it adds finesse, use **but/so storytelling** to give a narrative beat (e.g. "You could just transcribe the source, but that's a re-upload — so instead you apply it to your skills/ folder where 37 SOPs already exist"). Tight, direct, conversational. Cut anything that sounds like a press release.
 
-2. "screen_share_todo" — Short flowing PARAGRAPH (not a numbered list) of 3-7 steps describing what Andy will literally DO on camera when filming. ~100-150 words. Sequential: "First Andy opens X, then he shows Y, then he switches to Z…" Anchor every step to a real app/file/URL — "opens Anthropic's Skills docs in Chrome" not "shows the source." MUST include AgentFlow as the workspace at some point (workspace invariant). Mention the Skool gift reveal moment.
+1. "inspiration_plot" — 3-5 sentence summary of what the inspiration video ACTUALLY covers (the plot/narrative). You should absorb the source video's gist in 15 seconds without watching it. Include the central thesis, the main framework/rules/steps the creator introduces (NAME them explicitly — "Rule #1: X, Rule #2: Y…"), the tools or examples they show, and the closing payoff. Use the YouTube description's timestamps/chapter list as a structural guide if present. Be concrete, not vague. NEVER say "discusses prompt engineering best practices" — say "extracts 4 rules: (1) Prompt Skills not Claude, (2) Skills are more than prompts, (3) Build composable skills, (4) Skills get smarter every session." (Voice exception: this field describes the source video, so it can be in third-person referring to the inspiration creator — but don't refer to Andy as "Andy.")
+
+2. "screen_share_todo" — Short flowing PARAGRAPH (not a numbered list) of 3-7 steps in **second-person imperative**. ~100-150 words. "First, open Anthropic's Skills docs in Chrome. Then switch to AgentFlow and pull up your skills/CONTENT_DOC_PROCESS_SOP.md. Show how Rule #1 maps to…" Anchor every step to a real app/file/URL — "open Anthropic's Skills docs in Chrome" not "show the source." MUST include AgentFlow as the workspace at some point (workspace invariant). Mention the Skool gift reveal moment. Use but/so beats for storytelling where it fits.
 
 **CRITICAL — proof-segment rule (locked 2026-05-19):** This paragraph MUST end with a **demonstrable end-result** voiceover can point to and say "look, it works." Acceptable end-results: built thing running on real input / item installed + tested working in real environment / test outcome on real input (not toy data) / side-by-side comparison rendered / finished tutorial workflow on a real artifact. If you cannot name the demonstrable end-result, write "PROOF SEGMENT MISSING" at the end of the paragraph — the brief fails the gate. React-only setups DO NOT QUALIFY — they need a build/test tail.
 
@@ -1914,23 +1916,23 @@ This is the glanceable preview only, NOT the deep scene plan (that lives in the 
 
 4. "frame" — One of: "react" / "breakdown" / "apply" / "contradict". Default to "breakdown" with source-on-stage YES unless the topic clearly demands a different frame. Include "source-on-stage: yes" or "source-on-stage: no" at the end.
 
-5. "differentiator" — ONE LINE on how Andy' angle is meaningfully different from the inspiration video. Must reference a concrete asset Andy has that the inspiration creator doesn't — his production skills/ folder (37 SOPs), AgentFlow workspace, the AI Mate community, his content pipeline. NEVER say "I'll do it better" — name the structural gap.
+5. "differentiator" — ONE LINE in **second-person**: how YOUR angle is meaningfully different from the inspiration video. Must reference a concrete asset you have that the inspiration creator doesn't — your production skills/ folder (37 SOPs), AgentFlow workspace, the AI Mate community, your content pipeline. NEVER say "I'll do it better" or "Andy will…" — name the structural gap directly. Example shape: "You have 37 production SOPs running your actual business; they have a slide deck."
 
-6. "my_angle" — One sentence on what Andy adds to the source's source (his application, his workspace, his lens).
+6. "my_angle" — One sentence in **second-person**: what YOU add to the source's source (your application, your workspace, your lens). E.g. "You run Anthropic's Skills rules against your actual production folder, not toy examples."
 
-7. "skool_gift" — A concrete fork-able artifact tied to the topic. Examples: "Skills Starter Pack — 5 of Andy' production SOPs packaged for fork" / "Eval Criteria Template (12 binary)" / "Thumbnail Generator skill pack." Be specific; this is the Skool CTA.
+7. "skool_gift" — A concrete fork-able artifact tied to the topic. Phrase in **second-person**: "Drop your Skills Starter Pack — 5 production SOPs members can fork" / "Hand them the Eval Criteria Template (12 binary checks)" / "Ship your Thumbnail Generator skill pack." Be specific; this is the Skool CTA.
 
 8. "acd_lever" — "Attraction" / "Conversion" / "Delivery". Authority-anchored videos lean Attraction.
 
-9. "tool_tie_in" — Which Andy tool naturally showcases here. Default "AgentFlow" if any Claude Code workflow is shown (his workspace invariant). Otherwise CreatorGrowth / Content Mate / etc., or "none — pure tips video" (flag as a risk).
+9. "tool_tie_in" — Which of YOUR tools naturally showcases here. Default "AgentFlow" if any Claude Code workflow is shown (your workspace invariant). Otherwise CreatorGrowth / Content Mate / etc., or "none — pure tips video" (flag as a risk).
 
 10. "demand_check" — Cite the inspiration video itself as the demand proof (title + view count + days since publish if known). If you know of a sibling video that also crossed 10K, name it.
 
-11. "one_liner" — Single plain-English sentence that passes the cab test: "what is this video about?" Should name the source's source + Andy' angle.
+11. "one_liner" — Single plain-English sentence in **second-person** that passes the cab test: "what is this video about?" Names the source's source + your angle. E.g. "You take Anthropic's official Skills rules and run them against your real production folder so the audience can fork it."
 
-12. "filming_notes" — 2-4 short bullets for the content-doc stage: opening shot (which source is on screen), what NOT to do (don't name the inspiration creator), how each source-rule maps to a real skill in Andy's folder, where the Skool CTA lands.
+12. "filming_notes" — 2-4 short bullets for the content-doc stage, in **second-person imperative**: "Open with the Anthropic Skills doc, not the inspiration video." / "Don't name the inspiration creator on camera." / "Map each rule to a real skill in your skills/ folder." / "Drop the Skool CTA at the 50% mark and again at the end."
 
-13. "final_thoughts" — 3-5 sentence honest editorial verdict on this brief. NOT a re-summary of the fields above. Weigh: (a) authority hacking strength — is the source's source a real god-mode anchor? (b) audience overlap — does this duplicate a recent upload? (c) **PROOF-SEGMENT QUALITY** — does the screen_share_todo end with a real demonstrable end-result, or is it react-only / vague? Per the May 19 footage rule, react-only without a build/test tail is an automatic "Pause and rework." (d) channel format fit — does this match the winning vein in top performers? End with a one-line confidence call: "Ship it" / "Ship with caveat: …" / "Pause and rework: …" — be direct, not diplomatic.
+13. "final_thoughts" — 3-5 sentence honest editorial verdict in **second-person**, like a sharp friend reading the brief over your shoulder. NOT a re-summary of the fields above. Weigh: (a) authority hacking strength — is the source's source a real god-mode anchor? (b) audience overlap — does this duplicate a recent upload? (c) **PROOF-SEGMENT QUALITY** — does the screen_share_todo end with a real demonstrable end-result, or is it react-only / vague? Per the May 19 footage rule, react-only without a build/test tail is an automatic "Pause and rework." (d) channel format fit — does this match the winning vein in your top performers? Use but/so beats where useful ("The Anthropic anchor is strong, but your last upload was already a Claude Code skill demo — so the angle has to lean hard on production-scale vs Austin's slides"). End with a one-line confidence call: "Ship it" / "Ship with caveat: …" / "Pause and rework: …" — direct, not diplomatic.
 """
 
     user_prompt = f"""Inspiration video:
@@ -2080,6 +2082,8 @@ Rules you MUST encode:
 - "Pre-work" is hard-required — if a scene needs a file/tab/account, list it in the pre-production checklist.
 - One-line voice-over notes max per scene (the content doc handles the real script).
 - Be LITERAL — "scroll to line 42 of skills/PACKAGING_EXPERT_SOP.md" not "show the skills file."
+
+**VOICE — second-person imperative throughout.** Address Andy directly. "Open Chrome. Switch to AgentFlow. Click on the Skills tab." NEVER "Andy opens…" or "Anders switches…" — the to-do is Andy talking to Andy from the future.
 """
 
     field_specs = """
