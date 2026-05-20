@@ -4892,6 +4892,18 @@ def auto_suggest_visual_tags(vid):
         if n is not None and n not in step_segs_by_num:
             step_segs_by_num[n] = s
 
+    # Ordered list of "real step" segments — excludes HOOK/INTRO/OUTRO/etc.
+    # Lets us map `Diagram N` → the Nth real step even when segment names
+    # don't carry an explicit "Step N:" prefix.
+    _META_NAME_RE = re.compile(
+        r"^\s*(hook|intro|outro|cta|wrap|wrap\s*up|end|conclusion)\s*$",
+        re.IGNORECASE,
+    )
+    step_segs_in_order = [
+        s for s in real_segs
+        if not _META_NAME_RE.match(s.get("name") or "")
+    ]
+
     # All sentences in the doc, grouped by which segment they fall in.
     seg_sentences = []  # list[(seg, [(cs, ce), ...])]
     for s in real_segs:
@@ -4928,11 +4940,14 @@ def auto_suggest_visual_tags(vid):
         if step_n is None:
             step_n = (r["position"] or 0) + 1
         seg = step_segs_by_num.get(step_n)
+        # Fall back to step_segs_in_order which SKIPS HOOK/INTRO/etc, so
+        # `Diagram 1` lands at the first real step body even when segments
+        # are named "THE PROBLEM" / "THE SETUP" without an explicit "Step N:"
+        # prefix.
         if seg is None:
-            # Fall back to any segment by position rank.
-            rank = (r["position"] or 0)
-            if rank < len(real_segs):
-                seg = real_segs[rank]
+            idx = step_n - 1
+            if 0 <= idx < len(step_segs_in_order):
+                seg = step_segs_in_order[idx]
         if seg is None:
             skipped.append({
                 "diagram_id": r["id"],
@@ -5030,20 +5045,26 @@ def auto_suggest_visual_tags(vid):
         if not placed:
             continue
 
-    # 4) Text-anim sprinkle: fill most of the remaining sentences so the
-    #    timeline isn't mostly bare. Picks every other unclaimed sentence —
-    #    leaves ~half plain for the talking head to breathe. Skips ultra-short.
-    all_sentences = [s for (_seg, sents) in seg_sentences for s in sents]
-    if all_sentences:
-        unclaimed = [s for s in all_sentences if not overlaps_claimed(*s)]
-        # Pick every other unclaimed sentence (stride 2). Caps at 40 to keep
-        # the timeline editable without flooding it.
-        picks = unclaimed[::2][:40]
-        for (cs, ce) in picks:
+    # 4) Text-anim sprinkle: punctuation/emphasis ONLY — a handful of
+    #    sentences with a strong feel ("...", em-dashes, exclamation, all-caps
+    #    words) get tagged for an animated text overlay. Cap at 8.
+    text_anim_cap = 8
+    text_anim_count = 0
+    _TEXT_ANIM_HINT_RE = re.compile(
+        r"(?:\.{3}|!|\b(?:never|always|literally|every single|nobody|nothing)\b|"
+        r"—\s*[A-Z]|\b[A-Z]{4,}\b)",
+    )
+    for (_seg, sents) in seg_sentences:
+        if text_anim_count >= text_anim_cap:
+            break
+        for (cs, ce) in sents:
+            if text_anim_count >= text_anim_cap:
+                break
             if overlaps_claimed(cs, ce):
                 continue
-            # skip ultra-short ("Yes.", "Right." etc.)
             if (ce - cs) < 20:
+                continue
+            if not _TEXT_ANIM_HINT_RE.search(cleaned[cs:ce]):
                 continue
             claim(cs, ce)
             suggested.append({
@@ -5051,6 +5072,25 @@ def auto_suggest_visual_tags(vid):
                 "char_start": cs,
                 "char_end": ce,
                 "type": "text_anim",
+                "label": None,
+            })
+            text_anim_count += 1
+
+    # 5) Screen as default — every remaining unclaimed sentence becomes a
+    #    screen tag. Screen is the baseline visual; talking head shows
+    #    underneath when no other tag is layered on top.
+    for (_seg, sents) in seg_sentences:
+        for (cs, ce) in sents:
+            if overlaps_claimed(cs, ce):
+                continue
+            if (ce - cs) < 12:
+                continue
+            claim(cs, ce)
+            suggested.append({
+                "id": "vt" + uuid.uuid4().hex[:12],
+                "char_start": cs,
+                "char_end": ce,
+                "type": "screen",
                 "label": None,
             })
 
