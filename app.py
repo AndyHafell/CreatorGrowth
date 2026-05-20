@@ -1803,7 +1803,7 @@ def _gemini_fill_brief(title, channel, views_fmt, outlier_fmt, video_id, descrip
 
     # Andy's project context — what the LLM needs to know to make good calls
     project_context = """
-You are filling a video brief for AI Andy (Anders Hafell) — a YouTube channel (@theaiandy, 214K subs) + Skool community ($97/mo "AI Mate") teaching creators to build AI automations without code. Anders ships tools: AgentFlow (native macOS productivity app, public launch May 2026), CreatorGrowth (creator dashboard), Content Mate (AI content factory), ScreenPost. He has a production `skills/` folder with 37 SOPs that Claude Code reads before any task — thumbnails, content docs, packaging, agent dispatch.
+You are filling a video brief for AI Andy (Andy Hafell) — a YouTube channel (@theaiandy, 214K subs) + Skool community ($97/mo "AI Mate") teaching creators to build AI automations without code. Andy ships tools: AgentFlow (native macOS productivity app, public launch May 2026), CreatorGrowth (creator dashboard), Content Mate (AI content factory), ScreenPost. He has a production `skills/` folder with 37 SOPs that Claude Code reads before any task — thumbnails, content docs, packaging, agent dispatch.
 
 His Q2 framework is ACD: Attraction (subs) / Conversion (free→paid) / Delivery (retention). North-star: $40K MRR by June. Current bottleneck: retention (64%).
 
@@ -1817,9 +1817,9 @@ Tool-launch videos produce ~5x bigger paying cohorts than tips videos. Default p
 """
 
     field_specs = """
-You will return a JSON object with these exact keys. Each value is plain text (no markdown, no quotes inside unless needed for natural prose). Be specific, opinionated, and concise — these are decisions Anders will review, not menus of options.
+You will return a JSON object with these exact keys. Each value is plain text (no markdown, no quotes inside unless needed for natural prose). Be specific, opinionated, and concise — these are decisions Andy will review, not menus of options.
 
-1. "inspiration_plot" — 3-5 sentence summary of what the inspiration video ACTUALLY covers (the plot/narrative). Anders should be able to absorb the source video's gist in 15 seconds without watching it. Include the central thesis, the main framework/rules/steps the creator introduces (NAME them explicitly — "Rule #1: X, Rule #2: Y…"), the tools or examples they show, and the closing payoff. Use the YouTube description's timestamps/chapter list as your structural guide if present. Be concrete, not vague. NEVER say "discusses prompt engineering best practices" — say "extracts 4 rules: (1) Prompt Skills not Claude, (2) Skills are more than prompts, (3) Build composable skills, (4) Skills get smarter every session."
+1. "inspiration_plot" — 3-5 sentence summary of what the inspiration video ACTUALLY covers (the plot/narrative). Andy should be able to absorb the source video's gist in 15 seconds without watching it. Include the central thesis, the main framework/rules/steps the creator introduces (NAME them explicitly — "Rule #1: X, Rule #2: Y…"), the tools or examples they show, and the closing payoff. Use the YouTube description's timestamps/chapter list as your structural guide if present. Be concrete, not vague. NEVER say "discusses prompt engineering best practices" — say "extracts 4 rules: (1) Prompt Skills not Claude, (2) Skills are more than prompts, (3) Build composable skills, (4) Skills get smarter every session."
 
 2. "sources_source" — The ORIGINAL tool / blog post / video / tweet the inspiration creator was citing. If the inspiration video's description has a direct link, use it. If not, NAME the most likely upstream source explicitly (e.g. "Anthropic's official Skills documentation + Oct 2025 launch blog"). Never say "unknown."
 
@@ -1827,21 +1827,23 @@ You will return a JSON object with these exact keys. Each value is plain text (n
 
 4. "frame" — One of: "react" / "breakdown" / "apply" / "contradict". Default to "breakdown" with source-on-stage YES unless the topic clearly demands a different frame. Include "source-on-stage: yes" or "source-on-stage: no" at the end.
 
-5. "differentiator" — ONE LINE on how Anders' angle is meaningfully different from the inspiration video. Must reference a concrete asset Anders has that the inspiration creator doesn't — his production skills/ folder (37 SOPs), AgentFlow workspace, the AI Mate community, his content pipeline. NEVER say "I'll do it better" — name the structural gap.
+5. "differentiator" — ONE LINE on how Andy' angle is meaningfully different from the inspiration video. Must reference a concrete asset Andy has that the inspiration creator doesn't — his production skills/ folder (37 SOPs), AgentFlow workspace, the AI Mate community, his content pipeline. NEVER say "I'll do it better" — name the structural gap.
 
-6. "my_angle" — One sentence on what Anders adds to the source's source (his application, his workspace, his lens).
+6. "my_angle" — One sentence on what Andy adds to the source's source (his application, his workspace, his lens).
 
-7. "skool_gift" — A concrete fork-able artifact tied to the topic. Examples: "Skills Starter Pack — 5 of Anders' production SOPs packaged for fork" / "Eval Criteria Template (12 binary)" / "Thumbnail Generator skill pack." Be specific; this is the Skool CTA.
+7. "skool_gift" — A concrete fork-able artifact tied to the topic. Examples: "Skills Starter Pack — 5 of Andy' production SOPs packaged for fork" / "Eval Criteria Template (12 binary)" / "Thumbnail Generator skill pack." Be specific; this is the Skool CTA.
 
 8. "acd_lever" — "Attraction" / "Conversion" / "Delivery". Authority-anchored videos lean Attraction.
 
-9. "tool_tie_in" — Which Anders tool naturally showcases here. Default "AgentFlow" if any Claude Code workflow is shown (his workspace invariant). Otherwise CreatorGrowth / Content Mate / etc., or "none — pure tips video" (flag as a risk).
+9. "tool_tie_in" — Which Andy tool naturally showcases here. Default "AgentFlow" if any Claude Code workflow is shown (his workspace invariant). Otherwise CreatorGrowth / Content Mate / etc., or "none — pure tips video" (flag as a risk).
 
 10. "demand_check" — Cite the inspiration video itself as the demand proof (title + view count + days since publish if known). If you know of a sibling video that also crossed 10K, name it.
 
-11. "one_liner" — Single plain-English sentence that passes the cab test: "what is this video about?" Should name the source's source + Anders' angle.
+11. "one_liner" — Single plain-English sentence that passes the cab test: "what is this video about?" Should name the source's source + Andy' angle.
 
-12. "filming_notes" — 2-4 short bullets for the content-doc stage: opening shot (which source is on screen), what NOT to do (don't name the inspiration creator), how each source-rule maps to a real skill in Anders' folder, where the Skool CTA lands.
+12. "filming_notes" — 2-4 short bullets for the content-doc stage: opening shot (which source is on screen), what NOT to do (don't name the inspiration creator), how each source-rule maps to a real skill in Andy's folder, where the Skool CTA lands.
+
+13. "final_thoughts" — 3-5 sentence honest editorial verdict on this brief. NOT a re-summary of the fields above. Answer: Is this idea genuinely worth Andy's time, or is it a "looks good on paper" idea? What's the biggest risk (e.g. inspiration video might be peaking, source's source might be too obscure, audience overlap concerns, redundancy with Andy's recent uploads)? What's the strongest reason to ship it? End with a one-line confidence call: "Ship it" / "Ship with caveat: …" / "Pause and rework: …" — be direct, not diplomatic.
 """
 
     user_prompt = f"""Inspiration video:
@@ -1930,6 +1932,7 @@ def create_brief(vid):
     demand_check       = _get("demand_check", f"{title} — {views_fmt} views ({channel})")
     one_liner          = _get("one_liner")
     filming_notes      = (filled or {}).get("filming_notes") if filled else None
+    final_thoughts     = (filled or {}).get("final_thoughts") if filled else None
 
     checkmark = "x" if auto_filled else " "
     score_line = "**10/10** → review the fills; correct anything off before promoting to content-doc-process." if auto_filled else "X/10"
@@ -1940,6 +1943,10 @@ def create_brief(vid):
             notes_section = "\n\n## Notes for content doc stage\n" + "\n".join(f"- {n}" for n in filming_notes)
         else:
             notes_section = f"\n\n## Notes for content doc stage\n{filming_notes}"
+
+    final_thoughts_section = ""
+    if final_thoughts:
+        final_thoughts_section = f"\n\n## Final thoughts\n{final_thoughts}"
 
     doc = f"""# BRIEF — {title.upper()}
 
@@ -1988,7 +1995,7 @@ Link: https://youtube.com/watch?v={video_id}
 - [{checkmark}] **Subscriber-pullable.** Subs click it in their feed — not pure YT Search bait.
 - [{checkmark}] **One-liner passes the cab test.**
 
-BRIEF CHECKLIST SCORE: {score_line}{notes_section}
+BRIEF CHECKLIST SCORE: {score_line}{notes_section}{final_thoughts_section}
 """
 
     briefs_subdir = CONTENT_DIR / "briefs"
