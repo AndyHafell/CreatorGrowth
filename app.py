@@ -306,6 +306,24 @@ def init_db():
         conn.execute("ALTER TABLE chapters ADD COLUMN reveal_style TEXT NOT NULL DEFAULT 'blur_fade'")
     except sqlite3.OperationalError:
         pass
+
+    # ── Andy's own channel — daily-refreshed mirror of YouTube data ──
+    # Used by the brief generator to feed past-performance context into Gemini.
+    # Refreshed by sync_my_channel.py (cron @ 6 AM daily).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS my_channel_videos (
+            video_id TEXT PRIMARY KEY,
+            title TEXT,
+            description TEXT,
+            published_at TEXT,
+            view_count INTEGER DEFAULT 0,
+            like_count INTEGER DEFAULT 0,
+            comment_count INTEGER DEFAULT 0,
+            duration_seconds INTEGER DEFAULT 0,
+            thumbnail_url TEXT,
+            refreshed_at TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -1793,6 +1811,69 @@ def _fetch_youtube_description(video_id):
         return ""
 
 
+def _format_my_channel_context():
+    """Pull Andy's last 5 published + top 5 all-time from my_channel_videos.
+    Returns a context string to inject into Gemini's system prompt so it can
+    flag audience overlap, redundancy, and bias toward winning formats.
+    Returns empty string if the table is empty (sync hasn't run yet).
+    """
+    try:
+        conn = get_db()
+        recent = conn.execute("""
+            SELECT title, view_count, published_at, duration_seconds
+            FROM my_channel_videos
+            WHERE published_at != ''
+            ORDER BY published_at DESC
+            LIMIT 5
+        """).fetchall()
+        top_performers = conn.execute("""
+            SELECT title, view_count, published_at
+            FROM my_channel_videos
+            WHERE published_at != ''
+            ORDER BY view_count DESC
+            LIMIT 5
+        """).fetchall()
+        conn.close()
+    except sqlite3.OperationalError:
+        return ""
+
+    if not recent:
+        return ""
+
+    def _fmt(row, include_age=False):
+        v = row["view_count"] or 0
+        v_str = f"{v/1000:.1f}K" if v >= 1000 else str(v)
+        line = f'  - "{row["title"]}" — {v_str} views'
+        if include_age and row["published_at"]:
+            try:
+                pub = datetime.fromisoformat(row["published_at"].replace("Z", "+00:00"))
+                days_ago = (datetime.now(timezone.utc) - pub).days
+                line += f" ({days_ago}d ago)"
+            except (ValueError, AttributeError):
+                pass
+        return line
+
+    recent_block = "\n".join(_fmt(r, include_age=True) for r in recent)
+    top_block = "\n".join(_fmt(r) for r in top_performers)
+
+    return f"""
+
+ANDY'S CHANNEL DATA (synced from YouTube Data API — refreshed daily):
+
+Last 5 published videos:
+{recent_block}
+
+Top 5 all-time performers (this channel's ceiling):
+{top_block}
+
+USE THIS DATA when evaluating the brief:
+- AUDIENCE OVERLAP CHECK: if the new idea is too similar to a video published in the last 3 weeks, flag it as redundancy risk in "final_thoughts."
+- FORMAT BIAS: if the top performers cluster around a specific format/anchor (Karpathy-style authority hacking, tool launches, named-creator breakdowns), bias toward continuing that pattern. Name the pattern in "final_thoughts" if relevant.
+- VELOCITY CHECK: a recent video with much higher views than older ones signals a winning vein worth doubling down on.
+- IF the new brief is clearly a duplicate-angle of a recent upload, the verdict should be "Pause and rework: …" not "Ship it."
+"""
+
+
 def _gemini_fill_brief(title, channel, views_fmt, outlier_fmt, video_id, description):
     """Call Gemini to fill a structured brief. Returns a dict with all 11 brief fields, or None on failure."""
     from urllib.request import urlopen, Request
@@ -1814,7 +1895,7 @@ His on-camera workspace invariant: every Claude Code demo runs inside AgentFlow 
 Skool gift rule: every video closes with a fork-able artifact (template, skills pack, repo, workflow) — not a demo, a real product the audience can grab.
 
 Tool-launch videos produce ~5x bigger paying cohorts than tips videos. Default preference: tool-launch frame with AgentFlow tie-in.
-"""
+""" + _format_my_channel_context()
 
     field_specs = """
 You will return a JSON object with these exact keys. Each value is plain text (no markdown, no quotes inside unless needed for natural prose). Be specific, opinionated, and concise — these are decisions Andy will review, not menus of options.
