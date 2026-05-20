@@ -2319,7 +2319,7 @@ def create_screen_share_todo(vid):
 
     doc = f"""# SCREEN SHARE TO-DO — {title.upper()}
 
-> Tactical filming prep. {"Auto-filled by Gemini from the brief." if auto_filled else "Fill every field before sitting down to film."}
+> Tactical filming prep. {"Auto-filled from the current brief on disk (re-read every regenerate, so updating the brief and regenerating this picks up the new content)." if auto_filled else "Fill every field before sitting down to film."}
 > Pre-production checklist must be 100% done before scene 1.
 
 ---
@@ -2444,7 +2444,7 @@ def create_brief(vid):
 
     doc = f"""# BRIEF — {title.upper()}
 
-> Idea-validation gate. {"Auto-filled by Gemini from the inspiration video's description + project context — review and correct anything off." if auto_filled else "Fill every field. Score the checklist honestly."}
+> Idea-validation gate. {"Auto-filled by Claude Sonnet 4.6 from the inspiration video's description + your channel data — review and correct anything off." if auto_filled else "Fill every field. Score the checklist honestly."}
 > If <7/10, kill or rewrite the idea — don't promote to a content doc.
 
 ---
