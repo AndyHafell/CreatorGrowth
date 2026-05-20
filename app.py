@@ -4726,10 +4726,17 @@ def save_visual_tags(vid):
 
 
 _SCREEN_PHRASE_RE = re.compile(
-    r"\b(let me show|i'?ll show|here'?s what|here is what|watch (?:this|me|how)|"
-    r"you'?ll see|you can see|i'?ll demonstrate|let me demo|"
-    r"on (?:my |the )?screen|in (?:my |the )?(?:browser|terminal)|"
-    r"click (?:on |the )|type (?:in|into)|open (?:up )?(?:my |the )?)",
+    r"\b("
+    r"let me show you|"
+    r"i'?ll show you|"
+    r"here'?s what (?:it|this|that) looks like|"
+    r"watch this(?: clip| video)?|"
+    r"i'?ll demonstrate|"
+    r"on my screen|"
+    r"in my (?:browser|terminal|editor)|"
+    r"on the screen here|"
+    r"check this out"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -4957,22 +4964,21 @@ def auto_suggest_visual_tags(vid):
         if not placed:
             continue
 
-    # 4) Text-anim sprinkle: a few sentences scattered across all-doc sentences
-    #    that haven't been claimed. Cap at ~3 + 1 per 4 steps.
+    # 4) Text-anim sprinkle: fill most of the remaining sentences so the
+    #    timeline isn't mostly bare. Picks every other unclaimed sentence —
+    #    leaves ~half plain for the talking head to breathe. Skips ultra-short.
     all_sentences = [s for (_seg, sents) in seg_sentences for s in sents]
-    text_anim_cap = 3 + max(0, len(real_segs) // 4)
-    # Pick every Nth sentence to spread them out.
     if all_sentences:
         unclaimed = [s for s in all_sentences if not overlaps_claimed(*s)]
-        if unclaimed and text_anim_cap > 0:
-            stride = max(1, len(unclaimed) // text_anim_cap)
-            picks = unclaimed[::stride][:text_anim_cap]
-            for (cs, ce) in picks:
-                if overlaps_claimed(cs, ce):
-                    continue
-                # skip ultra-short
-                if (ce - cs) < 20:
-                    continue
+        # Pick every other unclaimed sentence (stride 2). Caps at 40 to keep
+        # the timeline editable without flooding it.
+        picks = unclaimed[::2][:40]
+        for (cs, ce) in picks:
+            if overlaps_claimed(cs, ce):
+                continue
+            # skip ultra-short ("Yes.", "Right." etc.)
+            if (ce - cs) < 20:
+                continue
                 claim(cs, ce)
                 suggested.append({
                     "id": "vt" + uuid.uuid4().hex[:12],

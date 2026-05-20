@@ -203,34 +203,65 @@ def _match_card_to_channel(card_title, channel_rows):
     return None
 
 
+def _get_stored_yt_id(conn, card_id):
+    """Read the YouTube Video ID stored in a card's custom_fields, if any."""
+    row = conn.execute(
+        "SELECT custom_fields FROM video_details WHERE video_id = ?",
+        (card_id,),
+    ).fetchone()
+    if not row or not row["custom_fields"]:
+        return None
+    try:
+        for f in json.loads(row["custom_fields"]):
+            if f.get("key") == "YouTube Video ID" and f.get("value"):
+                return f["value"]
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
+
+
 def bridge_to_published_cards():
-    """Match rows in the `videos` table (Andy's published cards, channel='AI Andy')
-    to rows in my_channel_videos via fuzzy title matching, then copy real
-    view_count + published_at over. Makes the Published tab show actual current
-    YouTube view counts.
+    """Update Andy's Published-tab cards (channel='AI Andy') with current view_count
+    + published_at from my_channel_videos. Two-tier match:
+      1. Stored YouTube Video ID in custom_fields (set by llm_link_published_cards.py)
+      2. Fuzzy title match as fallback
     """
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     channel_rows = conn.execute("SELECT * FROM my_channel_videos").fetchall()
+    yt_by_id = {r["video_id"]: r for r in channel_rows}
 
-    matched = 0
+    matched_via_id = 0
+    matched_via_fuzzy = 0
     unmatched_cards = []
     for card in conn.execute(
         "SELECT id, video_id, title FROM videos WHERE channel_title = 'AI Andy'"
     ).fetchall():
+        # Tier 1: stored YouTube ID
+        stored_id = _get_stored_yt_id(conn, card["id"])
+        hit = yt_by_id.get(stored_id) if stored_id else None
+        if hit:
+            conn.execute(
+                "UPDATE videos SET view_count = ?, published_at = ? WHERE id = ?",
+                (hit["view_count"], hit["published_at"], card["id"]),
+            )
+            matched_via_id += 1
+            continue
+        # Tier 2: fuzzy title match
         hit = _match_card_to_channel(card["title"], channel_rows)
         if hit:
             conn.execute(
                 "UPDATE videos SET view_count = ?, published_at = ? WHERE id = ?",
                 (hit["view_count"], hit["published_at"], card["id"]),
             )
-            matched += 1
+            matched_via_fuzzy += 1
         else:
             unmatched_cards.append(card["title"])
+    matched = matched_via_id + matched_via_fuzzy
 
     conn.commit()
     conn.close()
-    print(f"  bridged {matched} published cards to real YouTube stats")
+    print(f"  bridged {matched} published cards to real YouTube stats ({matched_via_id} via stored YT ID, {matched_via_fuzzy} via fuzzy match)")
     if unmatched_cards:
         print(f"  {len(unmatched_cards)} cards unmatched (need manual link or title edit):")
         for t in unmatched_cards[:15]:
