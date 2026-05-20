@@ -1904,31 +1904,32 @@ You will return a JSON object with these exact keys. Each value is plain text (n
 
 1. "inspiration_plot" — 3-5 sentence summary of what the inspiration video ACTUALLY covers (the plot/narrative). You should absorb the source video's gist in 15 seconds without watching it. Include the central thesis, the main framework/rules/steps the creator introduces (NAME them explicitly — "Rule #1: X, Rule #2: Y…"), the tools or examples they show, and the closing payoff. Use the YouTube description's timestamps/chapter list as a structural guide if present. Be concrete, not vague. NEVER say "discusses prompt engineering best practices" — say "extracts 4 rules: (1) Prompt Skills not Claude, (2) Skills are more than prompts, (3) Build composable skills, (4) Skills get smarter every session." (Voice exception: this field describes the source video, so it can be in third-person referring to the inspiration creator — but don't refer to Andy as "Andy.")
 
-2. "screen_share_todo" — **A JSON array of step strings** (NOT a paragraph, NOT a single string). 5-10 ordered concrete steps in **second-person imperative**, written like a game checklist you tick off live during filming. Each step:
-   - **Doable from a clean zero state.** Assume the laptop just opened — no tabs queued, no files generated, no scripts pre-installed. If step 6 needs an image, step 2 generates it. If step 8 needs a file on disk, step 3 creates/downloads it. NEVER skip the "make the thing exist" prerequisite.
-   - **One single concrete action.** "Open Chrome and navigate to docs.claude.com/en/docs/claude-code/skills" — NOT "show how skills work."
-   - **Anchored to a real app, URL, file path, click, or keystroke.** No magic steps like "use your generated image."
-   - **Sequential.** Step N+1 builds on step N's state.
+2. "screen_share_todo" — **A JSON array of 3-7 step strings** (sweet spot is 5). Each item is a **high-level milestone**, written in second-person imperative, that chains its concrete micro-actions inline. This is the brief's outline; the deeper atomic breakdown happens in the separate Screen Share To-Do doc.
 
-Example shape (just the structure — generate steps relevant to the actual brief):
+   Each step must be:
+   - **A clear milestone, not a creative leap.** GOOD: "Open Chrome, go to spline.design, sign in, create a new project, and pick the 3D website template." BAD: "Remix a simple 3D object" — that leaves Andy lost on what to remix and how to start.
+   - **Doable from the prior step's state.** If step 4 needs a file, step 2 created it. No magic ("use your generated image") allowed.
+   - **Anchored to real apps, URLs, file paths, button names.** Not "show the source" — "Open Chrome and navigate to docs.claude.com/en/docs/claude-code/skills."
+   - **Sequential.** Step N+1 builds on step N's state. Zero to end-result.
+
+   3-7 milestones total. Sweet spot is 5. Don't pad with sub-actions — those belong in the Screen Share To-Do doc.
+
+Example shape (generate steps relevant to the actual brief):
 ```
 [
-  "Open Chrome and navigate to docs.claude.com/en/docs/claude-code/skills",
-  "Read the 4 Skills rules aloud and screenshot the section",
-  "Switch to AgentFlow, open the Docs tab, navigate to ~/Documents/Claude Folder/skills/",
-  "Open CONTENT_DOC_PROCESS_SOP.md and scroll to the Process section",
-  "Show how Rule #1 from Anthropic maps to Step 3 of your SOP",
-  "Open Finder, create ~/Desktop/skills-starter-pack/, copy 5 SOPs into it",
-  "Zip the folder; drag the .zip into a new Skool classroom post draft to reveal the gift",
-  "Back in AgentFlow, run /test-skill on the new starter pack and show the green output in the terminal"
+  "Open Chrome, navigate to docs.claude.com/en/docs/claude-code/skills, and screenshot the 4 Skills rules section.",
+  "Switch to AgentFlow's Docs tab, open ~/Documents/Claude Folder/skills/CONTENT_DOC_PROCESS_SOP.md, and scroll to the Process section.",
+  "Walk through how each Anthropic rule maps to a real SOP in your skills/ folder — point at concrete lines on screen.",
+  "In Finder, create ~/Desktop/skills-starter-pack/, copy 5 SOPs into it, zip the folder.",
+  "Drag the .zip into a new Skool classroom post draft as the Skool gift, then run /test-skill on the pack in AgentFlow's terminal and show the green output."
 ]
 ```
 
 MUST include AgentFlow as the workspace at some point (workspace invariant). MUST include the Skool gift reveal moment.
 
-**CRITICAL — proof-segment rule (locked 2026-05-19):** The FINAL step (or one of the last two) MUST be a **demonstrable end-result** voiceover can point to and say "look, it works." Acceptable: built thing running on real input / item installed + tested working in real environment / test outcome on real input / side-by-side comparison rendered / finished tutorial workflow on a real artifact. If you cannot name a demonstrable end-result step, include "PROOF SEGMENT MISSING" as the final step — the brief fails the gate. React-only setups DO NOT QUALIFY — they need a build/test tail.
+**CRITICAL — proof-segment rule (locked 2026-05-19):** The FINAL step MUST be a **demonstrable end-result** voiceover can point to and say "look, it works." Acceptable: built thing running on real input / item installed + tested working in real environment / test outcome on real input / side-by-side comparison rendered / finished tutorial workflow on a real artifact. If you cannot name a demonstrable end-result step, include "PROOF SEGMENT MISSING" as the final step — the brief fails the gate. React-only setups DO NOT QUALIFY — they need a build/test tail.
 
-This array is the glanceable preview only, NOT the deep scene plan (that lives in the separate Screen Share To-Do doc).
+This array is the glanceable brief outline only, NOT the deep scene plan (that lives in the separate Screen Share To-Do doc, where each milestone here becomes its own multi-action scene).
 
 3. "sources_source" — The ORIGINAL tool / blog post / video / tweet the inspiration creator was citing. If the inspiration video's description has a direct link, use it. If not, NAME the most likely upstream source explicitly (e.g. "Anthropic's official Skills documentation + Oct 2025 launch blog"). Never say "unknown."
 
@@ -2317,11 +2318,11 @@ def create_brief(vid):
 
     inspiration_plot   = _get("inspiration_plot")
 
-    # screen_share_todo is now expected as a list (zero-to-end checklist).
-    # Render as a markdown checkbox list. Fall back gracefully if Gemini returns a string.
+    # screen_share_todo is expected as a 3-7 milestone list (brief outline).
+    # Render as a numbered list. Fall back gracefully if Gemini returns a string.
     sst_raw = (filled or {}).get("screen_share_todo") if filled else None
     if isinstance(sst_raw, list) and sst_raw:
-        screen_share_todo = "\n" + "\n".join(f"- [ ] {step}" for step in sst_raw if str(step).strip())
+        screen_share_todo = "\n" + "\n".join(f"{i}. {step}" for i, step in enumerate((s for s in sst_raw if str(s).strip()), start=1))
     elif isinstance(sst_raw, str) and sst_raw.strip():
         # Legacy paragraph fallback — preserve as-is
         screen_share_todo = sst_raw
