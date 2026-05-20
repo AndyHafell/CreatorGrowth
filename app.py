@@ -1890,7 +1890,7 @@ His Q2 framework is ACD: Attraction (subs) / Conversion (free→paid) / Delivery
 
 **The winning content pattern (proven by YTD data):** authority hacking — piggyback on a NAMED external god-mode source (e.g. Karpathy, Anthropic, a specific repo/framework) with the source ON STAGE, then apply it to a working system with measurable proof. The "source's source" rule: don't piggyback on the inspiration creator — go upstream to what THEY were citing. That's the OG authority.
 
-His on-camera workspace invariant: every Claude Code demo runs inside AgentFlow (Docs tab visible, skills/ folder showcased), not Terminal or VS Code.
+His on-camera workspace: AgentFlow is the preferred workspace when it fits, but the editor and most of the audience use other workspaces. Acceptable workspaces (pick whichever fits the topic + audience best): AgentFlow's Docs tab, Visual Studio Code (Cursor counts), Claude Code CLI in iTerm/Terminal, Claude Desktop app. Don't force AgentFlow into every brief — if the video's topic is genuinely a tool that lives outside AgentFlow (Spline, AntiGravity, web tools), the workspace shown should be whatever the audience would actually use to follow along (usually VS Code or Claude Desktop).
 
 Skool gift rule: every video closes with a fork-able artifact (template, skills pack, repo, workflow) — not a demo, a real product the audience can grab.
 
@@ -1950,7 +1950,7 @@ You will return a JSON object with these exact keys. Each value is plain text (n
 ]
 ```
 
-MUST include AgentFlow as the workspace at some point (workspace invariant — Andy films inside AgentFlow's Docs tab / terminal, NOT raw Terminal or VS Code). MUST include the Skool gift reveal moment.
+Pick the workspace that fits the audience for this video (AgentFlow / VS Code / Claude Code CLI / Claude Desktop). Don't force AgentFlow if VS Code or Claude Desktop is what the audience would actually use. MUST include the Skool gift reveal moment.
 
 **CRITICAL — proof-segment rule (locked 2026-05-19):** The FINAL step MUST be a **demonstrable end-result** voiceover can point to and say "look, it works." Acceptable: built thing running on real input / item installed + tested working in real environment / test outcome on real input / side-by-side comparison rendered / finished tutorial workflow on a real artifact. If you cannot name a demonstrable end-result step, include "PROOF SEGMENT MISSING" as the final step — the brief fails the gate. React-only setups DO NOT QUALIFY — they need a build/test tail.
 
@@ -2120,7 +2120,7 @@ def _gemini_fill_screen_share_todo(title, brief_md):
     project_context = """
 You are filling a SCREEN-SHARE TO-DO for AI Andy — a tactical pre-production document that maps every on-screen moment of an upcoming YouTube video to a concrete app/URL/cursor action. The to-do is read by Andy right before filming. The content doc (separate artifact) wraps narration around what this to-do says will be on screen.
 
-Andy's workspace invariant: every Claude Code demo runs inside AgentFlow (Docs tab visible, skills/ folder showcased) — never Terminal / VS Code / claude.ai. His skills/ folder lives at ~/Documents/Claude Folder/skills/ with 37 production SOPs (CONTENT_DOC_PROCESS, PACKAGING_EXPERT, THUMBNAIL_SYSTEM, BRIEF_DOC_PROCESS, etc.).
+Andy's on-camera workspace: AgentFlow is preferred when it fits, but the audience + editor mostly use other workspaces. Acceptable workspaces — pick whichever fits the topic best: AgentFlow's Docs tab, Visual Studio Code (Cursor counts), Claude Code CLI in iTerm/Terminal, Claude Desktop app. Don't force AgentFlow if the video's topic is a tool that lives outside it (Spline, AntiGravity, web tools) — use the workspace the audience would actually use to follow along (usually VS Code or Claude Desktop). His skills/ folder lives at ~/Documents/Claude Folder/skills/ with 37 production SOPs (CONTENT_DOC_PROCESS, PACKAGING_EXPERT, THUMBNAIL_SYSTEM, BRIEF_DOC_PROCESS, etc.).
 
 Rules you MUST encode:
 - The brief's "Source's source" gets at least one dedicated scene with that source visible on screen.
