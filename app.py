@@ -245,6 +245,10 @@ def init_db():
         conn.execute("ALTER TABLE videos ADD COLUMN visuals_doc TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE videos ADD COLUMN visual_tags TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # Background TTS jobs — async synthesis with progress tracking
     conn.execute("""
@@ -4554,6 +4558,171 @@ def compute_visuals_blocks(vid):
         "duration": duration,
         "method": method,
         "total_chars": total_chars,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Visual tags — human-tagged char ranges in the cleaned vocal_doc that map
+# selections in the script to visuals on the timeline. Andy selects text in
+# the Visuals tab and right-clicks → Diagram / Avatar / Text anim / Screen.
+# Each tag stores: {id, char_start, char_end, type, asset_id?, label?, color?}.
+# ---------------------------------------------------------------------------
+
+_VISUAL_TAG_TYPES = {"diagram", "avatar", "text_anim", "screen"}
+
+
+def _sanitize_visual_tags(raw):
+    """Trust nothing; normalize what the client posts."""
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for t in raw:
+        if not isinstance(t, dict):
+            continue
+        ttype = (t.get("type") or "").lower()
+        if ttype not in _VISUAL_TAG_TYPES:
+            continue
+        try:
+            cs = int(t.get("char_start"))
+            ce = int(t.get("char_end"))
+        except (TypeError, ValueError):
+            continue
+        if ce <= cs:
+            continue
+        out.append({
+            "id": str(t.get("id") or ("vt" + uuid.uuid4().hex[:12])),
+            "char_start": cs,
+            "char_end": ce,
+            "type": ttype,
+            "asset_id": (str(t["asset_id"]) if t.get("asset_id") else None),
+            "label": (str(t["label"])[:120] if t.get("label") else None),
+            "color": (str(t["color"])[:24] if t.get("color") else None),
+        })
+    # Sort by start so consumers don't have to.
+    out.sort(key=lambda x: (x["char_start"], x["char_end"]))
+    return out
+
+
+@app.route("/api/videos/<int:vid>/visual-tags", methods=["GET"])
+def get_visual_tags(vid):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT visual_tags FROM videos WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "video not found"}), 404
+    try:
+        tags = json.loads(row["visual_tags"]) if row["visual_tags"] else []
+    except (TypeError, ValueError):
+        tags = []
+    return jsonify({"tags": tags if isinstance(tags, list) else []})
+
+
+@app.route("/api/videos/<int:vid>/visual-tags", methods=["POST"])
+def save_visual_tags(vid):
+    body = request.get_json(force=True, silent=True) or {}
+    tags = _sanitize_visual_tags(body.get("tags"))
+    conn = get_db()
+    conn.execute(
+        "UPDATE videos SET visual_tags=? WHERE id=?",
+        (json.dumps(tags), vid),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "tags": tags})
+
+
+@app.route("/api/videos/<int:vid>/visual-tags/apply", methods=["POST"])
+def apply_visual_tags(vid):
+    """Resolve each tag to a concrete timeline placement using the latest
+    voiceover take's duration. Char offsets are in the CLEANED vocal_doc
+    (no `=== STEP N ===` lines, no normalization beyond strip), matching the
+    same space the editor renders text in."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    vrow = conn.execute(
+        "SELECT vocal_doc, visual_tags FROM videos WHERE id=?", (vid,)
+    ).fetchone()
+    drows = conn.execute(
+        "SELECT id, name, result_url, audio_duration FROM diagrams WHERE video_id=?",
+        (vid,)
+    ).fetchall()
+    conn.close()
+    if not vrow:
+        return jsonify({"error": "video not found"}), 404
+
+    raw_text = (vrow["vocal_doc"] or "")
+    cleaned, _ = _strip_and_segment(raw_text)
+    total_chars = max(1, len(cleaned))
+
+    try:
+        tags = json.loads(vrow["visual_tags"]) if vrow["visual_tags"] else []
+    except (TypeError, ValueError):
+        tags = []
+    if not isinstance(tags, list) or not tags:
+        return jsonify({"placements": [], "tag_count": 0})
+
+    state = _load_voiceover_state(vid)
+    gens = state.get("generations", [])
+    duration = 0.0
+    for g in reversed(gens):
+        d = g.get("duration") or g.get("audio_duration") or 0
+        if d:
+            duration = float(d)
+            break
+        segs = g.get("segments") or []
+        if segs:
+            duration = float(segs[-1].get("end", 0)) or duration
+            if duration:
+                break
+    if duration <= 0:
+        duration = max(30.0, total_chars / 13.0)
+        method = "estimate-13cps"
+    else:
+        method = "linear-from-take-duration"
+
+    diagram_by_id = {d["id"]: d for d in drows}
+
+    placements = []
+    for t in tags:
+        try:
+            cs = max(0, int(t.get("char_start", 0)))
+            ce = max(cs + 1, int(t.get("char_end", 0)))
+        except (TypeError, ValueError):
+            continue
+        cs = min(cs, total_chars)
+        ce = min(ce, total_chars)
+        if ce <= cs:
+            continue
+        start = duration * (cs / total_chars)
+        end = duration * (ce / total_chars)
+        p = {
+            "tag_id": t.get("id"),
+            "type": (t.get("type") or "").lower(),
+            "char_start": cs,
+            "char_end": ce,
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "label": t.get("label"),
+            "matched": True,
+        }
+        if p["type"] == "diagram":
+            d = diagram_by_id.get(t.get("asset_id") or "")
+            if not d or not d["result_url"]:
+                p["matched"] = False
+                p["reason"] = "diagram not found or not rendered"
+            else:
+                p["result_url"] = _proxy_asset_url(d["result_url"])
+                p["diagram_id"] = d["id"]
+                p["diagram_name"] = d["name"]
+        placements.append(p)
+
+    return jsonify({
+        "placements": placements,
+        "duration": duration,
+        "method": method,
+        "total_chars": total_chars,
+        "tag_count": len(tags),
     })
 
 
