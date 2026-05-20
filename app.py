@@ -5156,11 +5156,51 @@ def auto_suggest_visual_tags(vid):
     suggested = []
     skipped = []
     used_steps_for_diagram = {}  # step_num → count of diagrams placed in this step
+    chapter_sentence_by_seg = {}  # id(seg) → index of the step-intro sentence
 
-    # 1) Diagrams: include anything with EITHER a rendered MP4 (result_url) or
-    #    a still image (image_path). Apply-to-timeline will use whichever is
-    #    available. One diagram per step preferred; extras land at the next
-    #    sentence within the same step.
+    def _is_step_intro(text: str) -> bool:
+        t = text.lstrip().lower()
+        if re.search(r"\b(?:step|chapter)\s*\d+\b", t):
+            return True
+        if t.startswith(("and now", "now let", "first up", "first,", "next up", "next,")):
+            return True
+        return False
+
+    # 1) CHAPTER intros — the literal "And now let's get into Step N — TITLE"
+    #    sentence at the start of each non-HOOK segment. This is the chapter
+    #    card moment. Runs FIRST so diagrams know to skip past it.
+    for seg, sents in seg_sentences:
+        if not sents:
+            continue
+        if _META_NAME_RE.match(seg.get("name") or ""):
+            # HOOK / INTRO doesn't get a chapter card.
+            continue
+        # Find the first intro-shaped sentence within the first ~3 sentences.
+        intro_idx = None
+        for i, (cs, ce) in enumerate(sents[:3]):
+            if _is_step_intro(cleaned[cs:ce]):
+                intro_idx = i
+                break
+        if intro_idx is None:
+            # No explicit intro — use the first sentence by default.
+            intro_idx = 0
+        cs, ce = sents[intro_idx]
+        if overlaps_claimed(cs, ce):
+            continue
+        claim(cs, ce)
+        chapter_sentence_by_seg[id(seg)] = intro_idx
+        suggested.append({
+            "id": "vt" + uuid.uuid4().hex[:12],
+            "char_start": cs,
+            "char_end": ce,
+            "type": "chapter",
+            "label": seg.get("name") or None,
+        })
+
+    # 2) Diagrams — span a 2-3 sentence PARAGRAPH inside the step body (after
+    #    the chapter intro, before the chapter lead-out). Place one diagram
+    #    per step. Anything with image_path OR result_url qualifies; apply
+    #    picks the best available asset at render time.
     rendered_diagrams = [r for r in drows if _diagram_available(r)]
     for r in drows:
         if not _diagram_available(r):
@@ -5176,10 +5216,6 @@ def auto_suggest_visual_tags(vid):
         if step_n is None:
             step_n = (r["position"] or 0) + 1
         seg = step_segs_by_num.get(step_n)
-        # Fall back to step_segs_in_order which SKIPS HOOK/INTRO/etc, so
-        # `Diagram 1` lands at the first real step body even when segments
-        # are named "THE PROBLEM" / "THE SETUP" without an explicit "Step N:"
-        # prefix.
         if seg is None:
             idx = step_n - 1
             if 0 <= idx < len(step_segs_in_order):
@@ -5199,43 +5235,43 @@ def auto_suggest_visual_tags(vid):
                 "reason": "step has no body text",
             })
             continue
-        # Skip the step-intro sentence ("And now let's get into Step N — ...").
-        # If sentence 0 looks like an intro (mentions "step N" or starts with
-        # connective filler), shift past it.
-        def _is_step_intro(text: str) -> bool:
-            t = text.lstrip().lower()
-            if re.search(r"\b(?:step|chapter)\s*\d+\b", t):
-                return True
-            if t.startswith(("and now", "now let", "first up", "first,", "next up", "next,")):
-                return True
-            return False
 
-        body_sents = list(sents)
-        if body_sents and _is_step_intro(cleaned[body_sents[0][0]:body_sents[0][1]]):
-            body_sents = body_sents[1:]
+        # Skip past the chapter intro sentence (claimed in pass 1).
+        body_start_idx = chapter_sentence_by_seg.get(id(seg), -1) + 1
+        body_sents = sents[body_start_idx:]
+        # Trim trailing sentence reserved for the "chapter lead-out" pass (we'll
+        # leave the very last sentence open for it). Only if there are enough
+        # sentences to spare.
+        if len(body_sents) > 3:
+            body_sents = body_sents[:-1]
         if not body_sents:
-            # Step only had an intro line — fall back to placing at it anyway.
-            body_sents = list(sents)
+            skipped.append({
+                "diagram_id": r["id"],
+                "name": name,
+                "reason": "step body too short after intro",
+            })
+            continue
 
-        # Pick first available sentence in body_sents.
+        # Take a 2-3 sentence window starting at the first unclaimed sentence.
         prior = used_steps_for_diagram.get(id(seg), 0)
-        target_idx = min(prior, len(body_sents) - 1)
-        cs, ce = body_sents[target_idx]
-        if overlaps_claimed(cs, ce):
-            placed = False
-            for s2 in body_sents[target_idx + 1:]:
-                if not overlaps_claimed(*s2):
-                    cs, ce = s2
-                    placed = True
-                    break
-            if not placed:
-                skipped.append({
-                    "diagram_id": r["id"],
-                    "name": name,
-                    "reason": "step's sentences all claimed",
-                })
-                continue
-        used_steps_for_diagram[id(seg)] = target_idx + 1
+        start_offset = min(prior * 3, len(body_sents) - 1)
+        window = body_sents[start_offset:start_offset + 3]
+        # Filter out claimed sentences from the window's edges.
+        while window and overlaps_claimed(*window[0]):
+            window = window[1:]
+        while window and overlaps_claimed(*window[-1]):
+            window = window[:-1]
+        if not window:
+            skipped.append({
+                "diagram_id": r["id"],
+                "name": name,
+                "reason": "no free paragraph in step body",
+            })
+            continue
+        cs = window[0][0]
+        ce = window[-1][1]
+        used_steps_for_diagram[id(seg)] = used_steps_for_diagram.get(id(seg), 0) + 1
+        claim(cs, ce)
         claim(cs, ce)
         suggested.append({
             "id": "vt" + uuid.uuid4().hex[:12],
@@ -5339,31 +5375,6 @@ def auto_suggest_visual_tags(vid):
                 "label": None,
             })
             text_anim_count += 1
-
-    # 4.5) Chapter lead-ins — the LAST sentence of every segment (except the
-    #      very last one) is tagged as `chapter` with label = name of the next
-    #      segment. This is the "Up next: STEP 2 — THE PROBLEM" card moment.
-    for i in range(len(seg_sentences) - 1):
-        seg, sents = seg_sentences[i]
-        next_seg = seg_sentences[i + 1][0]
-        if not sents:
-            continue
-        # Walk from the end backwards for the first sentence still unclaimed
-        # and not too short.
-        for (cs, ce) in reversed(sents):
-            if overlaps_claimed(cs, ce):
-                continue
-            if (ce - cs) < 15:
-                continue
-            claim(cs, ce)
-            suggested.append({
-                "id": "vt" + uuid.uuid4().hex[:12],
-                "char_start": cs,
-                "char_end": ce,
-                "type": "chapter",
-                "label": next_seg.get("name") or None,
-            })
-            break
 
     # NOTE: Screen is the implicit DEFAULT — anywhere with no other tag plays
     # screen-recording at render time. We deliberately don't fill the rest of
