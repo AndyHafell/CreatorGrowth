@@ -4637,6 +4637,156 @@ def save_visual_tags(vid):
     return jsonify({"ok": True, "tags": tags})
 
 
+@app.route("/api/videos/<int:vid>/visual-tags/auto-suggest", methods=["POST"])
+def auto_suggest_visual_tags(vid):
+    """Suggest diagram tags by mapping each diagram to its step segment in the
+    cleaned vocal_doc and tagging the first sentence of that step. Saves the
+    merged result and returns the new tag list.
+
+    Body: {replace: bool=true}  // when true, drop prior diagram tags before
+    merging the suggestions in. Manual avatar/screen/text_anim tags are
+    preserved unless they overlap a suggestion (in which case suggestion wins).
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    replace = bool(body.get("replace", True))
+
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    vrow = conn.execute(
+        "SELECT vocal_doc, visual_tags FROM videos WHERE id=?", (vid,)
+    ).fetchone()
+    drows = conn.execute(
+        "SELECT id, name, position, script, result_url FROM diagrams "
+        "WHERE video_id=? ORDER BY position, created_at",
+        (vid,)
+    ).fetchall()
+    conn.close()
+    if not vrow:
+        return jsonify({"error": "video not found"}), 404
+
+    raw_text = (vrow["vocal_doc"] or "")
+    cleaned, doc_segments = _strip_and_segment(raw_text)
+    if not cleaned:
+        return jsonify({"error": "vocal_doc has no spoken text"}), 400
+
+    def _ord(s):
+        m = re.search(r"(?:step|diagram)\s*(\d+)", s or "", re.IGNORECASE)
+        return int(m.group(1)) if m else None
+    step_segs = {}
+    for s in doc_segments:
+        n = _ord(s.get("name") or "")
+        if n is not None and n not in step_segs:
+            step_segs[n] = s
+
+    def _first_sentence_span(seg):
+        cs = int(seg["char_start"])
+        ce = int(seg["char_end"])
+        body_text = cleaned[cs:ce]
+        i = 0
+        while i < len(body_text) and body_text[i].isspace():
+            i += 1
+        if i >= len(body_text):
+            return None
+        m = re.search(r"[.!?]", body_text[i + 8:]) if len(body_text) > i + 8 else None
+        if m:
+            end = i + 8 + m.end()
+        else:
+            end = min(len(body_text), i + 120)
+        return (cs + i, cs + end)
+
+    used_steps = set()
+    suggested = []
+    skipped = []
+    for r in drows:
+        name = r["name"] or ""
+        step_n = _ord(name)
+        if step_n is None:
+            step_n = (r["position"] or 0) + 1
+            implicit = True
+        else:
+            implicit = False
+        if step_n in used_steps:
+            skipped.append({
+                "diagram_id": r["id"],
+                "name": name,
+                "reason": f"step {step_n} already claimed by an earlier diagram",
+            })
+            continue
+        seg = step_segs.get(step_n)
+        if seg is None:
+            skipped.append({
+                "diagram_id": r["id"],
+                "name": name,
+                "reason": (
+                    f"no segment for step {step_n} in vocal_doc"
+                    if not implicit
+                    else f"no step number in name; position-fallback step {step_n} not found"
+                ),
+            })
+            continue
+        if not r["result_url"]:
+            skipped.append({
+                "diagram_id": r["id"],
+                "name": name,
+                "reason": "not rendered yet",
+            })
+            continue
+        span = _first_sentence_span(seg)
+        if not span:
+            skipped.append({
+                "diagram_id": r["id"],
+                "name": name,
+                "reason": "step segment has no body text",
+            })
+            continue
+        used_steps.add(step_n)
+        cs, ce = span
+        suggested.append({
+            "id": "vt" + uuid.uuid4().hex[:12],
+            "char_start": cs,
+            "char_end": ce,
+            "type": "diagram",
+            "asset_id": r["id"],
+            "label": name,
+        })
+
+    try:
+        existing = json.loads(vrow["visual_tags"]) if vrow["visual_tags"] else []
+    except (TypeError, ValueError):
+        existing = []
+    if not isinstance(existing, list):
+        existing = []
+    if replace:
+        existing = [t for t in existing if t.get("type") != "diagram"]
+    def _overlaps(a, b):
+        return a["char_start"] < b["char_end"] and a["char_end"] > b["char_start"]
+    keep = []
+    for t in existing:
+        try:
+            tt = {"char_start": int(t["char_start"]), "char_end": int(t["char_end"])}
+        except (TypeError, ValueError, KeyError):
+            continue
+        if any(_overlaps(tt, s) for s in suggested):
+            continue
+        keep.append(t)
+
+    merged = _sanitize_visual_tags(keep + suggested)
+
+    conn = get_db()
+    conn.execute(
+        "UPDATE videos SET visual_tags=? WHERE id=?",
+        (json.dumps(merged), vid),
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "tags": merged,
+        "suggested_count": len(suggested),
+        "skipped": skipped,
+    })
+
+
 @app.route("/api/videos/<int:vid>/visual-tags/apply", methods=["POST"])
 def apply_visual_tags(vid):
     """Resolve each tag to a concrete timeline placement using the latest
