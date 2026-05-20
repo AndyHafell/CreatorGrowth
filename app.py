@@ -2503,6 +2503,13 @@ BRIEF CHECKLIST SCORE: {score_line}{notes_section}{final_thoughts_section}
 
     if filepath.exists() and not force:
         rel = str(filepath.relative_to(CONTENT_DIR))
+        # Even if brief file exists, make sure the card has been promoted to the Brief tab.
+        # Earlier briefs may have been created before auto-promote was wired.
+        conn.execute(
+            "UPDATE videos SET status = 'brief' WHERE id = ? AND status IN ('options', 'best')",
+            (vid,),
+        )
+        conn.commit()
         conn.close()
         return jsonify({"ok": True, "path": rel, "filename": filename, "exists": True, "auto_filled": False})
 
