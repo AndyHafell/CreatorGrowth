@@ -2028,6 +2028,223 @@ def link_card_to_youtube(vid):
     })
 
 
+def _read_brief_for_card(conn, card_id):
+    """Read the Brief Doc markdown attached to a card, if any. Returns '' on miss."""
+    row = conn.execute(
+        "SELECT custom_fields FROM video_details WHERE video_id = ?", (card_id,)
+    ).fetchone()
+    if not row or not row["custom_fields"]:
+        return ""
+    try:
+        fields = json.loads(row["custom_fields"])
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    brief_path = None
+    for f in fields:
+        if f.get("key") == "Brief Doc" and f.get("value"):
+            brief_path = f["value"]
+            break
+    if not brief_path:
+        return ""
+    filepath = CONTENT_DIR / brief_path
+    try:
+        return filepath.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _gemini_fill_screen_share_todo(title, brief_md):
+    """Call Gemini to produce a structured screen-share to-do from the brief.
+    Returns a dict with pre_production_checklist, scenes, open_questions — or None on failure.
+    """
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return None
+
+    project_context = """
+You are filling a SCREEN-SHARE TO-DO for AI Andy — a tactical pre-production document that maps every on-screen moment of an upcoming YouTube video to a concrete app/URL/cursor action. The to-do is read by Andy right before filming. The content doc (separate artifact) wraps narration around what this to-do says will be on screen.
+
+Andy's workspace invariant: every Claude Code demo runs inside AgentFlow (Docs tab visible, skills/ folder showcased) — never Terminal / VS Code / claude.ai. His skills/ folder lives at ~/Documents/Claude Folder/skills/ with 37 production SOPs (CONTENT_DOC_PROCESS, PACKAGING_EXPERT, THUMBNAIL_SYSTEM, BRIEF_DOC_PROCESS, etc.).
+
+Rules you MUST encode:
+- The brief's "Source's source" gets at least one dedicated scene with that source visible on screen.
+- Each scene = ONE screen state. App switches = new scenes.
+- "Pre-work" is hard-required — if a scene needs a file/tab/account, list it in the pre-production checklist.
+- One-line voice-over notes max per scene (the content doc handles the real script).
+- Be LITERAL — "scroll to line 42 of skills/PACKAGING_EXPERT_SOP.md" not "show the skills file."
+"""
+
+    field_specs = """
+Return JSON with these exact keys:
+
+1. "pre_production_checklist" — list of strings. Each item is a concrete pre-flight task (software to install, account to log into, file to download/prepare, browser tab to queue, source material to grab). Aim for 6-12 items. Include "AgentFlow workspace clean" and "skills/ folder organized for showcase" if AgentFlow is on camera.
+
+2. "scenes" — list of scene objects. Aim for 4-8 scenes (one per major on-screen moment). Each scene is an object with:
+   - "name": short label tied to a brief field (e.g. "Open with Anthropic Skills doc")
+   - "app": which app/tab (Chrome / AgentFlow Docs / AgentFlow Terminal / Finder / etc.)
+   - "url_or_path": exact URL or file path (e.g. "docs.claude.com/en/docs/claude-code/skills" or "~/Documents/Claude Folder/skills/CONTENT_DOC_PROCESS_SOP.md")
+   - "on_screen": literal description of what the viewer sees (one sentence)
+   - "cursor_action": where to click / hover / scroll / highlight (one sentence)
+   - "voice_over_note": one line max — what Andy says here. NOT a full script. Just the hook.
+   - "why": which brief field this scene executes (authority hacking, differentiator, my_angle, skool_gift, etc.)
+   - "pre_work": what must be true before this scene records (file present, tab loaded, account logged in)
+
+3. "open_questions" — list of strings. Things Andy needs to decide at film time, or risks that could break the shoot (source went private, app behaves unexpectedly, asset missing).
+"""
+
+    user_prompt = f"""Video title: {title}
+
+BRIEF (already validated, score ≥7/10):
+---
+{brief_md[:5000] if brief_md else "(no brief found — generate a sensible default to-do based on the title)"}
+---
+
+{field_specs}
+
+Return ONLY the JSON object. No preamble, no markdown fences."""
+
+    body = {
+        "contents": [{
+            "parts": [
+                {"text": project_context},
+                {"text": user_prompt},
+            ]
+        }],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.4,
+        }
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(url, data=json.dumps(body).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        return json.loads(text)
+    except (HTTPError, URLError, KeyError, IndexError, json.JSONDecodeError, TypeError):
+        return None
+
+
+@app.route("/api/videos/<int:vid>/create-screen-share-todo", methods=["POST"])
+def create_screen_share_todo(vid):
+    """Create a screen-share to-do for a card. Auto-fills via Gemini using the
+    card's Brief Doc as primary input. Falls back to empty template if Gemini
+    or the brief is unavailable.
+    """
+    conn = get_db()
+    video = conn.execute("SELECT * FROM videos WHERE id = ?", (vid,)).fetchone()
+    if not video:
+        conn.close()
+        return jsonify({"error": "Video not found"}), 404
+
+    title = video["title"]
+    slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")[:80]
+    filename = f"{slug}.md"
+
+    brief_md = _read_brief_for_card(conn, vid)
+    filled = _gemini_fill_screen_share_todo(title, brief_md) if brief_md else None
+    auto_filled = bool(filled)
+
+    # Build pre-production checklist
+    if filled and isinstance(filled.get("pre_production_checklist"), list):
+        checklist = "\n".join(f"- [ ] {item}" for item in filled["pre_production_checklist"])
+    else:
+        checklist = "\n".join([
+            "- [ ] Software installed: [fill in]",
+            "- [ ] Accounts logged in: [fill in]",
+            "- [ ] Files prepared: [fill in]",
+            "- [ ] Browser tabs queued: [fill in]",
+            "- [ ] Source materials downloaded: [fill in]",
+            "- [ ] AgentFlow workspace clean: [yes/no]",
+            "- [ ] skills/ folder organized for showcase: [yes/no]",
+            "- [ ] Notifications silenced: [iMessage, Slack, etc.]",
+        ])
+
+    # Build scenes
+    scenes_md = ""
+    if filled and isinstance(filled.get("scenes"), list):
+        for i, s in enumerate(filled["scenes"], start=1):
+            if not isinstance(s, dict):
+                continue
+            scenes_md += f"""
+### Scene {i}: {s.get('name', '[unnamed scene]')}
+- **App / tab:** {s.get('app', '[fill in]')}
+- **URL or file path:** {s.get('url_or_path', '[fill in]')}
+- **On screen:** {s.get('on_screen', '[fill in]')}
+- **Cursor action:** {s.get('cursor_action', '[fill in]')}
+- **Voice-over note:** {s.get('voice_over_note', '[fill in]')}
+- **Why this scene:** {s.get('why', '[tie to a brief field]')}
+- **Pre-work:** {s.get('pre_work', '[fill in]')}
+"""
+    else:
+        scenes_md = """
+### Scene 1: [Scene name — tied to a brief field]
+- **App / tab:** [fill in]
+- **URL or file path:** [fill in]
+- **On screen:** [fill in]
+- **Cursor action:** [fill in]
+- **Voice-over note:** [fill in — one line max]
+- **Why this scene:** [tie to a brief field]
+- **Pre-work:** [fill in]
+"""
+
+    # Open questions
+    open_q_md = ""
+    if filled and isinstance(filled.get("open_questions"), list) and filled["open_questions"]:
+        open_q_md = "\n".join(f"- {q}" for q in filled["open_questions"])
+    else:
+        open_q_md = "- [decisions Andy will make at film time, risks that could break the shoot]"
+
+    doc = f"""# SCREEN SHARE TO-DO — {title.upper()}
+
+> Tactical filming prep. {"Auto-filled by Gemini from the brief." if auto_filled else "Fill every field before sitting down to film."}
+> Pre-production checklist must be 100% done before scene 1.
+
+---
+
+## PRE-PRODUCTION CHECKLIST
+{checklist}
+
+## SCENE-BY-SCENE PLAN
+Each scene = one screen state / one camera setup. App switches = new scenes.
+{scenes_md}
+
+## OPEN QUESTIONS / RISKS
+{open_q_md}
+"""
+
+    todos_subdir = CONTENT_DIR / "todos"
+    todos_subdir.mkdir(parents=True, exist_ok=True)
+    filepath = todos_subdir / filename
+
+    if filepath.exists():
+        rel = str(filepath.relative_to(CONTENT_DIR))
+        conn.close()
+        return jsonify({"ok": True, "path": rel, "filename": filename, "exists": True, "auto_filled": False})
+
+    filepath.write_text(doc, encoding="utf-8")
+    rel = str(filepath.relative_to(CONTENT_DIR))
+
+    # Set the Screen Share To-Do custom field
+    details = conn.execute("SELECT custom_fields FROM video_details WHERE video_id = ?", (vid,)).fetchone()
+    fields = json.loads(details["custom_fields"]) if details and details["custom_fields"] else []
+    fields = [f for f in fields if f.get("key") != "Screen Share To-Do"]
+    fields.append({"key": "Screen Share To-Do", "value": rel})
+    if details:
+        conn.execute("UPDATE video_details SET custom_fields = ? WHERE video_id = ?",
+                     (json.dumps(fields), vid))
+    else:
+        conn.execute("INSERT INTO video_details (video_id, custom_fields) VALUES (?, ?)",
+                     (vid, json.dumps(fields)))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "path": rel, "filename": filename, "exists": False, "auto_filled": auto_filled, "had_brief": bool(brief_md)})
+
+
 @app.route("/api/videos/<int:vid>/create-brief", methods=["POST"])
 def create_brief(vid):
     """Create a starter brief for idea-validation BEFORE a content doc.
