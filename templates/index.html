@@ -497,6 +497,9 @@
         .action-btn.transform-btn:hover { background: #ab47bc; color: #fff; }
         .action-btn.move-ideas { color: #ff9800; }
         .action-btn.move-ideas:hover { background: #ff9800; color: #fff; }
+        .action-btn.brief-btn { color: #9fb3ff; border: 1px solid #3a3a5e; }
+        .action-btn.brief-btn:hover { background: #1a1a3a; color: #fff; }
+        .action-btn.brief-btn.in-flight { background: #1a1a3a; color: #9fb3ff; opacity: 0.7; cursor: wait; }
         .action-btn.move-best-yellow { color: #ffc107; }
         .action-btn.move-best-yellow:hover { background: #ffc107; color: #1a1a1a; }
         .action-btn.move-done { color: #4caf50; }
@@ -2733,9 +2736,10 @@
             document.getElementById('twitterContainer').style.display = isTwitter ? 'block' : 'none';
             document.getElementById('channelsBar').style.display = isSpecial ? 'none' : '';
             document.querySelector('.sort-bar').style.display = isSpecial ? 'none' : '';
-            // Show "Briefs (this tab)" batch button on tabs where it makes sense
+            // Batch "regen all" button only on the Brief tab (refresh existing briefs).
+            // On Best tab, briefs are fired per-card via the small Brief button on each card.
             const briefBatchBtn = document.getElementById('batchBriefBtn');
-            if (briefBatchBtn) briefBatchBtn.style.display = (tab === 'best' || tab === 'brief') ? '' : 'none';
+            if (briefBatchBtn) briefBatchBtn.style.display = (tab === 'brief') ? '' : 'none';
             if (isCreators) {
                 renderCreatorList();
             } else if (isKeywords) {
@@ -2987,6 +2991,7 @@
             }
             if (v.status === 'best') {
                 return `
+                    <button class="action-btn brief-btn" onclick="quickBrief(${v.id}, event)" title="Create brief in background (auto-moves card to Brief tab when done)">Brief</button>
                     <button class="action-btn move-progress" onclick="moveVideo(${v.id}, 'packaging', event)">Packaging</button>
                     <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'options', event)">Back</button>
                     <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'archived', event)">Archive</button>
@@ -4532,6 +4537,41 @@
         });
 
 
+
+        async function quickBrief(vid, event) {
+            if (event) { event.stopPropagation(); event.preventDefault(); }
+            const btn = event && event.currentTarget;
+            if (btn) {
+                btn.classList.add('in-flight');
+                btn.textContent = '…';
+                btn.disabled = true;
+            }
+            showToast(`Brief queued for card ${vid}…`);
+            try {
+                const resp = await fetch(`/api/videos/${vid}/create-brief`, { method: 'POST' });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    showToast(`Brief failed: ${data.error || resp.status}`, true);
+                    return;
+                }
+                if (data.exists) {
+                    showToast(`Brief already exists for card ${vid}`);
+                } else {
+                    showToast(`Brief done for card ${vid} — moved to Brief tab`);
+                }
+                // Reload card list so the card moves to the Brief tab (server auto-promoted status to 'brief')
+                await loadVideos();
+            } catch (e) {
+                showToast(`Brief failed: ${e.message}`, true);
+            } finally {
+                // Button is gone after loadVideos re-renders, but reset in case re-render didn't happen
+                if (btn && document.body.contains(btn)) {
+                    btn.classList.remove('in-flight');
+                    btn.textContent = 'Brief';
+                    btn.disabled = false;
+                }
+            }
+        }
 
         async function batchCreateBriefs() {
             const btn = document.getElementById('batchBriefBtn');
