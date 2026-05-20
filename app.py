@@ -4967,7 +4967,7 @@ def compute_visuals_blocks(vid):
 # ---------------------------------------------------------------------------
 
 _VISUAL_TAG_TYPES = {
-    "diagram", "avatar", "text_anim", "screen", "chapter", "chapters",
+    "diagram", "avatar", "text_anim", "screen", "chapter",
 }
 
 
@@ -5264,8 +5264,10 @@ def auto_suggest_visual_tags(vid):
 
         # Take a 2-3 sentence window starting at the first unclaimed sentence.
         prior = used_steps_for_diagram.get(id(seg), 0)
-        start_offset = min(prior * 3, len(body_sents) - 1)
-        window = body_sents[start_offset:start_offset + 3]
+        start_offset = min(prior * 5, len(body_sents) - 1)
+        # Span 3-5 sentences so the diagram covers a proper paragraph chunk.
+        window_size = min(5, max(3, len(body_sents) - start_offset))
+        window = body_sents[start_offset:start_offset + window_size]
         # Filter out claimed sentences from the window's edges.
         while window and overlaps_claimed(*window[0]):
             window = window[1:]
@@ -5386,9 +5388,23 @@ def auto_suggest_visual_tags(vid):
             })
             text_anim_count += 1
 
-    # NOTE: Screen is the implicit DEFAULT — anywhere with no other tag plays
-    # screen-recording at render time. We deliberately don't fill the rest of
-    # the doc with screen tags here; that just creates UI noise.
+    # 5) Screen as default — every remaining unclaimed sentence becomes a
+    #    screen tag. Andy wants the full script colored end-to-end; untagged
+    #    space looks empty in the Visuals tab even though it'd render fine.
+    for (_seg, sents) in seg_sentences:
+        for (cs, ce) in sents:
+            if overlaps_claimed(cs, ce):
+                continue
+            if (ce - cs) < 6:
+                continue
+            claim(cs, ce)
+            suggested.append({
+                "id": "vt" + uuid.uuid4().hex[:12],
+                "char_start": cs,
+                "char_end": ce,
+                "type": "screen",
+                "label": None,
+            })
 
     # Merge with existing tags. Preserve manual `chapters` tags entirely;
     # drop the other auto types if replace=true.
