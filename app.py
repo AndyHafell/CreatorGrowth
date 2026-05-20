@@ -1997,6 +1997,8 @@ Pick the workspace that fits the audience for this video (AgentFlow / VS Code / 
 
 This array is the glanceable brief outline only, NOT the deep scene plan (that lives in the separate Screen Share To-Do doc, where each milestone here becomes its own multi-action scene).
 
+2b. "end_result" — ONE sentence (or 2 max) describing the **literal proof shot** the final step produces. This is the "look at this" moment Andy points to in the intro to hook the viewer + the credibility shot he references mid-video + the evidence drop in the Skool post. Sometimes it's simple (a live website scrolling), sometimes complex (a test passing on real input). Be concrete and visual — describe what's actually on screen, framed as the payoff. Example: "The deployed AntiGravity site running live in Chrome, with the Spline 3D asset rotating in the hero section as you scroll." NOT a re-summary of the last step — the SHOT itself, written as a single moment of proof.
+
 3. "sources_source" — The ORIGINAL tool / blog post / video / tweet the inspiration creator was citing. If the inspiration video's description has a direct link, use it. If not, NAME the most likely upstream source explicitly (e.g. "Anthropic's official Skills documentation + Oct 2025 launch blog"). Never say "unknown."
 
 3. "why_god_mode" — One sentence on why the source's source carries authority. Reference views/stars/credibility/scarcity.
@@ -2407,6 +2409,8 @@ def create_brief(vid):
     else:
         screen_share_todo = "[fill in — screen share to-do]"
 
+    end_result = _get("end_result")
+
     sources_source     = _get("sources_source")
     why_god_mode       = _get("why_god_mode")
     frame              = _get("frame", "breakdown — source-on-stage: yes")
@@ -2447,6 +2451,8 @@ Link: https://youtube.com/watch?v={video_id}
 **Inspiration plot:** {inspiration_plot}
 
 **Screen share to-do:** {screen_share_todo}
+
+**End result:** {end_result}
 
 **Source's source:** {sources_source}
 
