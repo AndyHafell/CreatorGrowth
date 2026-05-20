@@ -6521,6 +6521,7 @@ def diagram_pixel_art(diagram_id):
 _FACELESS_SOP_PATH = Path(__file__).resolve().parent / "prompts" / "thumbnail_faceless.md"
 _PIXEL_FACE_SOP_PATH = Path(__file__).resolve().parent / "prompts" / "thumbnail_pixel_face.md"
 _FACE_REFS_DIR = Path(__file__).resolve().parent / "assets" / "face_references"
+_LOGOS_DIR = Path(__file__).resolve().parent / "assets" / "logos"
 
 
 def _load_face_refs():
@@ -6533,6 +6534,107 @@ def _load_face_refs():
         mime = mimetypes.guess_type(str(p))[0] or "image/png"
         refs.append((mime, p.read_bytes()))
     return refs
+
+
+def _load_logo(name):
+    """Return (mime_type, png_bytes) for a logo, or None if missing."""
+    import mimetypes
+    p = _LOGOS_DIR / f"{name}.png"
+    if not p.exists():
+        return None
+    mime = mimetypes.guess_type(str(p))[0] or "image/png"
+    return (mime, p.read_bytes())
+
+
+_PIXEL_FACE_PROMPT_TEMPLATE = """\
+These are reference photos. The first 4 are my face — I have long
+flowing brown hair that falls past my shoulders and a full beard. The
+5th image is the [BRAND NAME]: [BRAND DESCRIPTION].
+
+BRAND LOGO PLACEMENT RULE (critical): The [BRAND NAME] MUST appear in
+the final image EXACTLY as it looks in the reference image — identical
+colors, identical shape, identical [BRAND KEY FEATURES], identical
+outline. Treat it like a sticker being pasted onto the scene. DO NOT
+redraw it in pixel art style. DO NOT add visible pixels to it. DO NOT
+change its proportions. DO NOT change its expression. The logo stays
+clean, flat, and crisp — it is the only element in the image that is
+NOT pixel art.
+
+Everything ELSE in the image is 16-bit SNES pixel art: chunky visible
+pixels, flat limited color palette, no anti-aliasing, no smoothing,
+no photorealism, pure retro pixel art aesthetic.
+
+STRICT LAYOUT (follow exactly):
+
+LEFT THIRD (left side of the 16:9 frame): a LARGE close-up pixel art
+portrait of me — head and just the tops of my shoulders, zoomed IN.
+My head and hair FILL almost the entire left third vertically
+(top-to-bottom). This is a close-up portrait, NOT a small distant
+avatar. Long flowing brown hair past the shoulders (flowing down to
+the bottom of the frame on both sides of the face). Full brown beard.
+Plain white t-shirt (only neckline and shoulder tops visible). The
+face LIKENESS must match the reference photos — same eyes, nose,
+beard shape, recognizable as the same person. Confident excited
+expression, slight smile, looking directly at the viewer. Pixel art
+— chunky pixels, flat colors, but detailed enough at this close-up
+size to capture the likeness. Must still read at 320×180 preview
+size (YouTube thumbnail scale).
+
+TOP RIGHT (upper half of the right two-thirds): bold 16-bit pixel art
+text [TITLE_INSTRUCTION] on two lines. Vertical gradient from bright
+yellow (#FFD700) to deep gold (#E8A800). Thick dark navy pixel shadow
+behind the text. Text fills the upper right portion of the frame.
+
+BOTTOM RIGHT (lower half of the right two-thirds): the [BRAND NAME]
+PASTED AS-IS from the reference image, NOT redrawn in pixel art.
+Covering approximately ONE QUARTER (25%) of the total screen area.
+[BRAND KEY FEATURES]. Looks like the reference PNG placed directly
+onto the scene.
+
+BACKGROUND: dark navy pixel art with subtle blue glow, a few pixel
+sparkles scattered around the title text and the brand logo. Pure
+pixel art background, no gradients.
+
+Output must be 16:9 aspect ratio (1920x1080). The brand logo in the
+bottom right must look IDENTICAL to the reference image (flat, crisp,
+not pixelated) — every other element must be pure 16-bit SNES pixel
+art style.
+"""
+
+
+_DEFAULT_BRAND = {
+    "logo_name": "claude_code",
+    "brand_name": "Claude Code logo character",
+    "brand_description": (
+        "a chunky flat orange creature with a rounded rectangular body, "
+        "'>' and '<' black eyes, short stubby legs, and a crisp white outline"
+    ),
+    "brand_key_features": (
+        "orange body, '>' and '<' eyes, white outline, stubby legs"
+    ),
+}
+
+
+def _build_pixel_face_prompt(video_title, brand=None):
+    """Return (prompt_text, [(mime,bytes), ...]) for the pixel-face direct call.
+    Substitutes the locked SOP template with brand info + tells Gemini to
+    pick its own 2-4 word [TITLE TEXT] from the full video title."""
+    brand = brand or _DEFAULT_BRAND
+    title_instruction = (
+        f"(pick a punchy 2-4 word version yourself of this full video title: "
+        f"\"{video_title}\" — examples: \"71,000 Creators Installed This Skill\" "
+        f"→ \"71K INSTALLS\"; \"You Can Get Claude Code Free Now\" → \"NOW FREE\")"
+    )
+    template = (_PIXEL_FACE_PROMPT_TEMPLATE
+                .replace("[BRAND NAME]", brand["brand_name"])
+                .replace("[BRAND DESCRIPTION]", brand["brand_description"])
+                .replace("[BRAND KEY FEATURES]", brand["brand_key_features"])
+                .replace("[TITLE_INSTRUCTION]", title_instruction))
+    image_refs = _load_face_refs()
+    logo = _load_logo(brand["logo_name"])
+    if logo:
+        image_refs.append(logo)
+    return template, image_refs
 
 
 def _allocate_thumb_slots(thumbs, titles, n):
@@ -6591,13 +6693,11 @@ def _persist_thumb_state(conn, vid, thumbs, titles, drow_exists):
     conn.commit()
 
 
-def _gemini_thumb_direct(vid, *, kind, sop_path, prompt_intro, image_refs, slug):
-    """Shared direct-to-Gemini thumbnail generator. Returns (jsonify_payload, http_status).
+def _gemini_thumb_direct(vid, *, kind, prompt_builder, slug):
+    """Shared direct-to-Gemini thumbnail generator.
 
     kind: short identifier used in filenames + telemetry (e.g. 'faceless', 'pixel_face')
-    sop_path: Path to the SOP markdown to embed in the prompt
-    prompt_intro: text shown before the SOP and after the title
-    image_refs: list of (mime_type, bytes) inline_data parts to send before the text (face refs etc.); pass [] for text-only
+    prompt_builder: callable(video_title) -> (prompt_text, [(mime,bytes), ...])
     slug: filename prefix for outputs
     """
     from concurrent.futures import ThreadPoolExecutor
@@ -6605,9 +6705,6 @@ def _gemini_thumb_direct(vid, *, kind, sop_path, prompt_intro, image_refs, slug)
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:
         return jsonify({"error": "GEMINI_API_KEY not set"}), 500
-    if not sop_path.exists():
-        return jsonify({"error": f"SOP missing: {sop_path}"}), 500
-    sop_text = sop_path.read_text()
 
     body = request.get_json(silent=True) or {}
     try:
@@ -6628,11 +6725,7 @@ def _gemini_thumb_direct(vid, *, kind, sop_path, prompt_intro, image_refs, slug)
 
     empty_slots = _allocate_thumb_slots(thumbs, titles, n)
 
-    prompt = (
-        f"Make a YouTube thumbnail for a video titled: \"{title}\".\n\n"
-        f"{prompt_intro}\n\n"
-        f"=== SOP START ===\n{sop_text}\n=== SOP END ==="
-    )
+    prompt, image_refs = prompt_builder(title)
 
     image_parts = [
         {"inline_data": {
@@ -6716,21 +6809,30 @@ def _gemini_thumb_direct(vid, *, kind, sop_path, prompt_intro, image_refs, slug)
     })
 
 
+def _faceless_prompt_builder(video_title):
+    """Build the faceless prompt — embeds the full faceless SOP since it's
+    layout-pattern-driven (Gemini picks one of the 6)."""
+    sop_text = _FACELESS_SOP_PATH.read_text() if _FACELESS_SOP_PATH.exists() else ""
+    prompt = (
+        f"Make a YouTube thumbnail for a video titled: \"{video_title}\".\n\n"
+        f"Follow this SOP exactly — the channel signature, locked style "
+        f"constants, and one of the 6 layout patterns. Pick the layout pattern "
+        f"that best fits the title. Output 16:9, 1920x1080.\n\n"
+        f"=== SOP START ===\n{sop_text}\n=== SOP END ==="
+    )
+    return prompt, []
+
+
 @app.route("/api/videos/<int:vid>/gemini-faceless", methods=["POST"])
 @login_required
 def gemini_faceless(vid):
-    """Direct-to-Gemini faceless thumbnails — no Claude judgment, no face refs.
-    SOP-only text prompt fired N times in parallel."""
+    """Direct-to-Gemini faceless thumbnails — no Claude judgment, no face refs."""
+    if not _FACELESS_SOP_PATH.exists():
+        return jsonify({"error": f"SOP missing: {_FACELESS_SOP_PATH}"}), 500
     return _gemini_thumb_direct(
         vid,
         kind="faceless",
-        sop_path=_FACELESS_SOP_PATH,
-        prompt_intro=(
-            "Follow this SOP exactly — the channel signature, locked style "
-            "constants, and one of the 6 layout patterns. Pick the layout pattern "
-            "that best fits the title. Output 16:9, 1920x1080."
-        ),
-        image_refs=[],
+        prompt_builder=_faceless_prompt_builder,
         slug="gemini_faceless",
     )
 
@@ -6738,26 +6840,17 @@ def gemini_faceless(vid):
 @app.route("/api/videos/<int:vid>/gemini-pixel-face", methods=["POST"])
 @login_required
 def gemini_pixel_face(vid):
-    """Direct-to-Gemini pixel-face thumbnails — sends the pixel-face SOP plus 4
-    bundled face references. No Claude in the loop. No brand logo (Gemini may
-    omit the bottom-right slot or improvise a small themed icon)."""
-    refs = _load_face_refs()
-    if not refs:
+    """Direct-to-Gemini pixel-face — sends the locked SOP prompt template (not
+    the full SOP) substituted with Claude Code brand info, plus 4 face refs + 1
+    brand logo."""
+    if not _load_face_refs():
         return jsonify({"error": "no face references found in assets/face_references/"}), 500
+    if not _load_logo(_DEFAULT_BRAND["logo_name"]):
+        return jsonify({"error": f"brand logo missing: {_DEFAULT_BRAND['logo_name']}"}), 500
     return _gemini_thumb_direct(
         vid,
         kind="pixel_face",
-        sop_path=_PIXEL_FACE_SOP_PATH,
-        prompt_intro=(
-            "The first 4 attached images are Andy's face references — long flowing "
-            "brown hair past the shoulders and a full beard. Follow this SOP exactly: "
-            "Andy's pixel-art face fills the left 1/3, bold gold pixel title top-right, "
-            "dark navy pixel background with a few sparkles. NO BRAND LOGO this time — "
-            "leave the bottom-right slot empty or fill it with a small themed pixel icon "
-            "(lightning bolt, gear, cloud, etc.) that fits the title. Pick a punchy 2-4 "
-            "word TITLE TEXT yourself based on the video title. Output 16:9, 1920x1080."
-        ),
-        image_refs=refs,
+        prompt_builder=_build_pixel_face_prompt,
         slug="gemini_pixel_face",
     )
 
