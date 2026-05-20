@@ -1873,6 +1873,14 @@
                 <button class="add-field-btn" onclick="addCustomField()">+ Add Field</button>
             </div>
 
+            <div id="modalCreateBriefRow" style="margin-top:12px; display:none;">
+                <button id="createBriefBtn" onclick="createBrief()"
+                        style="background:#1a1a3a; border:1px solid #3a3a5e; color:#9fb3ff; padding:8px 14px; border-radius:4px; cursor:pointer; font-size:12px; font-weight:600; letter-spacing:1px; text-transform:uppercase;">
+                    + Create Brief
+                </button>
+                <span id="createBriefStatus" style="font-size:11px; color:#888; margin-left:10px;"></span>
+            </div>
+
             <div id="modalInlineDoc" style="display:none; margin-top:12px;">
                 <hr class="modal-divider">
                 <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
@@ -4481,6 +4489,43 @@
 
 
 
+        async function createBrief() {
+            if (!modalVideoId) return;
+            const btn = document.getElementById('createBriefBtn');
+            const status = document.getElementById('createBriefStatus');
+            if (!btn) return;
+            btn.disabled = true;
+            const originalLabel = btn.textContent;
+            btn.textContent = 'Creating…';
+            if (status) status.textContent = '';
+            try {
+                const resp = await fetch(`/api/videos/${modalVideoId}/create-brief`, { method: 'POST' });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    if (status) { status.textContent = data.error || 'Failed'; status.style.color = '#ff6b6b'; }
+                    return;
+                }
+                // Set Brief Doc field in modalDetails so the tab renders + future saves include it
+                const briefField = modalDetails.custom_fields.find(f => f.key === 'Brief Doc');
+                if (briefField) {
+                    briefField.value = data.path || data.filename;
+                } else {
+                    modalDetails.custom_fields.push({ key: 'Brief Doc', value: data.path || data.filename });
+                }
+                renderCustomFields();
+                await saveModalData();
+                buildDocTabs();
+                if (status) { status.textContent = data.exists ? 'Brief already exists — opened' : 'Brief created'; status.style.color = '#4caf50'; }
+                showToast(data.exists ? 'Brief already exists' : 'Brief created');
+            } catch (e) {
+                if (status) { status.textContent = 'Failed to create brief'; status.style.color = '#ff6b6b'; }
+                showToast('Brief creation failed', true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = originalLabel;
+            }
+        }
+
         async function createContentDoc() {
             if (!modalVideoId) return;
             const btn = document.getElementById('createContentDocBtn');
@@ -5014,6 +5059,12 @@
         function buildDocTabs() {
             const container = document.getElementById('modalInlineDoc');
             const tabsEl = document.getElementById('docTabs');
+            // Show/hide the Create Brief button based on whether a brief already exists
+            const briefRow = document.getElementById('modalCreateBriefRow');
+            if (briefRow) {
+                const briefField = (modalDetails && modalDetails.custom_fields || []).find(f => f.key === 'Brief Doc' && f.value);
+                briefRow.style.display = briefField ? 'none' : 'block';
+            }
             if (!container || !tabsEl || !modalDetails || !modalDetails.custom_fields) {
                 if (container) container.style.display = 'none';
                 return;
