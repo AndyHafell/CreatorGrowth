@@ -230,6 +230,10 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     try:
+        conn.execute("ALTER TABLE diagrams ADD COLUMN vision_keywords TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
         conn.execute("ALTER TABLE videos ADD COLUMN editor_state TEXT")
     except sqlite3.OperationalError:
         pass
@@ -5190,6 +5194,62 @@ def save_visual_tags(vid):
     return jsonify({"ok": True, "tags": tags})
 
 
+def _gemini_diagram_keywords(image_bytes, api_key):
+    """Ask Gemini 2.5 Flash to look at a diagram image and return a list of
+    concept keywords (1-3 words each) describing what's visible. Used to
+    score where in the script a diagram should be placed.
+
+    Returns list[str] or None on error. Cheap call (~$0.0001 per diagram).
+    """
+    import base64
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    img_b64 = base64.b64encode(image_bytes).decode("ascii")
+    prompt = (
+        "Look at this diagram. Return 5-12 short keywords (1-3 words each) "
+        "describing what concepts, named tools, processes, or text elements "
+        "are visible in it. Focus on things a viewer would say out loud when "
+        "explaining the diagram. Skip generic words like 'diagram', 'image', "
+        "'box'. Return ONLY a JSON array of lowercase strings — no commentary, "
+        "no code fence. Example: "
+        '["thumbnail generation", "midjourney", "canva", "workflow", "slash thumb"]'
+    )
+    body = {
+        "contents": [{"parts": [
+            {"text": prompt},
+            {"inline_data": {"mime_type": "image/png", "data": img_b64}},
+        ]}],
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "temperature": 0.1,
+            "maxOutputTokens": 256,
+        },
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=45) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        parsed = json.loads(text)
+    except (HTTPError, URLError, KeyError, IndexError, ValueError, TypeError):
+        return None
+    if not isinstance(parsed, list):
+        return None
+    out = []
+    for k in parsed:
+        if isinstance(k, str):
+            kw = k.strip().lower()
+            if kw and len(kw) <= 40:
+                out.append(kw)
+    return out[:12] if out else None
+
+
 _SCREEN_PHRASE_RE = re.compile(
     r"\b("
     r"let me show you|"
@@ -5266,7 +5326,7 @@ def auto_suggest_visual_tags(vid):
         "SELECT vocal_doc, visual_tags FROM videos WHERE id=?", (vid,)
     ).fetchone()
     drows = conn.execute(
-        "SELECT id, name, position, script, image_path, result_url FROM diagrams "
+        "SELECT id, name, position, script, image_path, result_url, vision_keywords FROM diagrams "
         "WHERE video_id=? ORDER BY position, created_at",
         (vid,)
     ).fetchall()
@@ -5365,10 +5425,10 @@ def auto_suggest_visual_tags(vid):
             "label": seg.get("name") or None,
         })
 
-    # 2) Diagrams — span a 2-3 sentence PARAGRAPH inside the step body (after
-    #    the chapter intro, before the chapter lead-out). Place one diagram
-    #    per step. Anything with image_path OR result_url qualifies; apply
-    #    picks the best available asset at render time.
+    # 2) Diagrams — span a 3-5 sentence PARAGRAPH inside the step body. Pick
+    #    the window by keyword-matching the diagram's name + vision keywords
+    #    (extracted from the actual image via Gemini Flash, cached on the row)
+    #    against the script.
     rendered_diagrams = [r for r in drows if _diagram_available(r)]
     for r in drows:
         if not _diagram_available(r):
@@ -5377,6 +5437,58 @@ def auto_suggest_visual_tags(vid):
                 "name": r["name"],
                 "reason": "no image_path or result_url — skipped",
             })
+
+    # --- Gemini vision keyword extraction (cached on diagrams.vision_keywords).
+    # For diagrams with image_path but no cached keywords, call Gemini in
+    # parallel and persist. ~$0.0001 per diagram, ~2-4s for 7 diagrams.
+    vkw_by_id = {}
+    for r in rendered_diagrams:
+        cached = r["vision_keywords"]
+        if cached:
+            try:
+                parsed = json.loads(cached)
+                if isinstance(parsed, list):
+                    vkw_by_id[r["id"]] = [str(k).lower() for k in parsed if k]
+            except (TypeError, ValueError):
+                pass
+    need_vision = [
+        r for r in rendered_diagrams
+        if r["id"] not in vkw_by_id and r["image_path"]
+    ]
+    vision_api_key = os.environ.get("GEMINI_API_KEY", "")
+    if need_vision and vision_api_key:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _fetch_and_describe(row):
+            try:
+                img_full = Path(app.root_path) / row["image_path"]
+                if not img_full.exists():
+                    return row["id"], None
+                with open(img_full, "rb") as f:
+                    img_bytes = f.read()
+                kws = _gemini_diagram_keywords(img_bytes, vision_api_key)
+                return row["id"], kws
+            except Exception as e:
+                app.logger.warning(f"diagram-vision: {row['id']} failed: {e}")
+                return row["id"], None
+
+        with ThreadPoolExecutor(max_workers=min(8, len(need_vision))) as ex:
+            futs = {ex.submit(_fetch_and_describe, r): r for r in need_vision}
+            for fut in as_completed(futs):
+                did, kws = fut.result()
+                if kws:
+                    vkw_by_id[did] = kws
+
+        # Persist newly-computed keywords so the next click is instant.
+        if vkw_by_id:
+            conn2 = get_db()
+            for did in [r["id"] for r in need_vision if r["id"] in vkw_by_id]:
+                conn2.execute(
+                    "UPDATE diagrams SET vision_keywords=? WHERE id=?",
+                    (json.dumps(vkw_by_id[did]), did),
+                )
+            conn2.commit()
+            conn2.close()
 
     for r in rendered_diagrams:
         name = r["name"] or ""
@@ -5420,9 +5532,8 @@ def auto_suggest_visual_tags(vid):
             })
             continue
 
-        # Pick the best 3-sentence window in body_sents by keyword-matching
-        # the diagram name against the sentences. E.g. "Step 4: B-Roll: Cost"
-        # → keywords {broll, cost} → highest-scoring window in STEP 4 body.
+        # Build keyword list: diagram name + cached vision keywords. Vision
+        # keywords come from Gemini Flash reading the actual image.
         _STOP_WORDS = {
             "step", "diagram", "chapter", "with", "from", "into", "this",
             "that", "the", "and", "for", "your", "you",
@@ -5432,6 +5543,14 @@ def auto_suggest_visual_tags(vid):
             w.lower()
             for w in kw_source.split()
             if len(w) >= 4 and w.lower() not in _STOP_WORDS
+        ]
+        # Vision keywords are phrases (1-3 words). Add as-is so multi-word
+        # phrases get exact substring matches.
+        vision_kws = vkw_by_id.get(r["id"]) or []
+        # Filter out stop-only phrases.
+        vision_kws = [
+            v for v in vision_kws
+            if v and not all(w in _STOP_WORDS for w in v.split())
         ]
         # Slide a 3-sentence window across the body and score each.
         best = None  # (score, cs, ce, window_start_idx)
@@ -5445,14 +5564,19 @@ def auto_suggest_visual_tags(vid):
             wcs = window[0][0]
             wce = window[-1][1]
             window_text = cleaned[wcs:wce].lower()
-            # Keyword presence score (weighted).
+            # Keyword presence score (weighted). Name keywords score lower,
+            # vision keywords (from actual image content) score higher.
             score = 0
             for kw in keywords:
                 hits = window_text.count(kw)
                 if hits:
-                    score += 20 + min(hits, 3) * 5
-            # Prefer the early-body chunk when there's no keyword signal at all
-            # (matches old behavior — landing right after intro is reasonable).
+                    score += 15 + min(hits, 3) * 5
+            for vkw in vision_kws:
+                hits = window_text.count(vkw)
+                if hits:
+                    score += 30 + min(hits, 3) * 10
+            # Mild bias to the early-body window — landing right after intro
+            # is the right answer when there's no keyword signal at all.
             if start == 0:
                 score += 5
             if best is None or score > best[0]:
