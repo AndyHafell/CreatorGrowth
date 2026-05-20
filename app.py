@@ -1874,6 +1874,47 @@ USE THIS DATA when evaluating the brief:
 """
 
 
+def _claude_json_call(system_text, user_text, model="claude-sonnet-4-6", max_tokens=4000, timeout=60):
+    """Call Claude Messages API with a JSON-mode contract.
+    Returns the parsed JSON dict on success, or None on failure (caller falls back).
+    Uses ANTHROPIC_API_KEY from env.
+    """
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return None
+    body = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system_text + "\n\nReturn ONLY a valid JSON object — no preamble, no markdown fences, no commentary outside the JSON.",
+        "messages": [{"role": "user", "content": user_text}],
+    }
+    req = Request(
+        "https://api.anthropic.com/v1/messages",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["content"][0]["text"]
+        # Strip optional ```json fences if model added them despite instruction
+        text = text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        return json.loads(text)
+    except (HTTPError, URLError, KeyError, IndexError, json.JSONDecodeError, TypeError) as e:
+        print(f"[claude] call failed: {type(e).__name__}: {e}", flush=True)
+        return None
+
+
 def _gemini_fill_brief(title, channel, views_fmt, outlier_fmt, video_id, description):
     """Call Gemini to fill a structured brief. Returns a dict with all 11 brief fields, or None on failure."""
     from urllib.request import urlopen, Request
@@ -1997,6 +2038,12 @@ Video description (verbatim from YouTube):
 
 Return ONLY the JSON object. No preamble, no markdown fences, no commentary."""
 
+    # Primary: Claude Sonnet 4.6 (better at following negative rules like "no engineering tasks disguised as steps")
+    claude_result = _claude_json_call(project_context, user_prompt, model="claude-sonnet-4-6", max_tokens=4000)
+    if claude_result is not None:
+        return claude_result
+
+    # Fallback: Gemini 2.5 Flash
     body = {
         "contents": [{
             "parts": [
@@ -2161,6 +2208,12 @@ BRIEF (already validated, score ≥7/10):
 
 Return ONLY the JSON object. No preamble, no markdown fences."""
 
+    # Primary: Claude Sonnet 4.6
+    claude_result = _claude_json_call(project_context, user_prompt, model="claude-sonnet-4-6", max_tokens=3000)
+    if claude_result is not None:
+        return claude_result
+
+    # Fallback: Gemini 2.5 Flash
     body = {
         "contents": [{
             "parts": [
