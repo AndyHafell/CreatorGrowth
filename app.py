@@ -1902,7 +1902,11 @@ You will return a JSON object with these exact keys. Each value is plain text (n
 
 1. "inspiration_plot" — 3-5 sentence summary of what the inspiration video ACTUALLY covers (the plot/narrative). Andy should be able to absorb the source video's gist in 15 seconds without watching it. Include the central thesis, the main framework/rules/steps the creator introduces (NAME them explicitly — "Rule #1: X, Rule #2: Y…"), the tools or examples they show, and the closing payoff. Use the YouTube description's timestamps/chapter list as your structural guide if present. Be concrete, not vague. NEVER say "discusses prompt engineering best practices" — say "extracts 4 rules: (1) Prompt Skills not Claude, (2) Skills are more than prompts, (3) Build composable skills, (4) Skills get smarter every session."
 
-2. "screen_share_todo" — Short flowing PARAGRAPH (not a numbered list) of 3-7 steps describing what Andy will literally DO on camera when filming. ~100-150 words. Sequential: "First Andy opens X, then he shows Y, then he switches to Z…" Anchor every step to a real app/file/URL — "opens Anthropic's Skills docs in Chrome" not "shows the source." MUST include AgentFlow as the workspace at some point (workspace invariant). Mention the Skool gift reveal moment. This is the glanceable preview, NOT the deep scene plan (that lives in the separate Screen Share To-Do doc).
+2. "screen_share_todo" — Short flowing PARAGRAPH (not a numbered list) of 3-7 steps describing what Andy will literally DO on camera when filming. ~100-150 words. Sequential: "First Andy opens X, then he shows Y, then he switches to Z…" Anchor every step to a real app/file/URL — "opens Anthropic's Skills docs in Chrome" not "shows the source." MUST include AgentFlow as the workspace at some point (workspace invariant). Mention the Skool gift reveal moment.
+
+**CRITICAL — proof-segment rule (locked 2026-05-19):** This paragraph MUST end with a **demonstrable end-result** voiceover can point to and say "look, it works." Acceptable end-results: built thing running on real input / item installed + tested working in real environment / test outcome on real input (not toy data) / side-by-side comparison rendered / finished tutorial workflow on a real artifact. If you cannot name the demonstrable end-result, write "PROOF SEGMENT MISSING" at the end of the paragraph — the brief fails the gate. React-only setups DO NOT QUALIFY — they need a build/test tail.
+
+This is the glanceable preview only, NOT the deep scene plan (that lives in the separate Screen Share To-Do doc).
 
 3. "sources_source" — The ORIGINAL tool / blog post / video / tweet the inspiration creator was citing. If the inspiration video's description has a direct link, use it. If not, NAME the most likely upstream source explicitly (e.g. "Anthropic's official Skills documentation + Oct 2025 launch blog"). Never say "unknown."
 
@@ -1926,7 +1930,7 @@ You will return a JSON object with these exact keys. Each value is plain text (n
 
 12. "filming_notes" — 2-4 short bullets for the content-doc stage: opening shot (which source is on screen), what NOT to do (don't name the inspiration creator), how each source-rule maps to a real skill in Andy's folder, where the Skool CTA lands.
 
-13. "final_thoughts" — 3-5 sentence honest editorial verdict on this brief. NOT a re-summary of the fields above. Answer: Is this idea genuinely worth Andy's time, or is it a "looks good on paper" idea? What's the biggest risk (e.g. inspiration video might be peaking, source's source might be too obscure, audience overlap concerns, redundancy with Andy's recent uploads)? What's the strongest reason to ship it? End with a one-line confidence call: "Ship it" / "Ship with caveat: …" / "Pause and rework: …" — be direct, not diplomatic.
+13. "final_thoughts" — 3-5 sentence honest editorial verdict on this brief. NOT a re-summary of the fields above. Weigh: (a) authority hacking strength — is the source's source a real god-mode anchor? (b) audience overlap — does this duplicate a recent upload? (c) **PROOF-SEGMENT QUALITY** — does the screen_share_todo end with a real demonstrable end-result, or is it react-only / vague? Per the May 19 footage rule, react-only without a build/test tail is an automatic "Pause and rework." (d) channel format fit — does this match the winning vein in top performers? End with a one-line confidence call: "Ship it" / "Ship with caveat: …" / "Pause and rework: …" — be direct, not diplomatic.
 """
 
     user_prompt = f"""Inspiration video:
@@ -2297,7 +2301,7 @@ def create_brief(vid):
     final_thoughts     = (filled or {}).get("final_thoughts") if filled else None
 
     checkmark = "x" if auto_filled else " "
-    score_line = "**10/10** → review the fills; correct anything off before promoting to content-doc-process." if auto_filled else "X/10"
+    score_line = "**11/11** → review the fills; correct anything off (especially Proof segment) before promoting to content-doc-process." if auto_filled else "X/11"
 
     notes_section = ""
     if filming_notes:
@@ -2349,6 +2353,7 @@ Link: https://youtube.com/watch?v={video_id}
 ## BRIEF CHECKLIST
 
 - [{checkmark}] **Authority hacking — yes/no.** Named external god-mode source identified.
+- [{checkmark}] **Proof segment — yes/no.** Screen share to-do ends with a demonstrable end-result (built thing running / test outcome / side-by-side / finished workflow). React-only fails the gate. [Locked 2026-05-19 footage rule.]
 - [{checkmark}] **Source's source pulled.** Inspiration creator's description checked for the ORIGINAL tool/video.
 - [{checkmark}] **Differentiator named — one line.** Our angle is meaningfully different from the inspiration video.
 - [{checkmark}] **Frame chosen.** React / breakdown / apply / contradict — source-on-stage decided.
@@ -5194,16 +5199,31 @@ def auto_suggest_visual_tags(vid):
                 "reason": "step has no body text",
             })
             continue
-        # Pick first available sentence within this step.
-        target_idx = used_steps_for_diagram.get(id(seg), 0)
-        if target_idx >= len(sents):
-            # No more sentences in this step — put it back at the last sentence.
-            target_idx = len(sents) - 1
-        cs, ce = sents[target_idx]
+        # Skip the step-intro sentence ("And now let's get into Step N — ...").
+        # If sentence 0 looks like an intro (mentions "step N" or starts with
+        # connective filler), shift past it.
+        def _is_step_intro(text: str) -> bool:
+            t = text.lstrip().lower()
+            if re.search(r"\b(?:step|chapter)\s*\d+\b", t):
+                return True
+            if t.startswith(("and now", "now let", "first up", "first,", "next up", "next,")):
+                return True
+            return False
+
+        body_sents = list(sents)
+        if body_sents and _is_step_intro(cleaned[body_sents[0][0]:body_sents[0][1]]):
+            body_sents = body_sents[1:]
+        if not body_sents:
+            # Step only had an intro line — fall back to placing at it anyway.
+            body_sents = list(sents)
+
+        # Pick first available sentence in body_sents.
+        prior = used_steps_for_diagram.get(id(seg), 0)
+        target_idx = min(prior, len(body_sents) - 1)
+        cs, ce = body_sents[target_idx]
         if overlaps_claimed(cs, ce):
-            # Find next free sentence.
             placed = False
-            for s2 in sents[target_idx + 1:]:
+            for s2 in body_sents[target_idx + 1:]:
                 if not overlaps_claimed(*s2):
                     cs, ce = s2
                     placed = True
@@ -5242,39 +5262,52 @@ def auto_suggest_visual_tags(vid):
                     "label": None,
                 })
 
-    # 3) Avatar sprinkle — at most ONE per step. Picks a mid-step sentence
-    #    that isn't already claimed.
+    # 3) Avatar sprinkle — at most ONE per step. Avatar is "salt"; we want a
+    #    short, punchy one-liner (≤ 100 chars) ending in a strong terminator.
+    #    Score candidates and pick the best.
     for seg, sents in seg_sentences:
         if not sents:
             continue
-        # Try mid-step first, then walk outwards.
-        mid = len(sents) // 2
-        order = [mid]
-        for off in range(1, len(sents)):
-            if mid + off < len(sents):
-                order.append(mid + off)
-            if mid - off >= 0:
-                order.append(mid - off)
-        placed = False
-        for idx in order:
-            cs, ce = sents[idx]
-            # Skip very short sentences (probably "And.", "Yes.", etc).
-            if (ce - cs) < 18:
-                continue
+        best = None  # (score, idx, cs, ce)
+        for idx, (cs, ce) in enumerate(sents):
             if overlaps_claimed(cs, ce):
                 continue
-            claim(cs, ce)
-            suggested.append({
-                "id": "vt" + uuid.uuid4().hex[:12],
-                "char_start": cs,
-                "char_end": ce,
-                "type": "avatar",
-                "label": None,
-            })
-            placed = True
-            break
-        if not placed:
+            length = ce - cs
+            if length < 25 or length > 110:
+                continue
+            text = cleaned[cs:ce].strip()
+            score = 0
+            # Reward short, complete sentences.
+            score += max(0, 110 - length)
+            # Reward strong terminators.
+            if text.endswith(("!", ".")):
+                score += 30
+            # Reward emphatic words.
+            if re.search(
+                r"\b(?:never|always|literally|every|nobody|nothing|done|fast|free|now)\b",
+                text,
+                re.IGNORECASE,
+            ):
+                score += 25
+            # Penalize first sentence of a step (likely intro).
+            if idx == 0:
+                score -= 40
+            # Penalize last sentence of a step (likely chapter lead-in target).
+            if idx == len(sents) - 1:
+                score -= 30
+            if best is None or score > best[0]:
+                best = (score, idx, cs, ce)
+        if best is None:
             continue
+        _score, _idx, cs, ce = best
+        claim(cs, ce)
+        suggested.append({
+            "id": "vt" + uuid.uuid4().hex[:12],
+            "char_start": cs,
+            "char_end": ce,
+            "type": "avatar",
+            "label": None,
+        })
 
     # 4) Text-anim sprinkle: punctuation/emphasis ONLY — a handful of
     #    sentences with a strong feel ("...", em-dashes, exclamation, all-caps
@@ -5332,23 +5365,9 @@ def auto_suggest_visual_tags(vid):
             })
             break
 
-    # 5) Screen as default — every remaining unclaimed sentence becomes a
-    #    screen tag. Screen is the baseline visual; talking head shows
-    #    underneath when no other tag is layered on top.
-    for (_seg, sents) in seg_sentences:
-        for (cs, ce) in sents:
-            if overlaps_claimed(cs, ce):
-                continue
-            if (ce - cs) < 12:
-                continue
-            claim(cs, ce)
-            suggested.append({
-                "id": "vt" + uuid.uuid4().hex[:12],
-                "char_start": cs,
-                "char_end": ce,
-                "type": "screen",
-                "label": None,
-            })
+    # NOTE: Screen is the implicit DEFAULT — anywhere with no other tag plays
+    # screen-recording at render time. We deliberately don't fill the rest of
+    # the doc with screen tags here; that just creates UI noise.
 
     # Merge with existing tags. Preserve manual `chapters` tags entirely;
     # drop the other auto types if replace=true.
