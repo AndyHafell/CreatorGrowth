@@ -5302,6 +5302,31 @@ def auto_suggest_visual_tags(vid):
             })
             text_anim_count += 1
 
+    # 4.5) Chapter lead-ins — the LAST sentence of every segment (except the
+    #      very last one) is tagged as `chapter` with label = name of the next
+    #      segment. This is the "Up next: STEP 2 — THE PROBLEM" card moment.
+    for i in range(len(seg_sentences) - 1):
+        seg, sents = seg_sentences[i]
+        next_seg = seg_sentences[i + 1][0]
+        if not sents:
+            continue
+        # Walk from the end backwards for the first sentence still unclaimed
+        # and not too short.
+        for (cs, ce) in reversed(sents):
+            if overlaps_claimed(cs, ce):
+                continue
+            if (ce - cs) < 15:
+                continue
+            claim(cs, ce)
+            suggested.append({
+                "id": "vt" + uuid.uuid4().hex[:12],
+                "char_start": cs,
+                "char_end": ce,
+                "type": "chapter",
+                "label": next_seg.get("name") or None,
+            })
+            break
+
     # 5) Screen as default — every remaining unclaimed sentence becomes a
     #    screen tag. Screen is the baseline visual; talking head shows
     #    underneath when no other tag is layered on top.
