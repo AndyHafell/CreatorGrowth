@@ -500,6 +500,28 @@
         .action-btn.brief-btn { color: #9fb3ff; border: 1px solid #3a3a5e; }
         .action-btn.brief-btn:hover { background: #1a1a3a; color: #fff; }
         .action-btn.brief-btn.in-flight { background: #1a1a3a; color: #9fb3ff; opacity: 0.7; cursor: wait; }
+
+        .brief-chip {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            z-index: 5;
+            background: linear-gradient(135deg, #2a2a5e 0%, #1a1a3a 100%);
+            border: 1px solid #5a5a9e;
+            color: #c5d3ff;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+            transition: all 0.15s;
+        }
+        .brief-chip:hover { background: linear-gradient(135deg, #3a3a7e 0%, #2a2a5e 100%); color: #fff; border-color: #7a7abe; transform: translateY(-1px); }
+        .brief-chip.in-flight { opacity: 0.6; cursor: wait; }
+        .brief-chip-regen { background: linear-gradient(135deg, #2a4a2e 0%, #1a3a1e 100%); border-color: #4a7a5e; color: #c5ffd3; }
+        .brief-chip-regen:hover { background: linear-gradient(135deg, #3a6a3e 0%, #2a5a2e 100%); border-color: #5a9a6e; }
         .action-btn.move-best-yellow { color: #ffc107; }
         .action-btn.move-best-yellow:hover { background: #ffc107; color: #1a1a1a; }
         .action-btn.move-done { color: #4caf50; }
@@ -1677,10 +1699,6 @@
     </div>
 
     <div class="sort-bar">
-        <button id="batchBriefBtn" onclick="batchCreateBriefs()" style="display:none; background:#1a1a3a; border:1px solid #3a3a5e; color:#9fb3ff; padding:6px 12px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:600; letter-spacing:1px; text-transform:uppercase; margin-right:12px;" title="Sequentially generate/regenerate briefs for every card visible in this tab. Server-side serial — slow but reliable.">
-            ↻ Briefs (this tab)
-        </button>
-        <span id="batchBriefStatus" style="font-size:11px; color:#888; margin-right:12px;"></span>
         <span class="sort-label">Sort:</span>
         <button class="sort-btn active" data-sort="added" onclick="setSort('added')">Date Added</button>
         <button class="sort-btn" data-sort="views" onclick="setSort('views')">Views</button>
@@ -2736,10 +2754,7 @@
             document.getElementById('twitterContainer').style.display = isTwitter ? 'block' : 'none';
             document.getElementById('channelsBar').style.display = isSpecial ? 'none' : '';
             document.querySelector('.sort-bar').style.display = isSpecial ? 'none' : '';
-            // Batch "regen all" button only on the Brief tab (refresh existing briefs).
-            // On Best tab, briefs are fired per-card via the small Brief button on each card.
-            const briefBatchBtn = document.getElementById('batchBriefBtn');
-            if (briefBatchBtn) briefBatchBtn.style.display = (tab === 'brief') ? '' : 'none';
+            // (batch-brief button removed — briefs are per-card now)
             if (isCreators) {
                 renderCreatorList();
             } else if (isKeywords) {
@@ -3096,6 +3111,8 @@
             return `
             <div class="card${isTransformed ? ' transformed' : ''}${v.tucked ? ' is-tucked' : ''}" data-video-id="${v.id}" draggable="true" ondragstart="cardDragStart(event, ${v.id})" ondragend="cardDragEnd(event)" onclick="openModal(${v.id})" style="cursor:pointer;">
                 <button class="tuck-btn" title="${tuckTitle}" onclick="toggleTuck(${v.id}, event)">${tuckIcon}</button>
+                ${v.status === 'best' ? `<button class="brief-chip" onclick="quickBrief(${v.id}, event)" title="Generate brief in background — card auto-moves to Brief tab when done">+ Brief</button>` : ''}
+                ${v.status === 'brief' ? `<button class="brief-chip brief-chip-regen" onclick="quickBrief(${v.id}, event)" title="Regenerate brief in background">↻ Brief</button>` : ''}
                 <div class="thumb-wrap">
                     <img src="${v.thumbnail_url}" alt="" loading="lazy">
                     ${v.duration ? `<span class="duration-badge">${v.duration}</span>` : ''}
