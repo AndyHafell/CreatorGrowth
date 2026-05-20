@@ -5497,84 +5497,62 @@ def auto_suggest_visual_tags(vid):
             conn2.commit()
             conn2.close()
 
-    for r in rendered_diagrams:
-        name = r["name"] or ""
-        step_n = _ord(name)
-        if step_n is None:
-            step_n = (r["position"] or 0) + 1
-        seg = step_segs_by_num.get(step_n)
-        if seg is None:
-            idx = step_n - 1
-            if 0 <= idx < len(step_segs_in_order):
-                seg = step_segs_in_order[idx]
-        if seg is None:
-            skipped.append({
-                "diagram_id": r["id"],
-                "name": name,
-                "reason": "no segment to place it in",
-            })
-            continue
-        sents = _sentence_spans(cleaned, seg)
-        if not sents:
-            skipped.append({
-                "diagram_id": r["id"],
-                "name": name,
-                "reason": "step has no body text",
-            })
-            continue
-
-        # Skip past the chapter intro sentence (claimed in pass 1).
+    # Global window pool: every 3-sentence window across the WHOLE doc,
+    # excluding any that overlap a chapter-intro sentence already claimed.
+    _STOP_WORDS = {
+        "step", "diagram", "chapter", "with", "from", "into", "this",
+        "that", "the", "and", "for", "your", "you", "have", "what",
+        "when", "where", "will", "just", "like", "more",
+    }
+    all_windows = []  # list of (cs, ce, seg_id, start_idx_in_seg)
+    for seg, sents in seg_sentences:
+        # Skip past chapter intro and trailing-most sentence.
         body_start_idx = chapter_sentence_by_seg.get(id(seg), -1) + 1
-        body_sents = sents[body_start_idx:]
-        # Trim trailing sentence reserved for the "chapter lead-out" pass (we'll
-        # leave the very last sentence open for it). Only if there are enough
-        # sentences to spare.
-        if len(body_sents) > 3:
-            body_sents = body_sents[:-1]
-        if not body_sents:
-            skipped.append({
-                "diagram_id": r["id"],
-                "name": name,
-                "reason": "step body too short after intro",
-            })
-            continue
+        body = sents[body_start_idx:]
+        if len(body) > 3:
+            body = body[:-1]
+        for s in range(max(1, len(body) - 2)):
+            window = body[s:s + 3]
+            if not window:
+                continue
+            if any(overlaps_claimed(c, e) for (c, e) in window):
+                continue
+            all_windows.append((window[0][0], window[-1][1], id(seg), s, seg))
 
-        # Build keyword list: diagram name + cached vision keywords. Vision
-        # keywords come from Gemini Flash reading the actual image.
-        _STOP_WORDS = {
-            "step", "diagram", "chapter", "with", "from", "into", "this",
-            "that", "the", "and", "for", "your", "you",
-        }
+    def _kws_for_diagram(r):
+        name = r["name"] or ""
         kw_source = re.sub(r"[^a-zA-Z\s]", " ", name)
-        keywords = [
+        name_kws = [
             w.lower()
             for w in kw_source.split()
             if len(w) >= 4 and w.lower() not in _STOP_WORDS
         ]
-        # Vision keywords are phrases (1-3 words). Add as-is so multi-word
-        # phrases get exact substring matches.
         vision_kws = vkw_by_id.get(r["id"]) or []
-        # Filter out stop-only phrases.
         vision_kws = [
             v for v in vision_kws
             if v and not all(w in _STOP_WORDS for w in v.split())
         ]
-        # Slide a 3-sentence window across the body and score each.
-        best = None  # (score, cs, ce, window_start_idx)
-        for start in range(max(1, len(body_sents) - 2)):
-            window = body_sents[start:start + 3]
-            if not window:
-                continue
-            # Skip if any sentence in window is already claimed.
-            if any(overlaps_claimed(c, e) for (c, e) in window):
-                continue
-            wcs = window[0][0]
-            wce = window[-1][1]
+        return name_kws, vision_kws
+
+    # For each diagram, find its top scoring window in the WHOLE doc. Then
+    # greedy-assign: sort by best-score desc, place each at its best
+    # unclaimed window.
+    diagram_candidates = []
+    for r in rendered_diagrams:
+        name = r["name"] or ""
+        name_kws, vision_kws = _kws_for_diagram(r)
+        step_n = _ord(name) or ((r["position"] or 0) + 1)
+        # Compute "named step" segment id for soft tiebreaker.
+        named_seg = step_segs_by_num.get(step_n)
+        if named_seg is None and 0 <= (step_n - 1) < len(step_segs_in_order):
+            named_seg = step_segs_in_order[step_n - 1]
+        named_seg_id = id(named_seg) if named_seg else None
+        # Score every window for this diagram.
+        scored = []
+        for (wcs, wce, seg_id, _s, _seg) in all_windows:
             window_text = cleaned[wcs:wce].lower()
-            # Keyword presence score (weighted). Name keywords score lower,
-            # vision keywords (from actual image content) score higher.
             score = 0
-            for kw in keywords:
+            for kw in name_kws:
                 hits = window_text.count(kw)
                 if hits:
                     score += 15 + min(hits, 3) * 5
@@ -5582,37 +5560,45 @@ def auto_suggest_visual_tags(vid):
                 hits = window_text.count(vkw)
                 if hits:
                     score += 30 + min(hits, 3) * 10
-            # Mild bias to the early-body window — landing right after intro
-            # is the right answer when there's no keyword signal at all.
-            if start == 0:
-                score += 5
-            if best is None or score > best[0]:
-                best = (score, wcs, wce, start)
-        if best is None:
-            # Fall back: take any unclaimed window of 3 sentences.
-            for start in range(len(body_sents)):
-                window = body_sents[start:start + 3]
-                if window and not any(overlaps_claimed(c, e) for (c, e) in window):
-                    best = (0, window[0][0], window[-1][1], start)
-                    break
-        if best is None:
+            # Soft bonus if the window is inside the diagram's named step.
+            if seg_id == named_seg_id:
+                score += 8
+            scored.append((score, wcs, wce, seg_id))
+        scored.sort(key=lambda x: -x[0])
+        diagram_candidates.append({
+            "row": r,
+            "ranked": scored,  # list of (score, cs, ce, seg_id) desc
+        })
+
+    # Greedy assignment by top-score across diagrams. The diagram with the
+    # strongest signal places first; later diagrams skip claimed windows.
+    diagram_candidates.sort(
+        key=lambda d: -(d["ranked"][0][0] if d["ranked"] else 0)
+    )
+    for cand in diagram_candidates:
+        r = cand["row"]
+        ranked = cand["ranked"]
+        placed = False
+        for (_score, cs, ce, _seg_id) in ranked:
+            if overlaps_claimed(cs, ce):
+                continue
+            claim(cs, ce)
+            suggested.append({
+                "id": "vt" + uuid.uuid4().hex[:12],
+                "char_start": cs,
+                "char_end": ce,
+                "type": "diagram",
+                "asset_id": r["id"],
+                "label": r["name"] or None,
+            })
+            placed = True
+            break
+        if not placed:
             skipped.append({
                 "diagram_id": r["id"],
-                "name": name,
-                "reason": "no free paragraph in step body",
+                "name": r["name"],
+                "reason": "no free paragraph anywhere in script",
             })
-            continue
-        _score, cs, ce, _start = best
-        used_steps_for_diagram[id(seg)] = used_steps_for_diagram.get(id(seg), 0) + 1
-        claim(cs, ce)
-        suggested.append({
-            "id": "vt" + uuid.uuid4().hex[:12],
-            "char_start": cs,
-            "char_end": ce,
-            "type": "diagram",
-            "asset_id": r["id"],
-            "label": name,
-        })
 
     # 2) Screen tags from trigger phrases — any sentence containing one.
     for seg, sents in seg_sentences:
