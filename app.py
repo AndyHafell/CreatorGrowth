@@ -1770,11 +1770,119 @@ Where: Free inside the Skool community (link in description)
     })
 
 
+def _fetch_youtube_description(video_id):
+    """Fetch a YouTube video's description via YouTube Data API. Returns '' on failure."""
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    api_key = os.environ.get("YOUTUBE_API_KEY", "")
+    if not api_key or not video_id:
+        return ""
+    try:
+        url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet&id={video_id}&key={api_key}"
+        with urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        items = data.get("items") or []
+        if not items:
+            return ""
+        return items[0].get("snippet", {}).get("description", "") or ""
+    except (HTTPError, URLError, json.JSONDecodeError, KeyError):
+        return ""
+
+
+def _gemini_fill_brief(title, channel, views_fmt, outlier_fmt, video_id, description):
+    """Call Gemini to fill a structured brief. Returns a dict with all 11 brief fields, or None on failure."""
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return None
+
+    # Andy's project context — what the LLM needs to know to make good calls
+    project_context = """
+You are filling a video brief for AI Andy (Anders Hafell) — a YouTube channel (@theaiandy, 214K subs) + Skool community ($97/mo "AI Mate") teaching creators to build AI automations without code. Anders ships tools: AgentFlow (native macOS productivity app, public launch May 2026), CreatorGrowth (creator dashboard), Content Mate (AI content factory), ScreenPost. He has a production `skills/` folder with 37 SOPs that Claude Code reads before any task — thumbnails, content docs, packaging, agent dispatch.
+
+His Q2 framework is ACD: Attraction (subs) / Conversion (free→paid) / Delivery (retention). North-star: $40K MRR by June. Current bottleneck: retention (64%).
+
+**The winning content pattern (proven by YTD data):** authority hacking — piggyback on a NAMED external god-mode source (e.g. Karpathy, Anthropic, a specific repo/framework) with the source ON STAGE, then apply it to a working system with measurable proof. The "source's source" rule: don't piggyback on the inspiration creator — go upstream to what THEY were citing. That's the OG authority.
+
+His on-camera workspace invariant: every Claude Code demo runs inside AgentFlow (Docs tab visible, skills/ folder showcased), not Terminal or VS Code.
+
+Skool gift rule: every video closes with a fork-able artifact (template, skills pack, repo, workflow) — not a demo, a real product the audience can grab.
+
+Tool-launch videos produce ~5x bigger paying cohorts than tips videos. Default preference: tool-launch frame with AgentFlow tie-in.
+"""
+
+    field_specs = """
+You will return a JSON object with these exact keys. Each value is plain text (no markdown, no quotes inside unless needed for natural prose). Be specific, opinionated, and concise — these are decisions Anders will review, not menus of options.
+
+1. "sources_source" — The ORIGINAL tool / blog post / video / tweet the inspiration creator was citing. If the inspiration video's description has a direct link, use it. If not, NAME the most likely upstream source explicitly (e.g. "Anthropic's official Skills documentation + Oct 2025 launch blog"). Never say "unknown."
+
+2. "why_god_mode" — One sentence on why the source's source carries authority. Reference views/stars/credibility/scarcity.
+
+3. "frame" — One of: "react" / "breakdown" / "apply" / "contradict". Default to "breakdown" with source-on-stage YES unless the topic clearly demands a different frame. Include "source-on-stage: yes" or "source-on-stage: no" at the end.
+
+4. "differentiator" — ONE LINE on how Anders' angle is meaningfully different from the inspiration video. Must reference a concrete asset Anders has that the inspiration creator doesn't — his production skills/ folder (37 SOPs), AgentFlow workspace, the AI Mate community, his content pipeline. NEVER say "I'll do it better" — name the structural gap.
+
+5. "my_angle" — One sentence on what Anders adds to the source's source (his application, his workspace, his lens).
+
+6. "skool_gift" — A concrete fork-able artifact tied to the topic. Examples: "Skills Starter Pack — 5 of Anders' production SOPs packaged for fork" / "Eval Criteria Template (12 binary)" / "Thumbnail Generator skill pack." Be specific; this is the Skool CTA.
+
+7. "acd_lever" — "Attraction" / "Conversion" / "Delivery". Authority-anchored videos lean Attraction.
+
+8. "tool_tie_in" — Which Anders tool naturally showcases here. Default "AgentFlow" if any Claude Code workflow is shown (his workspace invariant). Otherwise CreatorGrowth / Content Mate / etc., or "none — pure tips video" (flag as a risk).
+
+9. "demand_check" — Cite the inspiration video itself as the demand proof (title + view count + days since publish if known). If you know of a sibling video that also crossed 10K, name it.
+
+10. "one_liner" — Single plain-English sentence that passes the cab test: "what is this video about?" Should name the source's source + Anders' angle.
+
+11. "filming_notes" — 2-4 short bullets for the content-doc stage: opening shot (which source is on screen), what NOT to do (don't name the inspiration creator), how each source-rule maps to a real skill in Anders' folder, where the Skool CTA lands.
+"""
+
+    user_prompt = f"""Inspiration video:
+- Title: {title}
+- Channel: {channel}
+- Views: {views_fmt}
+- Outlier: {outlier_fmt}
+- YouTube link: https://youtube.com/watch?v={video_id}
+
+Video description (verbatim from YouTube):
+---
+{description[:4000] if description else "(no description available)"}
+---
+
+{field_specs}
+
+Return ONLY the JSON object. No preamble, no markdown fences, no commentary."""
+
+    body = {
+        "contents": [{
+            "parts": [
+                {"text": project_context},
+                {"text": user_prompt},
+            ]
+        }],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.4,
+        }
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(url, data=json.dumps(body).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=45) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        return json.loads(text)
+    except (HTTPError, URLError, KeyError, IndexError, json.JSONDecodeError, TypeError):
+        return None
+
+
 @app.route("/api/videos/<int:vid>/create-brief", methods=["POST"])
 def create_brief(vid):
     """Create a starter brief for idea-validation BEFORE a content doc.
-    Mirrors create_content_doc but writes to content/briefs/<slug>.md and
-    sets the 'Brief Doc' custom field. Brief template follows BRIEF_DOC_PROCESS_SOP.md.
+    Auto-fills via Gemini using the inspiration video's YouTube description + project context.
+    Falls back to an empty template if Gemini is unavailable or fails.
     """
     conn = get_db()
     video = conn.execute("SELECT * FROM videos WHERE id = ?", (vid,)).fetchone()
@@ -1795,9 +1903,40 @@ def create_brief(vid):
     views_fmt = _format_views(views)
     outlier_fmt = f"{outlier:.1f}x" if outlier else "N/A"
 
+    # Try to auto-fill via Gemini using the inspiration video's description
+    description = _fetch_youtube_description(video_id)
+    filled = _gemini_fill_brief(title, channel, views_fmt, outlier_fmt, video_id, description) if description else None
+    auto_filled = bool(filled)
+
+    def _get(k, default=None):
+        v = (filled or {}).get(k) if filled else None
+        return v if v else (default if default is not None else f"[fill in — {k.replace('_', ' ')}]")
+
+    sources_source     = _get("sources_source")
+    why_god_mode       = _get("why_god_mode")
+    frame              = _get("frame", "breakdown — source-on-stage: yes")
+    differentiator     = _get("differentiator")
+    my_angle           = _get("my_angle")
+    skool_gift         = _get("skool_gift")
+    acd_lever          = _get("acd_lever", "Attraction")
+    tool_tie_in        = _get("tool_tie_in", "AgentFlow")
+    demand_check       = _get("demand_check", f"{title} — {views_fmt} views ({channel})")
+    one_liner          = _get("one_liner")
+    filming_notes      = (filled or {}).get("filming_notes") if filled else None
+
+    checkmark = "x" if auto_filled else " "
+    score_line = "**10/10** → review the fills; correct anything off before promoting to content-doc-process." if auto_filled else "X/10"
+
+    notes_section = ""
+    if filming_notes:
+        if isinstance(filming_notes, list):
+            notes_section = "\n\n## Notes for content doc stage\n" + "\n".join(f"- {n}" for n in filming_notes)
+        else:
+            notes_section = f"\n\n## Notes for content doc stage\n{filming_notes}"
+
     doc = f"""# BRIEF — {title.upper()}
 
-> Idea-validation gate. Fill every field. Score the checklist honestly.
+> Idea-validation gate. {"Auto-filled by Gemini from the inspiration video's description + project context — review and correct anything off." if auto_filled else "Fill every field. Score the checklist honestly."}
 > If <7/10, kill or rewrite the idea — don't promote to a content doc.
 
 ---
@@ -1805,42 +1944,42 @@ def create_brief(vid):
 **Inspiration card:** [creatorgrowth video {vid}] — {title} ({channel}, {views_fmt} views, outlier {outlier_fmt})
 Link: https://youtube.com/watch?v={video_id}
 
-**Source's source:** [fill in — the ORIGINAL tool / blog post / video / tweet the inspiration creator referenced. Pull from THEIR description. We piggyback on the original, not the piggybacker.]
+**Source's source:** {sources_source}
 
-**Why god-mode:** [one line — what makes the source's source worth piggybacking; views/stars/credibility/scarcity]
+**Why god-mode:** {why_god_mode}
 
-**Frame:** [react / breakdown / apply / contradict] — source-on-stage: [yes/no]
+**Frame:** {frame}
 
-**Differentiator from inspiration:** [ONE LINE — how our angle is meaningfully different from the inspiration video. Not a re-transcription.]
+**Differentiator from inspiration:** {differentiator}
 
-**My angle on top:** [one line — what Andy adds to the source's source]
+**My angle on top:** {my_angle}
 
-**Skool gift:** [the fork-able artifact tied to this video]
+**Skool gift:** {skool_gift}
 
-**ACD lever:** [Attraction / Conversion / Delivery]
+**ACD lever:** {acd_lever}
 
-**Tool tie-in:** [AgentFlow / CreatorGrowth / etc., or "none — tips video"]
+**Tool tie-in:** {tool_tie_in}
 
-**Demand check:** [link to ≥10K-view similar video on YouTube]
+**Demand check:** {demand_check}
 
-**One-liner:** [single sentence — what is this video in plain English]
+**One-liner:** {one_liner}
 
 ---
 
 ## BRIEF CHECKLIST
 
-- [ ] **Authority hacking — yes/no.** Named external god-mode source identified.
-- [ ] **Source's source pulled.** Inspiration creator's description checked for the ORIGINAL tool/video.
-- [ ] **Differentiator named — one line.** Our angle is meaningfully different from the inspiration video.
-- [ ] **Frame chosen.** React / breakdown / apply / contradict — source-on-stage decided.
-- [ ] **Demand check passed.** At least one similar YouTube video at ≥10K views.
-- [ ] **Tool-launch over tips.** Tool-launch OR has a tool naturally tied in.
-- [ ] **Skool gift defined.** Fork-able artifact tied to the topic.
-- [ ] **ACD lever named.** Which lever does this pull.
-- [ ] **Subscriber-pullable.** Subs click it in their feed — not pure YT Search bait.
-- [ ] **One-liner passes the cab test.**
+- [{checkmark}] **Authority hacking — yes/no.** Named external god-mode source identified.
+- [{checkmark}] **Source's source pulled.** Inspiration creator's description checked for the ORIGINAL tool/video.
+- [{checkmark}] **Differentiator named — one line.** Our angle is meaningfully different from the inspiration video.
+- [{checkmark}] **Frame chosen.** React / breakdown / apply / contradict — source-on-stage decided.
+- [{checkmark}] **Demand check passed.** At least one similar YouTube video at ≥10K views.
+- [{checkmark}] **Tool-launch over tips.** Tool-launch OR has a tool naturally tied in.
+- [{checkmark}] **Skool gift defined.** Fork-able artifact tied to the topic.
+- [{checkmark}] **ACD lever named.** Which lever does this pull.
+- [{checkmark}] **Subscriber-pullable.** Subs click it in their feed — not pure YT Search bait.
+- [{checkmark}] **One-liner passes the cab test.**
 
-BRIEF CHECKLIST SCORE: X/10
+BRIEF CHECKLIST SCORE: {score_line}{notes_section}
 """
 
     briefs_subdir = CONTENT_DIR / "briefs"
@@ -1875,7 +2014,7 @@ BRIEF CHECKLIST SCORE: X/10
         conn.commit()
 
     conn.close()
-    return jsonify({"ok": True, "path": rel, "filename": filename, "exists": False})
+    return jsonify({"ok": True, "path": rel, "filename": filename, "exists": False, "auto_filled": auto_filled})
 
 
 current_image_url = {"url": None}
