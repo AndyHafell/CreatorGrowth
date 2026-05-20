@@ -1902,7 +1902,9 @@ You will return a JSON object with these exact keys. Each value is plain text (n
 
 1. "inspiration_plot" — 3-5 sentence summary of what the inspiration video ACTUALLY covers (the plot/narrative). Andy should be able to absorb the source video's gist in 15 seconds without watching it. Include the central thesis, the main framework/rules/steps the creator introduces (NAME them explicitly — "Rule #1: X, Rule #2: Y…"), the tools or examples they show, and the closing payoff. Use the YouTube description's timestamps/chapter list as your structural guide if present. Be concrete, not vague. NEVER say "discusses prompt engineering best practices" — say "extracts 4 rules: (1) Prompt Skills not Claude, (2) Skills are more than prompts, (3) Build composable skills, (4) Skills get smarter every session."
 
-2. "sources_source" — The ORIGINAL tool / blog post / video / tweet the inspiration creator was citing. If the inspiration video's description has a direct link, use it. If not, NAME the most likely upstream source explicitly (e.g. "Anthropic's official Skills documentation + Oct 2025 launch blog"). Never say "unknown."
+2. "screen_share_todo" — Short flowing PARAGRAPH (not a numbered list) of 3-7 steps describing what Andy will literally DO on camera when filming. ~100-150 words. Sequential: "First Andy opens X, then he shows Y, then he switches to Z…" Anchor every step to a real app/file/URL — "opens Anthropic's Skills docs in Chrome" not "shows the source." MUST include AgentFlow as the workspace at some point (workspace invariant). Mention the Skool gift reveal moment. This is the glanceable preview, NOT the deep scene plan (that lives in the separate Screen Share To-Do doc).
+
+3. "sources_source" — The ORIGINAL tool / blog post / video / tweet the inspiration creator was citing. If the inspiration video's description has a direct link, use it. If not, NAME the most likely upstream source explicitly (e.g. "Anthropic's official Skills documentation + Oct 2025 launch blog"). Never say "unknown."
 
 3. "why_god_mode" — One sentence on why the source's source carries authority. Reference views/stars/credibility/scarcity.
 
@@ -2280,6 +2282,7 @@ def create_brief(vid):
         return v if v else (default if default is not None else f"[fill in — {k.replace('_', ' ')}]")
 
     inspiration_plot   = _get("inspiration_plot")
+    screen_share_todo  = _get("screen_share_todo")
     sources_source     = _get("sources_source")
     why_god_mode       = _get("why_god_mode")
     frame              = _get("frame", "breakdown — source-on-stage: yes")
@@ -2318,6 +2321,8 @@ def create_brief(vid):
 Link: https://youtube.com/watch?v={video_id}
 
 **Inspiration plot:** {inspiration_plot}
+
+**Screen share to-do:** {screen_share_todo}
 
 **Source's source:** {sources_source}
 
