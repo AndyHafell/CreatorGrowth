@@ -2140,7 +2140,10 @@ def create_screen_share_todo(vid):
     """Create a screen-share to-do for a card. Auto-fills via Gemini using the
     card's Brief Doc as primary input. Falls back to empty template if Gemini
     or the brief is unavailable.
+
+    Pass ?force=1 (or JSON {"force": true}) to overwrite an existing to-do.
     """
+    force = (request.args.get("force") == "1") or bool((request.get_json(silent=True) or {}).get("force"))
     conn = get_db()
     video = conn.execute("SELECT * FROM videos WHERE id = ?", (vid,)).fetchone()
     if not video:
@@ -2227,7 +2230,7 @@ Each scene = one screen state / one camera setup. App switches = new scenes.
     todos_subdir.mkdir(parents=True, exist_ok=True)
     filepath = todos_subdir / filename
 
-    if filepath.exists():
+    if filepath.exists() and not force:
         rel = str(filepath.relative_to(CONTENT_DIR))
         conn.close()
         return jsonify({"ok": True, "path": rel, "filename": filename, "exists": True, "auto_filled": False})
@@ -2256,7 +2259,10 @@ def create_brief(vid):
     """Create a starter brief for idea-validation BEFORE a content doc.
     Auto-fills via Gemini using the inspiration video's YouTube description + project context.
     Falls back to an empty template if Gemini is unavailable or fails.
+
+    Pass ?force=1 (or JSON {"force": true}) to overwrite an existing brief.
     """
+    force = (request.args.get("force") == "1") or bool((request.get_json(silent=True) or {}).get("force"))
     conn = get_db()
     video = conn.execute("SELECT * FROM videos WHERE id = ?", (vid,)).fetchone()
     if not video:
@@ -2371,10 +2377,10 @@ BRIEF CHECKLIST SCORE: {score_line}{notes_section}{final_thoughts_section}
     briefs_subdir.mkdir(parents=True, exist_ok=True)
     filepath = briefs_subdir / filename
 
-    if filepath.exists():
+    if filepath.exists() and not force:
         rel = str(filepath.relative_to(CONTENT_DIR))
         conn.close()
-        return jsonify({"ok": True, "path": rel, "filename": filename, "exists": True})
+        return jsonify({"ok": True, "path": rel, "filename": filename, "exists": True, "auto_filled": False})
 
     filepath.write_text(doc, encoding="utf-8")
     rel = str(filepath.relative_to(CONTENT_DIR))

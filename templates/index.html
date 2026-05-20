@@ -4531,12 +4531,14 @@
             const btn = document.getElementById('createTodoBtn');
             const status = document.getElementById('createTodoStatus');
             if (!btn) return;
+            const isRegen = btn.dataset.regen === '1';
             btn.disabled = true;
             const originalLabel = btn.textContent;
-            btn.textContent = 'Auto-filling…';
+            btn.textContent = isRegen ? 'Regenerating…' : 'Auto-filling…';
             if (status) status.textContent = '';
             try {
-                const resp = await fetch(`/api/videos/${modalVideoId}/create-screen-share-todo`, { method: 'POST' });
+                const url = `/api/videos/${modalVideoId}/create-screen-share-todo` + (isRegen ? '?force=1' : '');
+                const resp = await fetch(url, { method: 'POST' });
                 const data = await resp.json();
                 if (!resp.ok) {
                     if (status) { status.textContent = data.error || 'Failed'; status.style.color = '#ff6b6b'; }
@@ -4572,12 +4574,14 @@
             const btn = document.getElementById('createBriefBtn');
             const status = document.getElementById('createBriefStatus');
             if (!btn) return;
+            const isRegen = btn.dataset.regen === '1';
             btn.disabled = true;
             const originalLabel = btn.textContent;
-            btn.textContent = 'Auto-filling…';
+            btn.textContent = isRegen ? 'Regenerating…' : 'Auto-filling…';
             if (status) status.textContent = '';
             try {
-                const resp = await fetch(`/api/videos/${modalVideoId}/create-brief`, { method: 'POST' });
+                const url = `/api/videos/${modalVideoId}/create-brief` + (isRegen ? '?force=1' : '');
+                const resp = await fetch(url, { method: 'POST' });
                 const data = await resp.json();
                 if (!resp.ok) {
                     if (status) { status.textContent = data.error || 'Failed'; status.style.color = '#ff6b6b'; }
@@ -5142,17 +5146,27 @@
         function buildDocTabs() {
             const container = document.getElementById('modalInlineDoc');
             const tabsEl = document.getElementById('docTabs');
-            // Show/hide the Create Brief button based on whether a brief already exists
+            // Always show the Create/Regenerate Brief button; relabel based on whether a brief exists
             const briefRow = document.getElementById('modalCreateBriefRow');
             const briefField = (modalDetails && modalDetails.custom_fields || []).find(f => f.key === 'Brief Doc' && f.value);
+            const briefBtn = document.getElementById('createBriefBtn');
             if (briefRow) {
-                briefRow.style.display = briefField ? 'none' : 'block';
+                briefRow.style.display = 'block';
             }
-            // Show "Create Screen Share To-Do" once a brief exists but no to-do does
+            if (briefBtn) {
+                briefBtn.textContent = briefField ? '↻ Regenerate Brief' : '+ Create Brief';
+                briefBtn.dataset.regen = briefField ? '1' : '';
+            }
+            // Always show Create/Regenerate Screen Share To-Do once a brief exists
             const todoRow = document.getElementById('modalCreateTodoRow');
+            const todoField = (modalDetails && modalDetails.custom_fields || []).find(f => f.key === 'Screen Share To-Do' && f.value);
+            const todoBtn = document.getElementById('createTodoBtn');
             if (todoRow) {
-                const todoField = (modalDetails && modalDetails.custom_fields || []).find(f => f.key === 'Screen Share To-Do' && f.value);
-                todoRow.style.display = (briefField && !todoField) ? 'block' : 'none';
+                todoRow.style.display = briefField ? 'block' : 'none';
+            }
+            if (todoBtn) {
+                todoBtn.textContent = todoField ? '↻ Regenerate Screen Share To-Do' : '+ Create Screen Share To-Do';
+                todoBtn.dataset.regen = todoField ? '1' : '';
             }
             if (!container || !tabsEl || !modalDetails || !modalDetails.custom_fields) {
                 if (container) container.style.display = 'none';
