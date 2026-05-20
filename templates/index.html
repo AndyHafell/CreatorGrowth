@@ -1884,6 +1884,14 @@
                 <span id="createBriefStatus" style="font-size:11px; color:#888; margin-left:10px;"></span>
             </div>
 
+            <div id="modalCreateTodoRow" style="margin-top:12px; display:none;">
+                <button id="createTodoBtn" onclick="createScreenShareTodo()"
+                        style="background:#1a2a1a; border:1px solid #3a5e3a; color:#9fffb3; padding:8px 14px; border-radius:4px; cursor:pointer; font-size:12px; font-weight:600; letter-spacing:1px; text-transform:uppercase;">
+                    + Create Screen Share To-Do
+                </button>
+                <span id="createTodoStatus" style="font-size:11px; color:#888; margin-left:10px;"></span>
+            </div>
+
             <div id="modalInlineDoc" style="display:none; margin-top:12px;">
                 <hr class="modal-divider">
                 <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
@@ -3484,7 +3492,7 @@
             renderTitles('original', modalDetails.original_titles);
             // Ensure all 4 doc-type slots exist (Brief Doc / Content Doc / Bullet Doc / Vocal Doc), in order, at the top
             (function ensureDocSlots() {
-                const DOC_KEYS = ['Brief Doc', 'Content Doc', 'Bullet Doc', 'Vocal Doc'];
+                const DOC_KEYS = ['Brief Doc', 'Screen Share To-Do', 'Content Doc', 'Bullet Doc', 'Vocal Doc'];
                 modalDetails.custom_fields = modalDetails.custom_fields || [];
                 const existing = new Map(modalDetails.custom_fields.map(f => [f.key, f]));
                 const docFields = DOC_KEYS.map(k => existing.get(k) || { key: k, value: '' });
@@ -4336,7 +4344,7 @@
                 fields.forEach(row => {
                     const keyInput = row.querySelector('input:first-child');
                     const valInput = row.querySelector('input:nth-child(2)');
-                    if (keyInput && valInput && ['Brief Doc', 'Content Doc', 'Bullet Doc', 'Vocal Doc'].includes(keyInput.value)) {
+                    if (keyInput && valInput && ['Brief Doc', 'Screen Share To-Do', 'Content Doc', 'Bullet Doc', 'Vocal Doc'].includes(keyInput.value)) {
                         if (!row.querySelector('.doc-open-btn')) {
                             const btn = document.createElement('button');
                             btn.className = 'doc-open-btn';
@@ -4493,6 +4501,47 @@
         });
 
 
+
+        async function createScreenShareTodo() {
+            if (!modalVideoId) return;
+            const btn = document.getElementById('createTodoBtn');
+            const status = document.getElementById('createTodoStatus');
+            if (!btn) return;
+            btn.disabled = true;
+            const originalLabel = btn.textContent;
+            btn.textContent = 'Auto-filling…';
+            if (status) status.textContent = '';
+            try {
+                const resp = await fetch(`/api/videos/${modalVideoId}/create-screen-share-todo`, { method: 'POST' });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    if (status) { status.textContent = data.error || 'Failed'; status.style.color = '#ff6b6b'; }
+                    return;
+                }
+                const todoField = modalDetails.custom_fields.find(f => f.key === 'Screen Share To-Do');
+                if (todoField) {
+                    todoField.value = data.path || data.filename;
+                } else {
+                    modalDetails.custom_fields.push({ key: 'Screen Share To-Do', value: data.path || data.filename });
+                }
+                renderCustomFields();
+                await saveModalData();
+                buildDocTabs();
+                let msg;
+                if (data.exists) msg = 'To-do already exists — opened';
+                else if (data.auto_filled) msg = 'To-do auto-filled from brief — review';
+                else if (!data.had_brief) msg = 'To-do created (empty — no brief found)';
+                else msg = 'To-do created (empty template — Gemini unavailable)';
+                if (status) { status.textContent = msg; status.style.color = '#4caf50'; }
+                showToast(msg);
+            } catch (e) {
+                if (status) { status.textContent = 'Failed to create to-do'; status.style.color = '#ff6b6b'; }
+                showToast('To-do creation failed', true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = originalLabel;
+            }
+        }
 
         async function createBrief() {
             if (!modalVideoId) return;
@@ -5060,19 +5109,26 @@
 
         // ===== Doc-type tabs (Brief Doc / Content Doc / Bullet Doc / Vocal Doc) =====
         const DOC_TAB_TYPES = [
-            { key: 'Brief Doc',   label: 'Brief Doc' },
-            { key: 'Content Doc', label: 'Content Doc' },
-            { key: 'Bullet Doc',  label: 'Bullet Doc' },
-            { key: 'Vocal Doc',   label: 'Vocal Doc' }
+            { key: 'Brief Doc',          label: 'Brief Doc' },
+            { key: 'Screen Share To-Do', label: 'Screen Share To-Do' },
+            { key: 'Content Doc',        label: 'Content Doc' },
+            { key: 'Bullet Doc',         label: 'Bullet Doc' },
+            { key: 'Vocal Doc',          label: 'Vocal Doc' }
         ];
         function buildDocTabs() {
             const container = document.getElementById('modalInlineDoc');
             const tabsEl = document.getElementById('docTabs');
             // Show/hide the Create Brief button based on whether a brief already exists
             const briefRow = document.getElementById('modalCreateBriefRow');
+            const briefField = (modalDetails && modalDetails.custom_fields || []).find(f => f.key === 'Brief Doc' && f.value);
             if (briefRow) {
-                const briefField = (modalDetails && modalDetails.custom_fields || []).find(f => f.key === 'Brief Doc' && f.value);
                 briefRow.style.display = briefField ? 'none' : 'block';
+            }
+            // Show "Create Screen Share To-Do" once a brief exists but no to-do does
+            const todoRow = document.getElementById('modalCreateTodoRow');
+            if (todoRow) {
+                const todoField = (modalDetails && modalDetails.custom_fields || []).find(f => f.key === 'Screen Share To-Do' && f.value);
+                todoRow.style.display = (briefField && !todoField) ? 'block' : 'none';
             }
             if (!container || !tabsEl || !modalDetails || !modalDetails.custom_fields) {
                 if (container) container.style.display = 'none';
