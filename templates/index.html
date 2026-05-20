@@ -1177,6 +1177,25 @@
             background: #4caf50;
             border-color: #4caf50;
         }
+        .thumb-slot .edit-thumb {
+            position: absolute;
+            top: 6px;
+            left: 6px;
+            background: rgba(0,0,0,0.75);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: #fff;
+            padding: 3px 9px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            cursor: pointer;
+            display: none;
+            line-height: 1;
+            text-decoration: none;
+        }
+        .thumb-slot:hover .edit-thumb { display: block; }
+        .thumb-slot .edit-thumb:hover { background: #f5b942; color: #000; border-color: #f5b942; }
 
         .title-row {
             display: grid;
@@ -3531,10 +3550,14 @@
                 const isCurrent = src && src === currentCard;
                 const abcIdx = src ? choices.indexOf(src) : -1;
                 const abcTitle = abcIdx >= 0 ? 'Unmark candidate' : 'Mark as candidate';
+                const editAnchor = (prefix === 'original' && src)
+                    ? `<a class="edit-thumb" href="/videos/${modalVideoId}/thumb-edit/${i}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="Open in thumb editor (miniPaint)">&#9998; Edit</a>`
+                    : '';
                 return `
                 <div class="thumb-slot ${src ? 'has-image' : ''}" onclick="triggerThumbUpload('${prefix}', ${i})" id="thumb-${prefix}-${i}">
                     ${src ? `
                         <img src="${esc(src)}" alt="">
+                        ${editAnchor}
                         <button class="set-thumb${isCurrent ? ' is-current' : ''}" onclick="setCardThumb('${prefix}', ${i}, '${esc(src)}', event)" title="Use as card thumbnail + paired title">${isCurrent ? '&#10003; Set' : 'Set'}</button>
                         <button class="abc-check${abcIdx >= 0 ? ' checked' : ''}" onclick="toggleAbcChoice('${esc(src)}', event)" title="${abcTitle}">&#10003;</button>
                         <button class="remove-thumb" onclick="removeThumb('${prefix}', ${i}, event)">&times;</button>
@@ -5843,6 +5866,30 @@
           })
           .catch(function(err) { tsSetStatus('Gemini direct failed: ' + err.message, '#e07070'); });
     }
+
+    // Listener: thumb editor (separate tab) posts back after Save → re-render
+    // without forcing the user to reload the studio.
+    window.addEventListener('message', function(ev) {
+        var d = ev && ev.data;
+        if (!d || d.type !== 'thumb-slot-updated') return;
+        if (typeof modalDetails === 'undefined' || !modalDetails) return;
+        if (typeof modalVideoId !== 'undefined' && d.vid !== modalVideoId) return;
+        if (Array.isArray(d.original_thumbs)) {
+            modalDetails.original_thumbs = d.original_thumbs;
+        } else if (typeof d.slot === 'number' && d.url) {
+            modalDetails.original_thumbs = modalDetails.original_thumbs || [];
+            while (modalDetails.original_thumbs.length <= d.slot) modalDetails.original_thumbs.push('');
+            modalDetails.original_thumbs[d.slot] = d.url;
+        }
+        // Cache-bust the freshly-saved tile so the browser doesn't show the old PNG
+        if (typeof d.slot === 'number' && modalDetails.original_thumbs[d.slot]) {
+            var sep = modalDetails.original_thumbs[d.slot].indexOf('?') >= 0 ? '&' : '?';
+            modalDetails.original_thumbs[d.slot] += sep + 'v=' + Date.now();
+        }
+        if (typeof renderThumbs === 'function') renderThumbs('original', modalDetails.original_thumbs);
+        tsSetStatus('Slot ' + ((d.slot || 0) + 1) + ' updated from editor', '#4caf50');
+    });
+
     function tsAppendBatch(qid, kind, nudge, already) {
         var list = document.getElementById('tsBatchList');
         if (!list) return;
