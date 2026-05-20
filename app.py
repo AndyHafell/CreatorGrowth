@@ -6915,12 +6915,18 @@ _LOGOS_DIR = Path(__file__).resolve().parent / "assets" / "logos"
 
 
 def _load_face_refs():
-    """Return list of (mime_type, png_bytes) for the bundled face references."""
+    """Return list of (mime_type, image_bytes) for every PNG/JPG in the bundled
+    face_references dir (alphabetical). Andy curates this folder directly —
+    drop in / rename / delete files and the next request picks up the change."""
     import mimetypes
     refs = []
     if not _FACE_REFS_DIR.exists():
         return refs
-    for p in sorted(_FACE_REFS_DIR.glob("face_*.png")):
+    for p in sorted(_FACE_REFS_DIR.iterdir()):
+        if p.name.startswith("."):
+            continue
+        if p.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+            continue
         mime = mimetypes.guess_type(str(p))[0] or "image/png"
         refs.append((mime, p.read_bytes()))
     return refs
@@ -6937,9 +6943,9 @@ def _load_logo(name):
 
 
 _PIXEL_FACE_PROMPT_TEMPLATE = """\
-These are reference photos. The first 4 are my face — I have long
-flowing brown hair that falls past my shoulders and a full beard. The
-5th image is the [BRAND NAME]: [BRAND DESCRIPTION].
+These are reference photos. The first [N_FACES] image(s) are my face —
+I have long flowing brown hair that falls past my shoulders and a full
+beard. The final image is the [BRAND NAME]: [BRAND DESCRIPTION].
 
 BRAND LOGO PLACEMENT RULE (critical): The [BRAND NAME] MUST appear in
 the final image EXACTLY as it looks in the reference image — identical
@@ -7015,12 +7021,14 @@ def _build_pixel_face_prompt(video_title, brand=None):
         f"\"{video_title}\" — examples: \"71,000 Creators Installed This Skill\" "
         f"→ \"71K INSTALLS\"; \"You Can Get Claude Code Free Now\" → \"NOW FREE\")"
     )
+    face_refs = _load_face_refs()
     template = (_PIXEL_FACE_PROMPT_TEMPLATE
+                .replace("[N_FACES]", str(len(face_refs)))
                 .replace("[BRAND NAME]", brand["brand_name"])
                 .replace("[BRAND DESCRIPTION]", brand["brand_description"])
                 .replace("[BRAND KEY FEATURES]", brand["brand_key_features"])
                 .replace("[TITLE_INSTRUCTION]", title_instruction))
-    image_refs = _load_face_refs()
+    image_refs = list(face_refs)
     logo = _load_logo(brand["logo_name"])
     if logo:
         image_refs.append(logo)
