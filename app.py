@@ -5353,8 +5353,8 @@ def auto_suggest_visual_tags(vid):
 
     # 4) Text-anim sprinkle: punctuation/emphasis ONLY — a handful of
     #    sentences with a strong feel ("...", em-dashes, exclamation, all-caps
-    #    words) get tagged for an animated text overlay. Cap at 8.
-    text_anim_cap = 8
+    #    words) get tagged for an animated text overlay. Cap at 20.
+    text_anim_cap = 20
     text_anim_count = 0
     _TEXT_ANIM_HINT_RE = re.compile(
         r"(?:\.{3}|!|\b(?:never|always|literally|every single|nobody|nothing)\b|"
@@ -5394,7 +5394,7 @@ def auto_suggest_visual_tags(vid):
         existing = []
     if not isinstance(existing, list):
         existing = []
-    auto_types = {"diagram", "avatar", "screen", "text_anim"}
+    auto_types = {"diagram", "avatar", "screen", "text_anim", "chapter"}
     if replace:
         existing = [t for t in existing if t.get("type") not in auto_types]
 
