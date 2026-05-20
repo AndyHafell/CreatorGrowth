@@ -2186,21 +2186,38 @@ Rules you MUST encode:
 """
 
     field_specs = """
-Return JSON with these exact keys:
+Return JSON with these exact keys.
 
-1. "pre_production_checklist" — list of strings. Each item is a concrete pre-flight task (software to install, account to log into, file to download/prepare, browser tab to queue, source material to grab). Aim for 6-12 items. Include "AgentFlow workspace clean" and "skills/ folder organized for showcase" if AgentFlow is on camera.
+**TIGHTNESS RULE — most important rule in this prompt:**
+Every string field must be a SHORT, BLUNT imperative — ideally 3-8 words, max ~12 words. NO explanatory clauses, NO "confirm that…", NO "verify that…", NO commentary, NO "this allows you to…". Just the action.
 
-2. "scenes" — list of scene objects. Aim for 4-8 scenes (one per major on-screen moment). Each scene is an object with:
-   - "name": short label tied to a brief field (e.g. "Open with Anthropic Skills doc")
-   - "app": which app/tab (Chrome / AgentFlow Docs / AgentFlow Terminal / Finder / etc.)
-   - "url_or_path": exact URL or file path (e.g. "docs.claude.com/en/docs/claude-code/skills" or "~/Documents/Claude Folder/skills/CONTENT_DOC_PROCESS_SOP.md")
-   - "on_screen": literal description of what the viewer sees (one sentence)
-   - "cursor_action": where to click / hover / scroll / highlight (one sentence)
-   - "voice_over_note": one line max — what Andy says here. NOT a full script. Just the hook.
-   - "why": which brief field this scene executes (authority hacking, differentiator, my_angle, skool_gift, etc.)
-   - "pre_work": what must be true before this scene records (file present, tab loaded, account logged in)
+GOOD examples:
+- "Go to spline.design"
+- "Click 'New Project'"
+- "Sign in with Google"
+- "Copy the public share URL"
+- "Switch to AntiGravity tab"
+- "Paste the Spline URL into the prompt box"
+- "Click Generate"
 
-3. "open_questions" — list of strings. Things Andy needs to decide at film time, or risks that could break the shoot (source went private, app behaves unexpectedly, asset missing).
+BAD examples (NEVER do this):
+- "Create a Spline account at spline.design and log in — confirm you can access the Community/Templates section and the 3D Website template category."  (way too long, tail commentary)
+- "Verify the Spline public share URL actually renders the 3D object in a plain Chrome tab (no login wall) so the AntiGravity integration shot works cleanly."  (verification clauses, no)
+- "Open two Chrome windows pre-logged-in: Window 1 = spline.design/community, Window 2 = antigravity.ai dashboard — arrange on desktop so switching is instant."  (compound setup, split it)
+
+1. "pre_production_checklist" — list of 5-10 short strings. Each item is ONE concrete pre-flight task, 3-8 words. "Sign in to spline.design." / "Sign in to antigravity.ai." / "Pick a Spline asset to use." / "Silence notifications." / "Close unrelated tabs." NEVER include "verify that…" / "confirm that…" — just the prep action.
+
+2. "scenes" — list of 4-8 scene objects (one per major on-screen moment). Each scene's strings follow the tightness rule:
+   - "name": 2-5 words, the scene's purpose. e.g. "Open Spline."
+   - "app": just the app name. "Chrome." / "AgentFlow." / "Finder."
+   - "url_or_path": just the URL or path. "spline.design" / "~/Documents/Claude Folder/skills/"
+   - "on_screen": one short sentence describing what's visible. ≤12 words.
+   - "cursor_action": one short imperative. ≤10 words. "Click the 3D Website template."
+   - "voice_over_note": one short hook line. ≤12 words. (Detail belongs in the content doc.)
+   - "why": 2-6 words. "Authority anchor." / "Skool gift reveal." / "Proof segment."
+   - "pre_work": one short sentence. ≤12 words. "Spline account logged in."
+
+3. "open_questions" — list of 0-4 short strings, ≤12 words each. Risk or decision per item. "Spline asset may not load in AntiGravity preview." / "Need final pricing for the Skool gift post."
 """
 
     user_prompt = f"""Video title: {title}
