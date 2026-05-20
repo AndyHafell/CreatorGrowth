@@ -4722,7 +4722,9 @@ def compute_visuals_blocks(vid):
 # Each tag stores: {id, char_start, char_end, type, asset_id?, label?, color?}.
 # ---------------------------------------------------------------------------
 
-_VISUAL_TAG_TYPES = {"diagram", "avatar", "text_anim", "screen", "chapters"}
+_VISUAL_TAG_TYPES = {
+    "diagram", "avatar", "text_anim", "screen", "chapter", "chapters",
+}
 
 
 def _sanitize_visual_tags(raw):
