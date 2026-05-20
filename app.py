@@ -1770,6 +1770,112 @@ Where: Free inside the Skool community (link in description)
     })
 
 
+@app.route("/api/videos/<int:vid>/create-brief", methods=["POST"])
+def create_brief(vid):
+    """Create a starter brief for idea-validation BEFORE a content doc.
+    Mirrors create_content_doc but writes to content/briefs/<slug>.md and
+    sets the 'Brief Doc' custom field. Brief template follows BRIEF_DOC_PROCESS_SOP.md.
+    """
+    conn = get_db()
+    video = conn.execute("SELECT * FROM videos WHERE id = ?", (vid,)).fetchone()
+    if not video:
+        conn.close()
+        return jsonify({"error": "Video not found"}), 404
+
+    video_id = video["video_id"]
+    title = video["title"]
+    channel = video["channel_title"]
+    views = video["view_count"] or 0
+    outlier = video["outlier_score"] or 0
+    published = video["published_at"] or ""
+
+    slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")[:80]
+    filename = f"{slug}.md"
+
+    views_fmt = _format_views(views)
+    outlier_fmt = f"{outlier:.1f}x" if outlier else "N/A"
+
+    doc = f"""# BRIEF — {title.upper()}
+
+> Idea-validation gate. Fill every field. Score the checklist honestly.
+> If <7/10, kill or rewrite the idea — don't promote to a content doc.
+
+---
+
+**Inspiration card:** [creatorgrowth video {vid}] — {title} ({channel}, {views_fmt} views, outlier {outlier_fmt})
+Link: https://youtube.com/watch?v={video_id}
+
+**Source's source:** [fill in — the ORIGINAL tool / blog post / video / tweet the inspiration creator referenced. Pull from THEIR description. We piggyback on the original, not the piggybacker.]
+
+**Why god-mode:** [one line — what makes the source's source worth piggybacking; views/stars/credibility/scarcity]
+
+**Frame:** [react / breakdown / apply / contradict] — source-on-stage: [yes/no]
+
+**Differentiator from inspiration:** [ONE LINE — how our angle is meaningfully different from the inspiration video. Not a re-transcription.]
+
+**My angle on top:** [one line — what Andy adds to the source's source]
+
+**Skool gift:** [the fork-able artifact tied to this video]
+
+**ACD lever:** [Attraction / Conversion / Delivery]
+
+**Tool tie-in:** [AgentFlow / CreatorGrowth / etc., or "none — tips video"]
+
+**Demand check:** [link to ≥10K-view similar video on YouTube]
+
+**One-liner:** [single sentence — what is this video in plain English]
+
+---
+
+## BRIEF CHECKLIST
+
+- [ ] **Authority hacking — yes/no.** Named external god-mode source identified.
+- [ ] **Source's source pulled.** Inspiration creator's description checked for the ORIGINAL tool/video.
+- [ ] **Differentiator named — one line.** Our angle is meaningfully different from the inspiration video.
+- [ ] **Frame chosen.** React / breakdown / apply / contradict — source-on-stage decided.
+- [ ] **Demand check passed.** At least one similar YouTube video at ≥10K views.
+- [ ] **Tool-launch over tips.** Tool-launch OR has a tool naturally tied in.
+- [ ] **Skool gift defined.** Fork-able artifact tied to the topic.
+- [ ] **ACD lever named.** Which lever does this pull.
+- [ ] **Subscriber-pullable.** Subs click it in their feed — not pure YT Search bait.
+- [ ] **One-liner passes the cab test.**
+
+BRIEF CHECKLIST SCORE: X/10
+"""
+
+    briefs_subdir = CONTENT_DIR / "briefs"
+    briefs_subdir.mkdir(parents=True, exist_ok=True)
+    filepath = briefs_subdir / filename
+
+    if filepath.exists():
+        rel = str(filepath.relative_to(CONTENT_DIR))
+        conn.close()
+        return jsonify({"ok": True, "path": rel, "filename": filename, "exists": True})
+
+    filepath.write_text(doc, encoding="utf-8")
+    rel = str(filepath.relative_to(CONTENT_DIR))
+
+    details = conn.execute("SELECT custom_fields FROM video_details WHERE video_id = ?", (vid,)).fetchone()
+    if details:
+        fields = json.loads(details["custom_fields"] or "[]")
+        for fld in fields:
+            if fld.get("key") == "Brief Doc":
+                fld["value"] = rel
+                break
+        else:
+            fields.append({"key": "Brief Doc", "value": rel})
+        conn.execute("UPDATE video_details SET custom_fields = ? WHERE video_id = ?", (json.dumps(fields), vid))
+        conn.commit()
+    else:
+        fields = [{"key": "Brief Doc", "value": rel}]
+        conn.execute(
+            "INSERT INTO video_details (video_id, custom_fields) VALUES (?, ?)",
+            (vid, json.dumps(fields)),
+        )
+        conn.commit()
+
+    conn.close()
+    return jsonify({"ok": True, "path": rel, "filename": filename, "exists": False})
 
 
 current_image_url = {"url": None}
