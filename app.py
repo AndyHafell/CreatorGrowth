@@ -1967,6 +1967,67 @@ Return ONLY the JSON object. No preamble, no markdown fences, no commentary."""
         return None
 
 
+@app.route("/api/videos/<int:vid>/link-youtube", methods=["POST"])
+def link_card_to_youtube(vid):
+    """Link a Published card to its real YouTube video.
+    Accepts either a YouTube video_id (11 chars) or a full URL.
+    Stores the ID in custom_fields['YouTube Video ID'] and immediately copies
+    current view_count + published_at from my_channel_videos if available.
+    Called by youtube_publisher.py right after upload — closed loop.
+    """
+    body = request.get_json(silent=True) or {}
+    raw = (body.get("youtube_video_id") or body.get("url") or body.get("youtube_url") or "").strip()
+    if not raw:
+        return jsonify({"error": "missing youtube_video_id or url"}), 400
+
+    # Extract 11-char YouTube ID from various URL forms
+    m = re.search(r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})", raw)
+    yt_id = m.group(1) if m else (raw if re.fullmatch(r"[A-Za-z0-9_-]{11}", raw) else None)
+    if not yt_id:
+        return jsonify({"error": f"could not parse YouTube video id from: {raw}"}), 400
+
+    conn = get_db()
+    card = conn.execute("SELECT id, title FROM videos WHERE id = ?", (vid,)).fetchone()
+    if not card:
+        conn.close()
+        return jsonify({"error": f"card {vid} not found"}), 404
+
+    yt = conn.execute(
+        "SELECT title, view_count, published_at FROM my_channel_videos WHERE video_id = ?",
+        (yt_id,),
+    ).fetchone()
+
+    # Store the link in custom_fields
+    details = conn.execute(
+        "SELECT custom_fields FROM video_details WHERE video_id = ?", (vid,)
+    ).fetchone()
+    fields = json.loads(details["custom_fields"]) if details and details["custom_fields"] else []
+    fields = [f for f in fields if f.get("key") != "YouTube Video ID"]
+    fields.append({"key": "YouTube Video ID", "value": yt_id})
+    if details:
+        conn.execute("UPDATE video_details SET custom_fields = ? WHERE video_id = ?",
+                     (json.dumps(fields), vid))
+    else:
+        conn.execute("INSERT INTO video_details (video_id, custom_fields) VALUES (?, ?)",
+                     (vid, json.dumps(fields)))
+
+    # If the channel sync has already pulled this video, refresh card stats now
+    refreshed = False
+    if yt:
+        conn.execute("UPDATE videos SET view_count = ?, published_at = ? WHERE id = ?",
+                     (yt["view_count"], yt["published_at"], vid))
+        refreshed = True
+    conn.commit()
+    conn.close()
+    return jsonify({
+        "ok": True,
+        "card_id": vid,
+        "youtube_video_id": yt_id,
+        "stats_refreshed": refreshed,
+        "note": "" if refreshed else "video not yet in my_channel_videos; will refresh on next daily sync (@ 6 AM UTC)",
+    })
+
+
 @app.route("/api/videos/<int:vid>/create-brief", methods=["POST"])
 def create_brief(vid):
     """Create a starter brief for idea-validation BEFORE a content doc.
