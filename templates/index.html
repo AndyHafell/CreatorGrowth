@@ -1621,6 +1621,9 @@
         <button class="tab" data-tab="best" onclick="setTab('best')" ondragover="tabDragOver(event, 'best')" ondragleave="tabDragLeave(event)" ondrop="tabDrop(event, 'best')">
             Best <span class="tab-count" id="countBest">0</span>
         </button>
+        <button class="tab" data-tab="brief" onclick="setTab('brief')" ondragover="tabDragOver(event, 'brief')" ondragleave="tabDragLeave(event)" ondrop="tabDrop(event, 'brief')">
+            Brief <span class="tab-count" id="countBrief">0</span>
+        </button>
         <button class="tab" data-tab="packaging" onclick="setTab('packaging')" ondragover="tabDragOver(event, 'packaging')" ondragleave="tabDragLeave(event)" ondrop="tabDrop(event, 'packaging')">
             Packaging <span class="tab-count" id="countPackaging">0</span>
         </button>
@@ -2756,10 +2759,11 @@
         }
 
         function updateCounts() {
-            const counts = { options: 0, best: 0, packaging: 0, script: 0, edited: 0, published: 0, archived: 0 };
+            const counts = { options: 0, best: 0, brief: 0, packaging: 0, script: 0, edited: 0, published: 0, archived: 0 };
             videos.forEach(v => { counts[v.status] = (counts[v.status] || 0) + 1; });
             document.getElementById('countOptions').textContent = counts.options;
             document.getElementById('countBest').textContent = counts.best;
+            document.getElementById('countBrief').textContent = counts.brief;
             document.getElementById('countPackaging').textContent = counts.packaging;
             document.getElementById('countScript').textContent = counts.script;
             document.getElementById('countEdited').textContent = counts.edited;
@@ -2823,7 +2827,7 @@
         }
 
         // ── Drag & drop cards between tabs ───────────────────
-        const DROPPABLE_TABS = new Set(['options','best','packaging','script','edited','published','archived']);
+        const DROPPABLE_TABS = new Set(['options','best','brief','packaging','script','edited','published','archived']);
         let _dragVideoId = null;
         let _dragFollower = null;
 
