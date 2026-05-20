@@ -520,7 +520,18 @@
         }
         .brief-chip:hover { background: linear-gradient(135deg, #3a3a7e 0%, #2a2a5e 100%); color: #fff; border-color: #7a7abe; transform: translateY(-1px); }
         .brief-chip.in-flight { opacity: 0.6; cursor: wait; }
-        .brief-chip-regen { background: linear-gradient(135deg, #2a4a2e 0%, #1a3a1e 100%); border-color: #4a7a5e; color: #c5ffd3; }
+        .brief-chip-regen {
+            background: linear-gradient(135deg, #2a4a2e 0%, #1a3a1e 100%);
+            border-color: #4a7a5e;
+            color: #c5ffd3;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+            pointer-events: none;
+        }
+        .card:hover .brief-chip-regen {
+            opacity: 1;
+            pointer-events: auto;
+        }
         .brief-chip-regen:hover { background: linear-gradient(135deg, #3a6a3e 0%, #2a5a2e 100%); border-color: #5a9a6e; }
         .action-btn.move-best-yellow { color: #ffc107; }
         .action-btn.move-best-yellow:hover { background: #ffc107; color: #1a1a1a; }
