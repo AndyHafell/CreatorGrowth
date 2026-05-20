@@ -4862,7 +4862,7 @@ def auto_suggest_visual_tags(vid):
         "SELECT vocal_doc, visual_tags FROM videos WHERE id=?", (vid,)
     ).fetchone()
     drows = conn.execute(
-        "SELECT id, name, position, script, result_url FROM diagrams "
+        "SELECT id, name, position, script, image_path, result_url FROM diagrams "
         "WHERE video_id=? ORDER BY position, created_at",
         (vid,)
     ).fetchall()
@@ -4874,6 +4874,9 @@ def auto_suggest_visual_tags(vid):
     cleaned, doc_segments = _strip_and_segment(raw_text)
     if not cleaned:
         return jsonify({"error": "vocal_doc has no spoken text"}), 400
+
+    def _diagram_available(r):
+        return bool(r["result_url"]) or bool(r["image_path"])
 
     # Drop INTRO if it sits before any real step segment with body — most
     # narrations open straight into Step 1 with no separate hook.
@@ -4906,15 +4909,17 @@ def auto_suggest_visual_tags(vid):
     skipped = []
     used_steps_for_diagram = {}  # step_num → count of diagrams placed in this step
 
-    # 1) Diagrams (rendered only). One per step preferred; extras get later
-    #    sentences of the same step.
-    rendered_diagrams = [r for r in drows if r["result_url"]]
+    # 1) Diagrams: include anything with EITHER a rendered MP4 (result_url) or
+    #    a still image (image_path). Apply-to-timeline will use whichever is
+    #    available. One diagram per step preferred; extras land at the next
+    #    sentence within the same step.
+    rendered_diagrams = [r for r in drows if _diagram_available(r)]
     for r in drows:
-        if not r["result_url"]:
+        if not _diagram_available(r):
             skipped.append({
                 "diagram_id": r["id"],
                 "name": r["name"],
-                "reason": "not rendered — skipped",
+                "reason": "no image_path or result_url — skipped",
             })
 
     for r in rendered_diagrams:
@@ -5040,14 +5045,14 @@ def auto_suggest_visual_tags(vid):
             # skip ultra-short ("Yes.", "Right." etc.)
             if (ce - cs) < 20:
                 continue
-                claim(cs, ce)
-                suggested.append({
-                    "id": "vt" + uuid.uuid4().hex[:12],
-                    "char_start": cs,
-                    "char_end": ce,
-                    "type": "text_anim",
-                    "label": None,
-                })
+            claim(cs, ce)
+            suggested.append({
+                "id": "vt" + uuid.uuid4().hex[:12],
+                "char_start": cs,
+                "char_end": ce,
+                "type": "text_anim",
+                "label": None,
+            })
 
     # Merge with existing tags. Preserve manual `chapters` tags entirely;
     # drop the other auto types if replace=true.
@@ -5101,7 +5106,7 @@ def apply_visual_tags(vid):
         "SELECT vocal_doc, visual_tags FROM videos WHERE id=?", (vid,)
     ).fetchone()
     drows = conn.execute(
-        "SELECT id, name, result_url, audio_duration FROM diagrams WHERE video_id=?",
+        "SELECT id, name, image_path, result_url, audio_duration FROM diagrams WHERE video_id=?",
         (vid,)
     ).fetchall()
     conn.close()
@@ -5165,11 +5170,21 @@ def apply_visual_tags(vid):
         }
         if p["type"] == "diagram":
             d = diagram_by_id.get(t.get("asset_id") or "")
-            if not d or not d["result_url"]:
+            if not d:
                 p["matched"] = False
-                p["reason"] = "diagram not found or not rendered"
+                p["reason"] = "diagram not found"
+            elif not (d["result_url"] or d["image_path"]):
+                p["matched"] = False
+                p["reason"] = "diagram has no rendered MP4 or image"
             else:
-                p["result_url"] = _proxy_asset_url(d["result_url"])
+                # Prefer rendered MP4 (with animation), fall back to still image.
+                if d["result_url"]:
+                    p["result_url"] = _proxy_asset_url(d["result_url"])
+                    p["asset_kind"] = "video"
+                else:
+                    rel = d["image_path"]
+                    p["result_url"] = ("/" + rel) if rel and not rel.startswith("/") else rel
+                    p["asset_kind"] = "image"
                 p["diagram_id"] = d["id"]
                 p["diagram_name"] = d["name"]
         placements.append(p)
