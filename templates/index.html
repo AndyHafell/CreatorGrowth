@@ -3017,7 +3017,6 @@
             }
             if (v.status === 'best') {
                 return `
-                    <button class="action-btn brief-btn" onclick="quickBrief(${v.id}, event)" title="Create brief in background (auto-moves card to Brief tab when done)">Brief</button>
                     <button class="action-btn move-progress" onclick="moveVideo(${v.id}, 'packaging', event)">Packaging</button>
                     <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'options', event)">Back</button>
                     <button class="action-btn move-back" onclick="moveVideo(${v.id}, 'archived', event)">Archive</button>
@@ -3122,7 +3121,6 @@
             return `
             <div class="card${isTransformed ? ' transformed' : ''}${v.tucked ? ' is-tucked' : ''}" data-video-id="${v.id}" draggable="true" ondragstart="cardDragStart(event, ${v.id})" ondragend="cardDragEnd(event)" onclick="openModal(${v.id})" style="cursor:pointer;">
                 <button class="tuck-btn" title="${tuckTitle}" onclick="toggleTuck(${v.id}, event)">${tuckIcon}</button>
-                ${v.status === 'best' ? `<button class="brief-chip" onclick="quickBrief(${v.id}, event)" title="Generate brief in background — card auto-moves to Brief tab when done">+ Brief</button>` : ''}
                 ${v.status === 'brief' ? `<button class="brief-chip brief-chip-regen" onclick="quickBrief(${v.id}, event)" title="Regenerate brief in background">↻ Brief</button>` : ''}
                 <div class="thumb-wrap">
                     <img src="${v.thumbnail_url}" alt="" loading="lazy">
