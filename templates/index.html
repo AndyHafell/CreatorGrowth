@@ -4496,7 +4496,7 @@
             if (!btn) return;
             btn.disabled = true;
             const originalLabel = btn.textContent;
-            btn.textContent = 'Creating…';
+            btn.textContent = 'Auto-filling…';
             if (status) status.textContent = '';
             try {
                 const resp = await fetch(`/api/videos/${modalVideoId}/create-brief`, { method: 'POST' });
@@ -4515,8 +4515,12 @@
                 renderCustomFields();
                 await saveModalData();
                 buildDocTabs();
-                if (status) { status.textContent = data.exists ? 'Brief already exists — opened' : 'Brief created'; status.style.color = '#4caf50'; }
-                showToast(data.exists ? 'Brief already exists' : 'Brief created');
+                let msg;
+                if (data.exists) msg = 'Brief already exists — opened';
+                else if (data.auto_filled) msg = 'Brief auto-filled by Gemini — review';
+                else msg = 'Brief created (empty template — Gemini unavailable)';
+                if (status) { status.textContent = msg; status.style.color = '#4caf50'; }
+                showToast(msg);
             } catch (e) {
                 if (status) { status.textContent = 'Failed to create brief'; status.style.color = '#ff6b6b'; }
                 showToast('Brief creation failed', true);
