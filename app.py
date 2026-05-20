@@ -1819,27 +1819,29 @@ Tool-launch videos produce ~5x bigger paying cohorts than tips videos. Default p
     field_specs = """
 You will return a JSON object with these exact keys. Each value is plain text (no markdown, no quotes inside unless needed for natural prose). Be specific, opinionated, and concise — these are decisions Anders will review, not menus of options.
 
-1. "sources_source" — The ORIGINAL tool / blog post / video / tweet the inspiration creator was citing. If the inspiration video's description has a direct link, use it. If not, NAME the most likely upstream source explicitly (e.g. "Anthropic's official Skills documentation + Oct 2025 launch blog"). Never say "unknown."
+1. "inspiration_plot" — 3-5 sentence summary of what the inspiration video ACTUALLY covers (the plot/narrative). Anders should be able to absorb the source video's gist in 15 seconds without watching it. Include the central thesis, the main framework/rules/steps the creator introduces (NAME them explicitly — "Rule #1: X, Rule #2: Y…"), the tools or examples they show, and the closing payoff. Use the YouTube description's timestamps/chapter list as your structural guide if present. Be concrete, not vague. NEVER say "discusses prompt engineering best practices" — say "extracts 4 rules: (1) Prompt Skills not Claude, (2) Skills are more than prompts, (3) Build composable skills, (4) Skills get smarter every session."
 
-2. "why_god_mode" — One sentence on why the source's source carries authority. Reference views/stars/credibility/scarcity.
+2. "sources_source" — The ORIGINAL tool / blog post / video / tweet the inspiration creator was citing. If the inspiration video's description has a direct link, use it. If not, NAME the most likely upstream source explicitly (e.g. "Anthropic's official Skills documentation + Oct 2025 launch blog"). Never say "unknown."
 
-3. "frame" — One of: "react" / "breakdown" / "apply" / "contradict". Default to "breakdown" with source-on-stage YES unless the topic clearly demands a different frame. Include "source-on-stage: yes" or "source-on-stage: no" at the end.
+3. "why_god_mode" — One sentence on why the source's source carries authority. Reference views/stars/credibility/scarcity.
 
-4. "differentiator" — ONE LINE on how Anders' angle is meaningfully different from the inspiration video. Must reference a concrete asset Anders has that the inspiration creator doesn't — his production skills/ folder (37 SOPs), AgentFlow workspace, the AI Mate community, his content pipeline. NEVER say "I'll do it better" — name the structural gap.
+4. "frame" — One of: "react" / "breakdown" / "apply" / "contradict". Default to "breakdown" with source-on-stage YES unless the topic clearly demands a different frame. Include "source-on-stage: yes" or "source-on-stage: no" at the end.
 
-5. "my_angle" — One sentence on what Anders adds to the source's source (his application, his workspace, his lens).
+5. "differentiator" — ONE LINE on how Anders' angle is meaningfully different from the inspiration video. Must reference a concrete asset Anders has that the inspiration creator doesn't — his production skills/ folder (37 SOPs), AgentFlow workspace, the AI Mate community, his content pipeline. NEVER say "I'll do it better" — name the structural gap.
 
-6. "skool_gift" — A concrete fork-able artifact tied to the topic. Examples: "Skills Starter Pack — 5 of Anders' production SOPs packaged for fork" / "Eval Criteria Template (12 binary)" / "Thumbnail Generator skill pack." Be specific; this is the Skool CTA.
+6. "my_angle" — One sentence on what Anders adds to the source's source (his application, his workspace, his lens).
 
-7. "acd_lever" — "Attraction" / "Conversion" / "Delivery". Authority-anchored videos lean Attraction.
+7. "skool_gift" — A concrete fork-able artifact tied to the topic. Examples: "Skills Starter Pack — 5 of Anders' production SOPs packaged for fork" / "Eval Criteria Template (12 binary)" / "Thumbnail Generator skill pack." Be specific; this is the Skool CTA.
 
-8. "tool_tie_in" — Which Anders tool naturally showcases here. Default "AgentFlow" if any Claude Code workflow is shown (his workspace invariant). Otherwise CreatorGrowth / Content Mate / etc., or "none — pure tips video" (flag as a risk).
+8. "acd_lever" — "Attraction" / "Conversion" / "Delivery". Authority-anchored videos lean Attraction.
 
-9. "demand_check" — Cite the inspiration video itself as the demand proof (title + view count + days since publish if known). If you know of a sibling video that also crossed 10K, name it.
+9. "tool_tie_in" — Which Anders tool naturally showcases here. Default "AgentFlow" if any Claude Code workflow is shown (his workspace invariant). Otherwise CreatorGrowth / Content Mate / etc., or "none — pure tips video" (flag as a risk).
 
-10. "one_liner" — Single plain-English sentence that passes the cab test: "what is this video about?" Should name the source's source + Anders' angle.
+10. "demand_check" — Cite the inspiration video itself as the demand proof (title + view count + days since publish if known). If you know of a sibling video that also crossed 10K, name it.
 
-11. "filming_notes" — 2-4 short bullets for the content-doc stage: opening shot (which source is on screen), what NOT to do (don't name the inspiration creator), how each source-rule maps to a real skill in Anders' folder, where the Skool CTA lands.
+11. "one_liner" — Single plain-English sentence that passes the cab test: "what is this video about?" Should name the source's source + Anders' angle.
+
+12. "filming_notes" — 2-4 short bullets for the content-doc stage: opening shot (which source is on screen), what NOT to do (don't name the inspiration creator), how each source-rule maps to a real skill in Anders' folder, where the Skool CTA lands.
 """
 
     user_prompt = f"""Inspiration video:
@@ -1916,6 +1918,7 @@ def create_brief(vid):
         v = (filled or {}).get(k) if filled else None
         return v if v else (default if default is not None else f"[fill in — {k.replace('_', ' ')}]")
 
+    inspiration_plot   = _get("inspiration_plot")
     sources_source     = _get("sources_source")
     why_god_mode       = _get("why_god_mode")
     frame              = _get("frame", "breakdown — source-on-stage: yes")
@@ -1947,6 +1950,8 @@ def create_brief(vid):
 
 **Inspiration card:** [creatorgrowth video {vid}] — {title} ({channel}, {views_fmt} views, outlier {outlier_fmt})
 Link: https://youtube.com/watch?v={video_id}
+
+**Inspiration plot:** {inspiration_plot}
 
 **Source's source:** {sources_source}
 
