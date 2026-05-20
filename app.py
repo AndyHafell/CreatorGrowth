@@ -4557,15 +4557,26 @@ def diagrams_auto_place(vid):
         return jsonify({"error": "vocal_doc has no spoken text"}), 400
 
     # Build a step-number → segment lookup for fallback placement when a
-    # diagram has no `script` (auto-generated diagrams skip it).
-    def _step_num(s: str):
-        m = re.search(r"step\s*(\d+)", s or "", re.IGNORECASE)
+    # diagram has no `script`. Also extract N from "Diagram N" so manually-
+    # created diagrams (which never get a Step N: prefix) can still land.
+    def _ordinal(s: str):
+        m = re.search(r"(?:step|diagram)\s*(\d+)", s or "", re.IGNORECASE)
         return int(m.group(1)) if m else None
     step_segments = {}
     for s in doc_segments:
-        n = _step_num(s.get("name") or "")
+        n = _ordinal(s.get("name") or "")
         if n is not None and n not in step_segments:
             step_segments[n] = s
+    # Build a fallback "even distribution" map: when no script + no matching
+    # step segment, we'll place diagrams proportionally by position so they at
+    # least spread across the take instead of all stacking at t=0.
+    total_diagrams = len(drows)
+    # Compute the position rank (sorted by position, then created_at) for each
+    # diagram so deletions don't leave gaps in the even distribution.
+    sorted_by_pos = sorted(
+        drows, key=lambda r: (r["position"] or 0, r["created_at"] or "")
+    )
+    rank_by_id = {r["id"]: idx for idx, r in enumerate(sorted_by_pos)}
 
     state = _load_voiceover_state(vid)
     gens = state.get("generations", [])
@@ -4607,19 +4618,30 @@ def diagrams_auto_place(vid):
             hit = _find_script_in_doc(script, cleaned)
             if hit:
                 match_method = "verbatim_script"
-        # Fallback: no script (or script didn't match) → look up the step
-        # segment from the diagram's name (e.g. "Step 2: ..." → step 2 span).
+        # Fallback 1: no script (or script didn't match) → look up the step
+        # segment from "Step N" / "Diagram N" pattern in name → step N span.
         if not hit:
-            step_n = _step_num(d.get("name") or "")
+            step_n = _ordinal(d.get("name") or "")
             seg = step_segments.get(step_n) if step_n is not None else None
             if seg is not None and seg.get("char_end") is not None:
                 hit = (int(seg["char_start"]), int(seg["char_end"]))
                 match_method = "step_fallback"
+        # Fallback 2: still no hit → even distribution across take by position
+        # rank. Better than skipping; Andy can drag clips to refine.
+        if not hit:
+            rank = rank_by_id.get(d["id"], 0)
+            denom = max(1, total_diagrams)
+            slot_chars = total_chars / denom
+            cs = int(rank * slot_chars)
+            ce = int(min(total_chars, cs + slot_chars))
+            if ce > cs:
+                hit = (cs, ce)
+                match_method = "even_distribution"
         if not hit:
             reason = (
                 "script not found in vocal_doc"
                 if script
-                else f"no script + no Step N match in name (got '{d.get('name')}')"
+                else f"could not place '{d.get('name')}'"
             )
             placements.append({
                 "diagram_id": d["id"],
