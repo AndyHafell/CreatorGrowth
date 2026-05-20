@@ -16,4 +16,4 @@ RUN mkdir -p static/uploads
 
 EXPOSE 5050
 
-CMD ["gunicorn", "--bind", "0.0.0.0:5050", "--workers", "2", "--timeout", "120", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5050", "--workers", "2", "--timeout", "240", "app:app"]

@@ -9,6 +9,8 @@ import re
 import json
 import sqlite3
 import subprocess
+import threading
+import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.request import urlopen, Request
@@ -194,6 +196,14 @@ def init_db():
         conn.execute("ALTER TABLE thumb_queue ADD COLUMN clicked_by_email TEXT DEFAULT ''")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE thumb_queue ADD COLUMN kind TEXT DEFAULT 'pixel_face'")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE thumb_queue ADD COLUMN nudge TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS diagrams (
@@ -223,6 +233,38 @@ def init_db():
         conn.execute("ALTER TABLE videos ADD COLUMN editor_state TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE videos ADD COLUMN vocal_doc TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE videos ADD COLUMN voiceover_state TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE videos ADD COLUMN visuals_doc TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE videos ADD COLUMN visual_tags TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    # Background TTS jobs — async synthesis with progress tracking
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tts_jobs (
+            id TEXT PRIMARY KEY,
+            video_id INTEGER,
+            status TEXT,
+            chunks_done INTEGER DEFAULT 0,
+            chunks_total INTEGER DEFAULT 0,
+            generation_json TEXT,
+            error TEXT,
+            detail TEXT,
+            started_at REAL,
+            updated_at REAL
+        )
+    """)
 
     # Chapter Studio: one list of chapter items per video, rendered to N MP4 clips.
     # One-shot migration: the cloned-from-diagrams schema had `boxes_json`. If that
@@ -264,6 +306,24 @@ def init_db():
         conn.execute("ALTER TABLE chapters ADD COLUMN reveal_style TEXT NOT NULL DEFAULT 'blur_fade'")
     except sqlite3.OperationalError:
         pass
+
+    # ── Andy's own channel — daily-refreshed mirror of YouTube data ──
+    # Used by the brief generator to feed past-performance context into Gemini.
+    # Refreshed by sync_my_channel.py (cron @ 6 AM daily).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS my_channel_videos (
+            video_id TEXT PRIMARY KEY,
+            title TEXT,
+            description TEXT,
+            published_at TEXT,
+            view_count INTEGER DEFAULT 0,
+            like_count INTEGER DEFAULT 0,
+            comment_count INTEGER DEFAULT 0,
+            duration_seconds INTEGER DEFAULT 0,
+            thumbnail_url TEXT,
+            refreshed_at TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -711,6 +771,11 @@ def queue_thumb(vid):
     email = (session.get("email") or "").strip().lower()
     if not email:
         return jsonify({"error": "No session email"}), 400
+    body = request.get_json(silent=True) or {}
+    kind = (body.get("kind") or "pixel_face").strip().lower()
+    if kind not in ("pixel_face", "faceless"):
+        kind = "pixel_face"
+    nudge = (body.get("nudge") or "").strip()
     conn = get_db()
     row = conn.execute("SELECT title FROM videos WHERE id = ?", (vid,)).fetchone()
     if not row:
@@ -721,20 +786,20 @@ def queue_thumb(vid):
         conn.close()
         return jsonify({"error": "Video has no title"}), 400
     existing = conn.execute(
-        "SELECT id FROM thumb_queue WHERE video_id = ? AND clicked_by_email = ? AND status = 'queued'",
-        (vid, email),
+        "SELECT id FROM thumb_queue WHERE video_id = ? AND clicked_by_email = ? AND kind = ? AND status = 'queued'",
+        (vid, email, kind),
     ).fetchone()
     if existing:
         conn.close()
-        return jsonify({"ok": True, "queued": True, "queue_id": existing["id"], "already": True})
+        return jsonify({"ok": True, "queued": True, "queue_id": existing["id"], "kind": kind, "already": True})
     cur = conn.execute(
-        "INSERT INTO thumb_queue (video_id, title, clicked_by_email) VALUES (?, ?, ?)",
-        (vid, title, email),
+        "INSERT INTO thumb_queue (video_id, title, clicked_by_email, kind, nudge) VALUES (?, ?, ?, ?, ?)",
+        (vid, title, email, kind, nudge),
     )
     conn.commit()
     qid = cur.lastrowid
     conn.close()
-    return jsonify({"ok": True, "queued": True, "queue_id": qid})
+    return jsonify({"ok": True, "queued": True, "queue_id": qid, "kind": kind})
 
 
 def _bearer_user_email():
@@ -757,12 +822,22 @@ def thumb_queue_list():
         return jsonify({"error": "Unauthorized"}), 401
     conn = get_db()
     rows = conn.execute(
-        "SELECT id, video_id, title, created_at FROM thumb_queue "
+        "SELECT id, video_id, title, kind, nudge, created_at FROM thumb_queue "
         "WHERE status = 'queued' AND clicked_by_email = ? ORDER BY id ASC",
         (user_email,),
     ).fetchall()
     conn.close()
-    return jsonify([{"id": r["id"], "video_id": r["video_id"], "title": r["title"], "created_at": r["created_at"]} for r in rows])
+    return jsonify([
+        {
+            "id": r["id"],
+            "video_id": r["video_id"],
+            "title": r["title"],
+            "kind": r["kind"] or "pixel_face",
+            "nudge": r["nudge"] or "",
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ])
 
 
 @app.route("/api/thumb-queue/<int:qid>/done", methods=["POST"])
@@ -1268,6 +1343,10 @@ def get_video_details(vid):
     conn.close()
     def _pad(arr, n):
         return (arr + [""] * n)[:n]
+    def _pad_multiple(arr, step):
+        # Pad to nearest multiple of `step`, minimum `step`.
+        target = max(step, ((len(arr) + step - 1) // step) * step)
+        return arr + [""] * (target - len(arr))
     try:
         abc_choices = json.loads(row["abc_choices"]) if row["abc_choices"] else []
     except (TypeError, ValueError, IndexError):
@@ -1280,8 +1359,8 @@ def get_video_details(vid):
         "video_id": row["video_id"],
         "inspo_thumbs": _pad(json.loads(row["inspo_thumbs"]), 3),
         "inspo_titles": _pad(json.loads(row["inspo_titles"]), 3),
-        "original_thumbs": _pad(json.loads(row["original_thumbs"]), 9),
-        "original_titles": _pad(json.loads(row["original_titles"]), 9),
+        "original_thumbs": _pad_multiple(json.loads(row["original_thumbs"]), 9),
+        "original_titles": _pad_multiple(json.loads(row["original_titles"]), 9),
         "custom_fields": json.loads(row["custom_fields"]),
         "abc_choices": abc_choices,
         "meta": meta,
@@ -1713,6 +1792,387 @@ Where: Free inside the Skool community (link in description)
     })
 
 
+def _fetch_youtube_description(video_id):
+    """Fetch a YouTube video's description via YouTube Data API. Returns '' on failure."""
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    api_key = os.environ.get("YOUTUBE_API_KEY", "")
+    if not api_key or not video_id:
+        return ""
+    try:
+        url = f"https://www.googleapis.com/youtube/v3/videos?part=snippet&id={video_id}&key={api_key}"
+        with urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        items = data.get("items") or []
+        if not items:
+            return ""
+        return items[0].get("snippet", {}).get("description", "") or ""
+    except (HTTPError, URLError, json.JSONDecodeError, KeyError):
+        return ""
+
+
+def _format_my_channel_context():
+    """Pull Andy's last 5 published + top 5 all-time from my_channel_videos.
+    Returns a context string to inject into Gemini's system prompt so it can
+    flag audience overlap, redundancy, and bias toward winning formats.
+    Returns empty string if the table is empty (sync hasn't run yet).
+    """
+    try:
+        conn = get_db()
+        recent = conn.execute("""
+            SELECT title, view_count, published_at, duration_seconds
+            FROM my_channel_videos
+            WHERE published_at != ''
+            ORDER BY published_at DESC
+            LIMIT 5
+        """).fetchall()
+        top_performers = conn.execute("""
+            SELECT title, view_count, published_at
+            FROM my_channel_videos
+            WHERE published_at != ''
+            ORDER BY view_count DESC
+            LIMIT 5
+        """).fetchall()
+        conn.close()
+    except sqlite3.OperationalError:
+        return ""
+
+    if not recent:
+        return ""
+
+    def _fmt(row, include_age=False):
+        v = row["view_count"] or 0
+        v_str = f"{v/1000:.1f}K" if v >= 1000 else str(v)
+        line = f'  - "{row["title"]}" — {v_str} views'
+        if include_age and row["published_at"]:
+            try:
+                pub = datetime.fromisoformat(row["published_at"].replace("Z", "+00:00"))
+                days_ago = (datetime.now(timezone.utc) - pub).days
+                line += f" ({days_ago}d ago)"
+            except (ValueError, AttributeError):
+                pass
+        return line
+
+    recent_block = "\n".join(_fmt(r, include_age=True) for r in recent)
+    top_block = "\n".join(_fmt(r) for r in top_performers)
+
+    return f"""
+
+ANDY'S CHANNEL DATA (synced from YouTube Data API — refreshed daily):
+
+Last 5 published videos:
+{recent_block}
+
+Top 5 all-time performers (this channel's ceiling):
+{top_block}
+
+USE THIS DATA when evaluating the brief:
+- AUDIENCE OVERLAP CHECK: if the new idea is too similar to a video published in the last 3 weeks, flag it as redundancy risk in "final_thoughts."
+- FORMAT BIAS: if the top performers cluster around a specific format/anchor (Karpathy-style authority hacking, tool launches, named-creator breakdowns), bias toward continuing that pattern. Name the pattern in "final_thoughts" if relevant.
+- VELOCITY CHECK: a recent video with much higher views than older ones signals a winning vein worth doubling down on.
+- IF the new brief is clearly a duplicate-angle of a recent upload, the verdict should be "Pause and rework: …" not "Ship it."
+"""
+
+
+def _gemini_fill_brief(title, channel, views_fmt, outlier_fmt, video_id, description):
+    """Call Gemini to fill a structured brief. Returns a dict with all 11 brief fields, or None on failure."""
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return None
+
+    # Andy's project context — what the LLM needs to know to make good calls
+    project_context = """
+You are filling a video brief for AI Andy (Andy Hafell) — a YouTube channel (@theaiandy, 214K subs) + Skool community ($97/mo "AI Mate") teaching creators to build AI automations without code. Andy ships tools: AgentFlow (native macOS productivity app, public launch May 2026), CreatorGrowth (creator dashboard), Content Mate (AI content factory), ScreenPost. He has a production `skills/` folder with 37 SOPs that Claude Code reads before any task — thumbnails, content docs, packaging, agent dispatch.
+
+His Q2 framework is ACD: Attraction (subs) / Conversion (free→paid) / Delivery (retention). North-star: $40K MRR by June. Current bottleneck: retention (64%).
+
+**The winning content pattern (proven by YTD data):** authority hacking — piggyback on a NAMED external god-mode source (e.g. Karpathy, Anthropic, a specific repo/framework) with the source ON STAGE, then apply it to a working system with measurable proof. The "source's source" rule: don't piggyback on the inspiration creator — go upstream to what THEY were citing. That's the OG authority.
+
+His on-camera workspace invariant: every Claude Code demo runs inside AgentFlow (Docs tab visible, skills/ folder showcased), not Terminal or VS Code.
+
+Skool gift rule: every video closes with a fork-able artifact (template, skills pack, repo, workflow) — not a demo, a real product the audience can grab.
+
+Tool-launch videos produce ~5x bigger paying cohorts than tips videos. Default preference: tool-launch frame with AgentFlow tie-in.
+""" + _format_my_channel_context()
+
+    field_specs = """
+You will return a JSON object with these exact keys. Each value is plain text (no markdown, no quotes inside unless needed for natural prose). Be specific, opinionated, and concise — these are decisions Andy will review, not menus of options.
+
+1. "inspiration_plot" — 3-5 sentence summary of what the inspiration video ACTUALLY covers (the plot/narrative). Andy should be able to absorb the source video's gist in 15 seconds without watching it. Include the central thesis, the main framework/rules/steps the creator introduces (NAME them explicitly — "Rule #1: X, Rule #2: Y…"), the tools or examples they show, and the closing payoff. Use the YouTube description's timestamps/chapter list as your structural guide if present. Be concrete, not vague. NEVER say "discusses prompt engineering best practices" — say "extracts 4 rules: (1) Prompt Skills not Claude, (2) Skills are more than prompts, (3) Build composable skills, (4) Skills get smarter every session."
+
+2. "sources_source" — The ORIGINAL tool / blog post / video / tweet the inspiration creator was citing. If the inspiration video's description has a direct link, use it. If not, NAME the most likely upstream source explicitly (e.g. "Anthropic's official Skills documentation + Oct 2025 launch blog"). Never say "unknown."
+
+3. "why_god_mode" — One sentence on why the source's source carries authority. Reference views/stars/credibility/scarcity.
+
+4. "frame" — One of: "react" / "breakdown" / "apply" / "contradict". Default to "breakdown" with source-on-stage YES unless the topic clearly demands a different frame. Include "source-on-stage: yes" or "source-on-stage: no" at the end.
+
+5. "differentiator" — ONE LINE on how Andy' angle is meaningfully different from the inspiration video. Must reference a concrete asset Andy has that the inspiration creator doesn't — his production skills/ folder (37 SOPs), AgentFlow workspace, the AI Mate community, his content pipeline. NEVER say "I'll do it better" — name the structural gap.
+
+6. "my_angle" — One sentence on what Andy adds to the source's source (his application, his workspace, his lens).
+
+7. "skool_gift" — A concrete fork-able artifact tied to the topic. Examples: "Skills Starter Pack — 5 of Andy' production SOPs packaged for fork" / "Eval Criteria Template (12 binary)" / "Thumbnail Generator skill pack." Be specific; this is the Skool CTA.
+
+8. "acd_lever" — "Attraction" / "Conversion" / "Delivery". Authority-anchored videos lean Attraction.
+
+9. "tool_tie_in" — Which Andy tool naturally showcases here. Default "AgentFlow" if any Claude Code workflow is shown (his workspace invariant). Otherwise CreatorGrowth / Content Mate / etc., or "none — pure tips video" (flag as a risk).
+
+10. "demand_check" — Cite the inspiration video itself as the demand proof (title + view count + days since publish if known). If you know of a sibling video that also crossed 10K, name it.
+
+11. "one_liner" — Single plain-English sentence that passes the cab test: "what is this video about?" Should name the source's source + Andy' angle.
+
+12. "filming_notes" — 2-4 short bullets for the content-doc stage: opening shot (which source is on screen), what NOT to do (don't name the inspiration creator), how each source-rule maps to a real skill in Andy's folder, where the Skool CTA lands.
+
+13. "final_thoughts" — 3-5 sentence honest editorial verdict on this brief. NOT a re-summary of the fields above. Answer: Is this idea genuinely worth Andy's time, or is it a "looks good on paper" idea? What's the biggest risk (e.g. inspiration video might be peaking, source's source might be too obscure, audience overlap concerns, redundancy with Andy's recent uploads)? What's the strongest reason to ship it? End with a one-line confidence call: "Ship it" / "Ship with caveat: …" / "Pause and rework: …" — be direct, not diplomatic.
+"""
+
+    user_prompt = f"""Inspiration video:
+- Title: {title}
+- Channel: {channel}
+- Views: {views_fmt}
+- Outlier: {outlier_fmt}
+- YouTube link: https://youtube.com/watch?v={video_id}
+
+Video description (verbatim from YouTube):
+---
+{description[:4000] if description else "(no description available)"}
+---
+
+{field_specs}
+
+Return ONLY the JSON object. No preamble, no markdown fences, no commentary."""
+
+    body = {
+        "contents": [{
+            "parts": [
+                {"text": project_context},
+                {"text": user_prompt},
+            ]
+        }],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.4,
+        }
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(url, data=json.dumps(body).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=45) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        return json.loads(text)
+    except (HTTPError, URLError, KeyError, IndexError, json.JSONDecodeError, TypeError):
+        return None
+
+
+@app.route("/api/videos/<int:vid>/link-youtube", methods=["POST"])
+def link_card_to_youtube(vid):
+    """Link a Published card to its real YouTube video.
+    Accepts either a YouTube video_id (11 chars) or a full URL.
+    Stores the ID in custom_fields['YouTube Video ID'] and immediately copies
+    current view_count + published_at from my_channel_videos if available.
+    Called by youtube_publisher.py right after upload — closed loop.
+    """
+    body = request.get_json(silent=True) or {}
+    raw = (body.get("youtube_video_id") or body.get("url") or body.get("youtube_url") or "").strip()
+    if not raw:
+        return jsonify({"error": "missing youtube_video_id or url"}), 400
+
+    # Extract 11-char YouTube ID from various URL forms
+    m = re.search(r"(?:v=|youtu\.be/|/shorts/|/embed/)([A-Za-z0-9_-]{11})", raw)
+    yt_id = m.group(1) if m else (raw if re.fullmatch(r"[A-Za-z0-9_-]{11}", raw) else None)
+    if not yt_id:
+        return jsonify({"error": f"could not parse YouTube video id from: {raw}"}), 400
+
+    conn = get_db()
+    card = conn.execute("SELECT id, title FROM videos WHERE id = ?", (vid,)).fetchone()
+    if not card:
+        conn.close()
+        return jsonify({"error": f"card {vid} not found"}), 404
+
+    yt = conn.execute(
+        "SELECT title, view_count, published_at FROM my_channel_videos WHERE video_id = ?",
+        (yt_id,),
+    ).fetchone()
+
+    # Store the link in custom_fields
+    details = conn.execute(
+        "SELECT custom_fields FROM video_details WHERE video_id = ?", (vid,)
+    ).fetchone()
+    fields = json.loads(details["custom_fields"]) if details and details["custom_fields"] else []
+    fields = [f for f in fields if f.get("key") != "YouTube Video ID"]
+    fields.append({"key": "YouTube Video ID", "value": yt_id})
+    if details:
+        conn.execute("UPDATE video_details SET custom_fields = ? WHERE video_id = ?",
+                     (json.dumps(fields), vid))
+    else:
+        conn.execute("INSERT INTO video_details (video_id, custom_fields) VALUES (?, ?)",
+                     (vid, json.dumps(fields)))
+
+    # If the channel sync has already pulled this video, refresh card stats now
+    refreshed = False
+    if yt:
+        conn.execute("UPDATE videos SET view_count = ?, published_at = ? WHERE id = ?",
+                     (yt["view_count"], yt["published_at"], vid))
+        refreshed = True
+    conn.commit()
+    conn.close()
+    return jsonify({
+        "ok": True,
+        "card_id": vid,
+        "youtube_video_id": yt_id,
+        "stats_refreshed": refreshed,
+        "note": "" if refreshed else "video not yet in my_channel_videos; will refresh on next daily sync (@ 6 AM UTC)",
+    })
+
+
+@app.route("/api/videos/<int:vid>/create-brief", methods=["POST"])
+def create_brief(vid):
+    """Create a starter brief for idea-validation BEFORE a content doc.
+    Auto-fills via Gemini using the inspiration video's YouTube description + project context.
+    Falls back to an empty template if Gemini is unavailable or fails.
+    """
+    conn = get_db()
+    video = conn.execute("SELECT * FROM videos WHERE id = ?", (vid,)).fetchone()
+    if not video:
+        conn.close()
+        return jsonify({"error": "Video not found"}), 404
+
+    video_id = video["video_id"]
+    title = video["title"]
+    channel = video["channel_title"]
+    views = video["view_count"] or 0
+    outlier = video["outlier_score"] or 0
+    published = video["published_at"] or ""
+
+    slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")[:80]
+    filename = f"{slug}.md"
+
+    views_fmt = _format_views(views)
+    outlier_fmt = f"{outlier:.1f}x" if outlier else "N/A"
+
+    # Try to auto-fill via Gemini using the inspiration video's description
+    description = _fetch_youtube_description(video_id)
+    filled = _gemini_fill_brief(title, channel, views_fmt, outlier_fmt, video_id, description) if description else None
+    auto_filled = bool(filled)
+
+    def _get(k, default=None):
+        v = (filled or {}).get(k) if filled else None
+        return v if v else (default if default is not None else f"[fill in — {k.replace('_', ' ')}]")
+
+    inspiration_plot   = _get("inspiration_plot")
+    sources_source     = _get("sources_source")
+    why_god_mode       = _get("why_god_mode")
+    frame              = _get("frame", "breakdown — source-on-stage: yes")
+    differentiator     = _get("differentiator")
+    my_angle           = _get("my_angle")
+    skool_gift         = _get("skool_gift")
+    acd_lever          = _get("acd_lever", "Attraction")
+    tool_tie_in        = _get("tool_tie_in", "AgentFlow")
+    demand_check       = _get("demand_check", f"{title} — {views_fmt} views ({channel})")
+    one_liner          = _get("one_liner")
+    filming_notes      = (filled or {}).get("filming_notes") if filled else None
+    final_thoughts     = (filled or {}).get("final_thoughts") if filled else None
+
+    checkmark = "x" if auto_filled else " "
+    score_line = "**10/10** → review the fills; correct anything off before promoting to content-doc-process." if auto_filled else "X/10"
+
+    notes_section = ""
+    if filming_notes:
+        if isinstance(filming_notes, list):
+            notes_section = "\n\n## Notes for content doc stage\n" + "\n".join(f"- {n}" for n in filming_notes)
+        else:
+            notes_section = f"\n\n## Notes for content doc stage\n{filming_notes}"
+
+    final_thoughts_section = ""
+    if final_thoughts:
+        final_thoughts_section = f"\n\n## Final thoughts\n{final_thoughts}"
+
+    doc = f"""# BRIEF — {title.upper()}
+
+> Idea-validation gate. {"Auto-filled by Gemini from the inspiration video's description + project context — review and correct anything off." if auto_filled else "Fill every field. Score the checklist honestly."}
+> If <7/10, kill or rewrite the idea — don't promote to a content doc.
+
+---
+
+**Inspiration card:** [creatorgrowth video {vid}] — {title} ({channel}, {views_fmt} views, outlier {outlier_fmt})
+Link: https://youtube.com/watch?v={video_id}
+
+**Inspiration plot:** {inspiration_plot}
+
+**Source's source:** {sources_source}
+
+**Why god-mode:** {why_god_mode}
+
+**Frame:** {frame}
+
+**Differentiator from inspiration:** {differentiator}
+
+**My angle on top:** {my_angle}
+
+**Skool gift:** {skool_gift}
+
+**ACD lever:** {acd_lever}
+
+**Tool tie-in:** {tool_tie_in}
+
+**Demand check:** {demand_check}
+
+**One-liner:** {one_liner}
+
+---
+
+## BRIEF CHECKLIST
+
+- [{checkmark}] **Authority hacking — yes/no.** Named external god-mode source identified.
+- [{checkmark}] **Source's source pulled.** Inspiration creator's description checked for the ORIGINAL tool/video.
+- [{checkmark}] **Differentiator named — one line.** Our angle is meaningfully different from the inspiration video.
+- [{checkmark}] **Frame chosen.** React / breakdown / apply / contradict — source-on-stage decided.
+- [{checkmark}] **Demand check passed.** At least one similar YouTube video at ≥10K views.
+- [{checkmark}] **Tool-launch over tips.** Tool-launch OR has a tool naturally tied in.
+- [{checkmark}] **Skool gift defined.** Fork-able artifact tied to the topic.
+- [{checkmark}] **ACD lever named.** Which lever does this pull.
+- [{checkmark}] **Subscriber-pullable.** Subs click it in their feed — not pure YT Search bait.
+- [{checkmark}] **One-liner passes the cab test.**
+
+BRIEF CHECKLIST SCORE: {score_line}{notes_section}{final_thoughts_section}
+"""
+
+    briefs_subdir = CONTENT_DIR / "briefs"
+    briefs_subdir.mkdir(parents=True, exist_ok=True)
+    filepath = briefs_subdir / filename
+
+    if filepath.exists():
+        rel = str(filepath.relative_to(CONTENT_DIR))
+        conn.close()
+        return jsonify({"ok": True, "path": rel, "filename": filename, "exists": True})
+
+    filepath.write_text(doc, encoding="utf-8")
+    rel = str(filepath.relative_to(CONTENT_DIR))
+
+    details = conn.execute("SELECT custom_fields FROM video_details WHERE video_id = ?", (vid,)).fetchone()
+    if details:
+        fields = json.loads(details["custom_fields"] or "[]")
+        for fld in fields:
+            if fld.get("key") == "Brief Doc":
+                fld["value"] = rel
+                break
+        else:
+            fields.append({"key": "Brief Doc", "value": rel})
+        conn.execute("UPDATE video_details SET custom_fields = ? WHERE video_id = ?", (json.dumps(fields), vid))
+        conn.commit()
+    else:
+        fields = [{"key": "Brief Doc", "value": rel}]
+        conn.execute(
+            "INSERT INTO video_details (video_id, custom_fields) VALUES (?, ?)",
+            (vid, json.dumps(fields)),
+        )
+        conn.commit()
+
+    conn.close()
+    return jsonify({"ok": True, "path": rel, "filename": filename, "exists": False, "auto_filled": auto_filled})
 
 
 current_image_url = {"url": None}
@@ -3829,6 +4289,1801 @@ def chapter_render(vid):
             pass
 
 
+# ── SAY doc (ElevenLabs-ready plain narration) ───────────────────────────
+
+VOCAL_DOC_SYSTEM_PROMPT = """You extract the SAY doc from a content doc — ONLY the words Andy actually says aloud, in narration order, as plain prose. This text goes directly into ElevenLabs for TTS, so any markdown markers (asterisks, underscores, pipes, dashes) would be SPOKEN ALOUD literally. Do not use any.
+
+INCLUDE (every word Andy speaks, in order):
+- The hook / intro spoken paragraph (typically under "🎤 SAY THIS")
+- The body of every spoken block (typically under "🗣️ Say:")
+- Any bridges, transitions, or asides that are clearly spoken
+- The closing / CTA spoken content
+
+STRIP (do not include any of this):
+- Title, packaging variants, thumbnail copy, video description
+- 5P framework labels, 💎 BENEFITS prep, 📋 STEPS recap lists, 🔒 WHY STAY notes, 🎁 GIFT prep
+- 🖥️ Show cues, B-roll cues, image prompts, frame notes, stage directions
+- Chapter labels, STEP headings, section dividers
+- Sources, references, checklists
+- ALL emoji
+- ALL markdown headings (# ## ###)
+- ALL list bullets (-, *, 1.)
+- ALL bold/italic/underline markers (**, *, __)
+- ALL code fences and inline code
+- Metadata blocks (CHAPTERS, CODES, INTRO labels)
+
+OUTPUT FORMAT:
+Plain prose with ONE permitted structural marker: section divider lines so the editor can see where steps begin. The marker lines are stripped before the text reaches ElevenLabs — they exist purely for visual structure while editing.
+
+Use exactly these marker forms, each on its own line, with a blank line above and below:
+- === HOOK === (above the intro / hook section)
+- === STEP 1: <step name> === (above each step's spoken content; number them 1, 2, 3, …)
+- === CLOSING === (above the final CTA / closing section, if there is one distinct from the last step)
+
+Example shape:
+
+=== HOOK ===
+
+[hook paragraph(s)]
+
+=== STEP 1: Setup ===
+
+[step 1 paragraph(s)]
+
+=== STEP 2: First Build ===
+
+[step 2 paragraph(s)]
+
+=== CLOSING ===
+
+[closing paragraph(s)]
+
+Other rules:
+- Natural paragraph breaks (one blank line) between distinct beats within a section.
+- Spell out symbols that would be read awkwardly: "30 percent" not "30%", "and" not "&", "for example" not "e.g."
+- Keep natural contractions ("it's", "we'll", "don't").
+- Use commas and ellipses for natural pauses — never insert codes like "|||" or "[pause]".
+- No headings beyond the === markers, no bold/italic/underline, no bullets, no emoji, no other markdown.
+
+CRITICAL: Return ONLY the spoken text plus the === markers. No preamble, no code fence, no commentary. Start with === HOOK === on the first line and end with the final spoken word of the last section. The output should be fully self-contained — do not truncate mid-sentence."""
+
+
+@app.route("/api/videos/<int:vid>/vocal-doc", methods=["GET"])
+def get_vocal_doc(vid):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT vocal_doc FROM videos WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "video not found"}), 404
+    return jsonify({"vocal_doc": row["vocal_doc"] or ""})
+
+
+@app.route("/api/videos/<int:vid>/vocal-doc", methods=["POST"])
+def save_vocal_doc(vid):
+    body = request.get_json(force=True, silent=True) or {}
+    text = body.get("vocal_doc", "")
+    conn = get_db()
+    conn.execute("UPDATE videos SET vocal_doc=? WHERE id=?", (text, vid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/videos/<int:vid>/vocal-doc/generate", methods=["POST"])
+def generate_vocal_doc(vid):
+    """Take supplied content doc text (or fall back to stored script col) and
+    produce a Benson-coded vocal doc via Gemini 2.5 Flash."""
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+
+    body = request.get_json(force=True, silent=True) or {}
+    content_doc = (body.get("content_doc") or "").strip()
+    if not content_doc:
+        conn = get_db()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT script FROM videos WHERE id=?", (vid,)).fetchone()
+        conn.close()
+        content_doc = (row["script"] or "").strip() if row else ""
+    if not content_doc:
+        return jsonify({"error": "no content doc supplied and no stored script"}), 400
+
+    payload = {
+        "contents": [{
+            "parts": [{"text": VOCAL_DOC_SYSTEM_PROMPT + "\n\n---\nCONTENT DOC TO EXTRACT FROM:\n\n" + content_doc}]
+        }],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 32768,
+        }
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(url, data=json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        return jsonify({"error": f"gemini http {e.code}", "detail": e.read().decode("utf-8", "ignore")[:500]}), 502
+    except URLError as e:
+        return jsonify({"error": f"gemini network: {e.reason}"}), 502
+
+    try:
+        candidate = data["candidates"][0]
+        text = candidate["content"]["parts"][0]["text"].strip()
+        finish = candidate.get("finishReason", "")
+    except (KeyError, IndexError, TypeError):
+        return jsonify({"error": "gemini response malformed", "raw": data}), 502
+    if finish and finish not in ("STOP", "MODEL_LENGTH"):
+        return jsonify({
+            "error": f"gemini incomplete (finishReason={finish})",
+            "partial": text,
+            "hint": "Output was cut off. Content doc may be too long for one call.",
+        }), 502
+
+    # Strip an accidental ```markdown fence if Gemini adds one
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines[0].startswith("```"): lines = lines[1:]
+        if lines and lines[-1].strip() == "```": lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    conn = get_db()
+    conn.execute("UPDATE videos SET vocal_doc=? WHERE id=?", (text, vid))
+    conn.commit()
+    conn.close()
+    return jsonify({"vocal_doc": text})
+
+
+# ---------------------------------------------------------------------------
+# Visuals doc — vocal_doc augmented with inline [AVATAR]/[DIAGRAM]/[SCREEN] tags
+# that drive what plays over the avatar at each point in the timeline.
+# ---------------------------------------------------------------------------
+
+VISUALS_DOC_SYSTEM_PROMPT = """You are tagging a YouTube script with VISUAL MODE markers.
+
+Given a vocal doc (already split into === STEP N: TITLE === sections), you insert ONE of three tags on its own line before each paragraph block:
+
+[AVATAR]   — the talking-head avatar carries this beat; no extra visual needed. Use for hooks, transitions, personal anecdotes, opinion lines.
+[DIAGRAM]  — a pre-built diagram should be on screen. Use for any moment where the speaker is explaining a concept, listing items, comparing options, walking through a framework, or showing the structure of an idea.
+[SCREEN]   — the speaker is referring to a live screen-recording / app demo. Use whenever the script says "let me show you", "watch this", "here's what it looks like", or describes clicking, typing, navigating, opening tabs, or any literal on-screen interaction.
+
+RULES:
+1. Output the ENTIRE vocal doc back, unchanged, with tags inserted. Do NOT rewrite, summarize, or skip text.
+2. Preserve every `=== STEP N: TITLE ===` marker exactly as-is.
+3. Each tag goes on its own line, with a blank line before and after. Place tags BEFORE the paragraph block they apply to.
+4. Every paragraph block must have exactly one tag. Multiple paragraphs in a row with the same intended visual should be wrapped under ONE tag (don't repeat the tag).
+5. Default to [AVATAR] when uncertain. Only use [DIAGRAM] or [SCREEN] when the text clearly calls for it.
+6. Do not invent text. Do not add commentary, code fences, or preamble.
+
+Output ONLY the tagged vocal doc."""
+
+
+@app.route("/api/videos/<int:vid>/visuals-doc", methods=["GET"])
+def get_visuals_doc(vid):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT visuals_doc FROM videos WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "video not found"}), 404
+    return jsonify({"visuals_doc": row["visuals_doc"] or ""})
+
+
+@app.route("/api/videos/<int:vid>/visuals-doc", methods=["POST"])
+def save_visuals_doc(vid):
+    body = request.get_json(force=True, silent=True) or {}
+    text = body.get("visuals_doc", "")
+    conn = get_db()
+    conn.execute("UPDATE videos SET visuals_doc=? WHERE id=?", (text, vid))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/videos/<int:vid>/visuals-doc/generate", methods=["POST"])
+def generate_visuals_doc(vid):
+    """Read the stored vocal_doc and run a single Gemini pass that inserts
+    [AVATAR]/[DIAGRAM]/[SCREEN] tags before each paragraph block. Saves to
+    visuals_doc and returns the tagged text."""
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT vocal_doc FROM videos WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    vocal_doc = (row["vocal_doc"] or "").strip() if row else ""
+    if not vocal_doc:
+        return jsonify({"error": "vocal_doc is empty — generate the Say doc first"}), 400
+
+    payload = {
+        "contents": [{
+            "parts": [{"text": VISUALS_DOC_SYSTEM_PROMPT + "\n\n---\nVOCAL DOC TO TAG:\n\n" + vocal_doc}]
+        }],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 32768,
+        }
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(url, data=json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        return jsonify({"error": f"gemini http {e.code}", "detail": e.read().decode("utf-8", "ignore")[:500]}), 502
+    except URLError as e:
+        return jsonify({"error": f"gemini network: {e.reason}"}), 502
+
+    try:
+        candidate = data["candidates"][0]
+        text = candidate["content"]["parts"][0]["text"].strip()
+        finish = candidate.get("finishReason", "")
+    except (KeyError, IndexError, TypeError):
+        return jsonify({"error": "gemini response malformed", "raw": data}), 502
+    if finish and finish not in ("STOP", "MODEL_LENGTH"):
+        return jsonify({
+            "error": f"gemini incomplete (finishReason={finish})",
+            "partial": text,
+        }), 502
+
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines[0].startswith("```"): lines = lines[1:]
+        if lines and lines[-1].strip() == "```": lines = lines[:-1]
+        text = "\n".join(lines).strip()
+
+    conn = get_db()
+    conn.execute("UPDATE videos SET visuals_doc=? WHERE id=?", (text, vid))
+    conn.commit()
+    conn.close()
+    return jsonify({"visuals_doc": text})
+
+
+VISUAL_TAG_RE = re.compile(r"^\s*\[(AVATAR|DIAGRAM|SCREEN)\]\s*$", re.IGNORECASE)
+
+
+def _parse_visuals_blocks(text):
+    """Split a tagged visuals_doc into ordered [TAG] blocks with char offsets
+    into the STRIPPED text (no === STEP N === lines, no [TAG] lines, just the
+    spoken body — same shape as `_strip_and_segment` produces).
+
+    Returns (cleaned_text, blocks) where blocks is a list of:
+        {tag, step, char_start, char_end, text}
+
+    `step` is the 1-based step number this block falls under (1 if before the
+    first marker; matches the numbering in `Step N: Title` diagram names).
+    Untagged paragraphs (before the first tag in a section) implicitly inherit
+    AVATAR so timing math still covers them.
+    """
+    if not text:
+        return "", []
+
+    blocks = []
+    out_lines = []
+    joined_len = 0
+    current_tag = "AVATAR"
+    current_step = 0  # 0 = pre-step (treated as step 1 below)
+    block_open = False
+
+    def open_block(tag, step, start):
+        nonlocal block_open
+        if block_open and blocks and blocks[-1].get("char_end") is None:
+            blocks[-1]["char_end"] = start
+        blocks.append({
+            "tag": tag.upper(),
+            "step": max(1, step),
+            "char_start": start,
+            "char_end": None,
+        })
+        block_open = True
+
+    for line in text.split("\n"):
+        # === STEP N: TITLE === marker
+        m_step = re.match(r"^\s*=+\s*STEP\s*(\d+)[:\s]([^=]*?)\s*=+\s*$", line, re.IGNORECASE)
+        if m_step:
+            current_step = int(m_step.group(1))
+            # close any open block at this boundary so the new step starts fresh
+            marker_pos = joined_len + (1 if out_lines else 0)
+            if block_open and blocks and blocks[-1].get("char_end") is None:
+                blocks[-1]["char_end"] = marker_pos
+                block_open = False
+            continue
+        # Non-step `=== HOOK ===` style marker (skip but don't reset step)
+        if re.match(r"^\s*=+\s*[A-Z0-9][^=]*?\s*=+\s*$", line):
+            marker_pos = joined_len + (1 if out_lines else 0)
+            if block_open and blocks and blocks[-1].get("char_end") is None:
+                blocks[-1]["char_end"] = marker_pos
+                block_open = False
+            continue
+        # [TAG] line
+        m_tag = VISUAL_TAG_RE.match(line)
+        if m_tag:
+            current_tag = m_tag.group(1).upper()
+            marker_pos = joined_len + (1 if out_lines else 0)
+            open_block(current_tag, current_step, marker_pos)
+            continue
+        # Body line — if we haven't opened a block yet, open one with current_tag
+        if not block_open:
+            marker_pos = joined_len + (1 if out_lines else 0)
+            open_block(current_tag, current_step, marker_pos)
+        sep = 1 if out_lines else 0
+        out_lines.append(line)
+        joined_len += sep + len(line)
+
+    if block_open and blocks and blocks[-1].get("char_end") is None:
+        blocks[-1]["char_end"] = joined_len
+
+    cleaned = "\n".join(out_lines)
+
+    # Mirror the lstrip the Say pipeline does so offsets line up with the
+    # take's char-aligned timing.
+    prefix = len(cleaned) - len(cleaned.lstrip())
+    if prefix:
+        cleaned = cleaned[prefix:]
+        for b in blocks:
+            b["char_start"] = max(0, b["char_start"] - prefix)
+            if b["char_end"] is not None:
+                b["char_end"] = max(0, b["char_end"] - prefix)
+
+    cleaned = cleaned.rstrip()
+    n = len(cleaned)
+    for b in blocks:
+        b["char_start"] = min(b["char_start"], n)
+        if b["char_end"] is not None:
+            b["char_end"] = min(b["char_end"], n)
+    blocks = [b for b in blocks if (b["char_end"] or 0) > b["char_start"]]
+
+    # Attach the body text for each block so the editor can show a preview.
+    for b in blocks:
+        b["text"] = cleaned[b["char_start"]:b["char_end"]].strip()
+
+    return cleaned, blocks
+
+
+@app.route("/api/videos/<int:vid>/visuals-doc/compute-blocks", methods=["POST"])
+def compute_visuals_blocks(vid):
+    """Parse the saved visuals_doc and return time-aligned blocks ready for
+    timeline placement. Uses the latest voiceover take's duration via linear
+    interpolation (matches compute-segments fallback)."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT visuals_doc FROM videos WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    text = (row["visuals_doc"] or "") if row else ""
+    if not text.strip():
+        return jsonify({"error": "visuals_doc is empty"}), 400
+
+    cleaned, blocks = _parse_visuals_blocks(text)
+    if not blocks:
+        return jsonify({"error": "no [TAG] blocks found in visuals_doc"}), 400
+
+    # Pull the most recent take that has a duration (or segments we can derive
+    # duration from). Fall back to a synthetic 60s/step estimate so the editor
+    # gets *something* back even pre-synth.
+    state = _load_voiceover_state(vid)
+    gens = state.get("generations", [])
+    duration = 0.0
+    for g in reversed(gens):
+        d = g.get("duration") or g.get("audio_duration") or 0
+        if d:
+            duration = float(d)
+            break
+        segs = g.get("segments") or []
+        if segs:
+            duration = float(segs[-1].get("end", 0)) or duration
+            if duration:
+                break
+
+    if duration <= 0:
+        # Last-resort estimate: 13 chars/sec speaking rate.
+        duration = max(30.0, len(cleaned) / 13.0)
+        method = "estimate-13cps"
+    else:
+        method = "linear-from-take-duration"
+
+    total_chars = max(1, len(cleaned))
+    out = []
+    for b in blocks:
+        start = duration * (b["char_start"] / total_chars)
+        end = duration * (b["char_end"] / total_chars)
+        out.append({
+            "tag": b["tag"],
+            "step": b["step"],
+            "char_start": b["char_start"],
+            "char_end": b["char_end"],
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "text": b["text"][:200],
+        })
+
+    return jsonify({
+        "blocks": out,
+        "duration": duration,
+        "method": method,
+        "total_chars": total_chars,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Visual tags — human-tagged char ranges in the cleaned vocal_doc that map
+# selections in the script to visuals on the timeline. Andy selects text in
+# the Visuals tab and right-clicks → Diagram / Avatar / Text anim / Screen.
+# Each tag stores: {id, char_start, char_end, type, asset_id?, label?, color?}.
+# ---------------------------------------------------------------------------
+
+_VISUAL_TAG_TYPES = {"diagram", "avatar", "text_anim", "screen", "chapters"}
+
+
+def _sanitize_visual_tags(raw):
+    """Trust nothing; normalize what the client posts."""
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for t in raw:
+        if not isinstance(t, dict):
+            continue
+        ttype = (t.get("type") or "").lower()
+        if ttype not in _VISUAL_TAG_TYPES:
+            continue
+        try:
+            cs = int(t.get("char_start"))
+            ce = int(t.get("char_end"))
+        except (TypeError, ValueError):
+            continue
+        if ce <= cs:
+            continue
+        out.append({
+            "id": str(t.get("id") or ("vt" + uuid.uuid4().hex[:12])),
+            "char_start": cs,
+            "char_end": ce,
+            "type": ttype,
+            "asset_id": (str(t["asset_id"]) if t.get("asset_id") else None),
+            "label": (str(t["label"])[:120] if t.get("label") else None),
+            "color": (str(t["color"])[:24] if t.get("color") else None),
+        })
+    # Sort by start so consumers don't have to.
+    out.sort(key=lambda x: (x["char_start"], x["char_end"]))
+    return out
+
+
+@app.route("/api/videos/<int:vid>/visual-tags", methods=["GET"])
+def get_visual_tags(vid):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT visual_tags FROM videos WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({"error": "video not found"}), 404
+    try:
+        tags = json.loads(row["visual_tags"]) if row["visual_tags"] else []
+    except (TypeError, ValueError):
+        tags = []
+    return jsonify({"tags": tags if isinstance(tags, list) else []})
+
+
+@app.route("/api/videos/<int:vid>/visual-tags", methods=["POST"])
+def save_visual_tags(vid):
+    body = request.get_json(force=True, silent=True) or {}
+    tags = _sanitize_visual_tags(body.get("tags"))
+    conn = get_db()
+    conn.execute(
+        "UPDATE videos SET visual_tags=? WHERE id=?",
+        (json.dumps(tags), vid),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "tags": tags})
+
+
+_SCREEN_PHRASE_RE = re.compile(
+    r"\b("
+    r"let me show you|"
+    r"i'?ll show you|"
+    r"here'?s what (?:it|this|that) looks like|"
+    r"watch this(?: clip| video)?|"
+    r"i'?ll demonstrate|"
+    r"on my screen|"
+    r"in my (?:browser|terminal|editor)|"
+    r"on the screen here|"
+    r"check this out"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _sentence_spans(cleaned, seg):
+    """Return list of (char_start, char_end) for each sentence inside `seg`,
+    in coords of the cleaned vocal_doc. Uses simple `.!?` splitting which is
+    good enough for narration."""
+    cs0 = int(seg["char_start"])
+    ce0 = int(seg["char_end"])
+    body = cleaned[cs0:ce0]
+    out = []
+    i = 0
+    n = len(body)
+    while i < n:
+        while i < n and body[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        start = i
+        # Walk forward to next sentence terminator (with min length so
+        # initialisms like "I." don't split prematurely).
+        j = i + 8
+        while j < n and body[j] not in ".!?":
+            j += 1
+        if j < n:
+            j += 1  # include punctuation
+        end = min(n, j)
+        if end <= start:
+            break
+        out.append((cs0 + start, cs0 + end))
+        i = end
+    return out
+
+
+@app.route("/api/videos/<int:vid>/visual-tags/auto-suggest", methods=["POST"])
+def auto_suggest_visual_tags(vid):
+    """Generate a sprinkled mix of diagram + avatar + text_anim + screen tags.
+
+    Rules:
+      - Diagrams: only RENDERED diagrams (skips not-rendered). Each lands on
+        one sentence; first sentence of the step matched by `Step N` /
+        `Diagram N` in the name, or position+1 as fallback. Extras (more
+        diagrams than steps) land at later sentences of the same step.
+      - Avatar: maximum ONE sentence per step (Andy's "salt" rule), preferring
+        a mid-step sentence that's not already tagged.
+      - Screen: any sentence containing a screen-recording trigger phrase
+        ("let me show", "watch this", "click on", "type into", etc).
+      - Text_anim: up to N sentences sprinkled in remaining un-tagged spots
+        across the doc (default ~3 + 1 per 4 steps).
+      - All other text stays untagged.
+
+    Body: {replace: bool=true}  // replace prior auto-tag types (diagram,
+    avatar, screen, text_anim). Manual `chapters` tags are preserved.
+    """
+    body = request.get_json(force=True, silent=True) or {}
+    replace = bool(body.get("replace", True))
+
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    vrow = conn.execute(
+        "SELECT vocal_doc, visual_tags FROM videos WHERE id=?", (vid,)
+    ).fetchone()
+    drows = conn.execute(
+        "SELECT id, name, position, script, image_path, result_url FROM diagrams "
+        "WHERE video_id=? ORDER BY position, created_at",
+        (vid,)
+    ).fetchall()
+    conn.close()
+    if not vrow:
+        return jsonify({"error": "video not found"}), 404
+
+    raw_text = (vrow["vocal_doc"] or "")
+    cleaned, doc_segments = _strip_and_segment(raw_text)
+    if not cleaned:
+        return jsonify({"error": "vocal_doc has no spoken text"}), 400
+
+    def _diagram_available(r):
+        return bool(r["result_url"]) or bool(r["image_path"])
+
+    # Drop INTRO if it sits before any real step segment with body — most
+    # narrations open straight into Step 1 with no separate hook.
+    real_segs = [s for s in doc_segments if (s.get("char_end") or 0) > s["char_start"]]
+
+    def _ord(s):
+        m = re.search(r"(?:step|diagram)\s*(\d+)", s or "", re.IGNORECASE)
+        return int(m.group(1)) if m else None
+
+    step_segs_by_num = {}
+    for s in real_segs:
+        n = _ord(s.get("name") or "")
+        if n is not None and n not in step_segs_by_num:
+            step_segs_by_num[n] = s
+
+    # Ordered list of "real step" segments — excludes HOOK/INTRO/OUTRO/etc.
+    # Lets us map `Diagram N` → the Nth real step even when segment names
+    # don't carry an explicit "Step N:" prefix.
+    _META_NAME_RE = re.compile(
+        r"^\s*(hook|intro|outro|cta|wrap|wrap\s*up|end|conclusion)\s*$",
+        re.IGNORECASE,
+    )
+    step_segs_in_order = [
+        s for s in real_segs
+        if not _META_NAME_RE.match(s.get("name") or "")
+    ]
+
+    # All sentences in the doc, grouped by which segment they fall in.
+    seg_sentences = []  # list[(seg, [(cs, ce), ...])]
+    for s in real_segs:
+        sents = _sentence_spans(cleaned, s)
+        seg_sentences.append((s, sents))
+
+    # Track which (char_start, char_end) ranges are already claimed.
+    claimed = []
+    def claim(cs, ce):
+        claimed.append((cs, ce))
+    def overlaps_claimed(cs, ce):
+        return any(cs < e and ce > s for (s, e) in claimed)
+
+    suggested = []
+    skipped = []
+    used_steps_for_diagram = {}  # step_num → count of diagrams placed in this step
+
+    # 1) Diagrams: include anything with EITHER a rendered MP4 (result_url) or
+    #    a still image (image_path). Apply-to-timeline will use whichever is
+    #    available. One diagram per step preferred; extras land at the next
+    #    sentence within the same step.
+    rendered_diagrams = [r for r in drows if _diagram_available(r)]
+    for r in drows:
+        if not _diagram_available(r):
+            skipped.append({
+                "diagram_id": r["id"],
+                "name": r["name"],
+                "reason": "no image_path or result_url — skipped",
+            })
+
+    for r in rendered_diagrams:
+        name = r["name"] or ""
+        step_n = _ord(name)
+        if step_n is None:
+            step_n = (r["position"] or 0) + 1
+        seg = step_segs_by_num.get(step_n)
+        # Fall back to step_segs_in_order which SKIPS HOOK/INTRO/etc, so
+        # `Diagram 1` lands at the first real step body even when segments
+        # are named "THE PROBLEM" / "THE SETUP" without an explicit "Step N:"
+        # prefix.
+        if seg is None:
+            idx = step_n - 1
+            if 0 <= idx < len(step_segs_in_order):
+                seg = step_segs_in_order[idx]
+        if seg is None:
+            skipped.append({
+                "diagram_id": r["id"],
+                "name": name,
+                "reason": "no segment to place it in",
+            })
+            continue
+        sents = _sentence_spans(cleaned, seg)
+        if not sents:
+            skipped.append({
+                "diagram_id": r["id"],
+                "name": name,
+                "reason": "step has no body text",
+            })
+            continue
+        # Pick first available sentence within this step.
+        target_idx = used_steps_for_diagram.get(id(seg), 0)
+        if target_idx >= len(sents):
+            # No more sentences in this step — put it back at the last sentence.
+            target_idx = len(sents) - 1
+        cs, ce = sents[target_idx]
+        if overlaps_claimed(cs, ce):
+            # Find next free sentence.
+            placed = False
+            for s2 in sents[target_idx + 1:]:
+                if not overlaps_claimed(*s2):
+                    cs, ce = s2
+                    placed = True
+                    break
+            if not placed:
+                skipped.append({
+                    "diagram_id": r["id"],
+                    "name": name,
+                    "reason": "step's sentences all claimed",
+                })
+                continue
+        used_steps_for_diagram[id(seg)] = target_idx + 1
+        claim(cs, ce)
+        suggested.append({
+            "id": "vt" + uuid.uuid4().hex[:12],
+            "char_start": cs,
+            "char_end": ce,
+            "type": "diagram",
+            "asset_id": r["id"],
+            "label": name,
+        })
+
+    # 2) Screen tags from trigger phrases — any sentence containing one.
+    for seg, sents in seg_sentences:
+        for (cs, ce) in sents:
+            if overlaps_claimed(cs, ce):
+                continue
+            sentence_text = cleaned[cs:ce]
+            if _SCREEN_PHRASE_RE.search(sentence_text):
+                claim(cs, ce)
+                suggested.append({
+                    "id": "vt" + uuid.uuid4().hex[:12],
+                    "char_start": cs,
+                    "char_end": ce,
+                    "type": "screen",
+                    "label": None,
+                })
+
+    # 3) Avatar sprinkle — at most ONE per step. Picks a mid-step sentence
+    #    that isn't already claimed.
+    for seg, sents in seg_sentences:
+        if not sents:
+            continue
+        # Try mid-step first, then walk outwards.
+        mid = len(sents) // 2
+        order = [mid]
+        for off in range(1, len(sents)):
+            if mid + off < len(sents):
+                order.append(mid + off)
+            if mid - off >= 0:
+                order.append(mid - off)
+        placed = False
+        for idx in order:
+            cs, ce = sents[idx]
+            # Skip very short sentences (probably "And.", "Yes.", etc).
+            if (ce - cs) < 18:
+                continue
+            if overlaps_claimed(cs, ce):
+                continue
+            claim(cs, ce)
+            suggested.append({
+                "id": "vt" + uuid.uuid4().hex[:12],
+                "char_start": cs,
+                "char_end": ce,
+                "type": "avatar",
+                "label": None,
+            })
+            placed = True
+            break
+        if not placed:
+            continue
+
+    # 4) Text-anim sprinkle: punctuation/emphasis ONLY — a handful of
+    #    sentences with a strong feel ("...", em-dashes, exclamation, all-caps
+    #    words) get tagged for an animated text overlay. Cap at 8.
+    text_anim_cap = 8
+    text_anim_count = 0
+    _TEXT_ANIM_HINT_RE = re.compile(
+        r"(?:\.{3}|!|\b(?:never|always|literally|every single|nobody|nothing)\b|"
+        r"—\s*[A-Z]|\b[A-Z]{4,}\b)",
+    )
+    for (_seg, sents) in seg_sentences:
+        if text_anim_count >= text_anim_cap:
+            break
+        for (cs, ce) in sents:
+            if text_anim_count >= text_anim_cap:
+                break
+            if overlaps_claimed(cs, ce):
+                continue
+            if (ce - cs) < 20:
+                continue
+            if not _TEXT_ANIM_HINT_RE.search(cleaned[cs:ce]):
+                continue
+            claim(cs, ce)
+            suggested.append({
+                "id": "vt" + uuid.uuid4().hex[:12],
+                "char_start": cs,
+                "char_end": ce,
+                "type": "text_anim",
+                "label": None,
+            })
+            text_anim_count += 1
+
+    # 5) Screen as default — every remaining unclaimed sentence becomes a
+    #    screen tag. Screen is the baseline visual; talking head shows
+    #    underneath when no other tag is layered on top.
+    for (_seg, sents) in seg_sentences:
+        for (cs, ce) in sents:
+            if overlaps_claimed(cs, ce):
+                continue
+            if (ce - cs) < 12:
+                continue
+            claim(cs, ce)
+            suggested.append({
+                "id": "vt" + uuid.uuid4().hex[:12],
+                "char_start": cs,
+                "char_end": ce,
+                "type": "screen",
+                "label": None,
+            })
+
+    # Merge with existing tags. Preserve manual `chapters` tags entirely;
+    # drop the other auto types if replace=true.
+    try:
+        existing = json.loads(vrow["visual_tags"]) if vrow["visual_tags"] else []
+    except (TypeError, ValueError):
+        existing = []
+    if not isinstance(existing, list):
+        existing = []
+    auto_types = {"diagram", "avatar", "screen", "text_anim"}
+    if replace:
+        existing = [t for t in existing if t.get("type") not in auto_types]
+
+    def _overlaps_tag(a, b):
+        try:
+            return int(a["char_start"]) < int(b["char_end"]) and int(a["char_end"]) > int(b["char_start"])
+        except (TypeError, ValueError, KeyError):
+            return False
+    keep = [t for t in existing if not any(_overlaps_tag(t, s) for s in suggested)]
+
+    merged = _sanitize_visual_tags(keep + suggested)
+
+    conn = get_db()
+    conn.execute(
+        "UPDATE videos SET visual_tags=? WHERE id=?",
+        (json.dumps(merged), vid),
+    )
+    conn.commit()
+    conn.close()
+
+    counts = {}
+    for t in suggested:
+        counts[t["type"]] = counts.get(t["type"], 0) + 1
+    return jsonify({
+        "tags": merged,
+        "suggested_count": len(suggested),
+        "counts": counts,
+        "skipped": skipped,
+    })
+
+
+@app.route("/api/videos/<int:vid>/visual-tags/apply", methods=["POST"])
+def apply_visual_tags(vid):
+    """Resolve each tag to a concrete timeline placement using the latest
+    voiceover take's duration. Char offsets are in the CLEANED vocal_doc
+    (no `=== STEP N ===` lines, no normalization beyond strip), matching the
+    same space the editor renders text in."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    vrow = conn.execute(
+        "SELECT vocal_doc, visual_tags FROM videos WHERE id=?", (vid,)
+    ).fetchone()
+    drows = conn.execute(
+        "SELECT id, name, image_path, result_url, audio_duration FROM diagrams WHERE video_id=?",
+        (vid,)
+    ).fetchall()
+    conn.close()
+    if not vrow:
+        return jsonify({"error": "video not found"}), 404
+
+    raw_text = (vrow["vocal_doc"] or "")
+    cleaned, _ = _strip_and_segment(raw_text)
+    total_chars = max(1, len(cleaned))
+
+    try:
+        tags = json.loads(vrow["visual_tags"]) if vrow["visual_tags"] else []
+    except (TypeError, ValueError):
+        tags = []
+    if not isinstance(tags, list) or not tags:
+        return jsonify({"placements": [], "tag_count": 0})
+
+    state = _load_voiceover_state(vid)
+    gens = state.get("generations", [])
+    duration = 0.0
+    for g in reversed(gens):
+        d = g.get("duration") or g.get("audio_duration") or 0
+        if d:
+            duration = float(d)
+            break
+        segs = g.get("segments") or []
+        if segs:
+            duration = float(segs[-1].get("end", 0)) or duration
+            if duration:
+                break
+    if duration <= 0:
+        duration = max(30.0, total_chars / 13.0)
+        method = "estimate-13cps"
+    else:
+        method = "linear-from-take-duration"
+
+    diagram_by_id = {d["id"]: d for d in drows}
+
+    placements = []
+    for t in tags:
+        try:
+            cs = max(0, int(t.get("char_start", 0)))
+            ce = max(cs + 1, int(t.get("char_end", 0)))
+        except (TypeError, ValueError):
+            continue
+        cs = min(cs, total_chars)
+        ce = min(ce, total_chars)
+        if ce <= cs:
+            continue
+        start = duration * (cs / total_chars)
+        end = duration * (ce / total_chars)
+        p = {
+            "tag_id": t.get("id"),
+            "type": (t.get("type") or "").lower(),
+            "char_start": cs,
+            "char_end": ce,
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "label": t.get("label"),
+            "matched": True,
+        }
+        if p["type"] == "diagram":
+            d = diagram_by_id.get(t.get("asset_id") or "")
+            if not d:
+                p["matched"] = False
+                p["reason"] = "diagram not found"
+            elif not (d["result_url"] or d["image_path"]):
+                p["matched"] = False
+                p["reason"] = "diagram has no rendered MP4 or image"
+            else:
+                # Prefer rendered MP4 (with animation), fall back to still image.
+                if d["result_url"]:
+                    p["result_url"] = _proxy_asset_url(d["result_url"])
+                    p["asset_kind"] = "video"
+                else:
+                    rel = d["image_path"]
+                    p["result_url"] = ("/" + rel) if rel and not rel.startswith("/") else rel
+                    p["asset_kind"] = "image"
+                p["diagram_id"] = d["id"]
+                p["diagram_name"] = d["name"]
+        placements.append(p)
+
+    return jsonify({
+        "placements": placements,
+        "duration": duration,
+        "method": method,
+        "total_chars": total_chars,
+        "tag_count": len(tags),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Auto-place diagrams on the editor timeline by verbatim-matching each
+# diagram's stored `script` against the spoken vocal_doc.
+# ---------------------------------------------------------------------------
+
+def _normalize_for_match(s: str) -> str:
+    """Lowercase, collapse whitespace, strip most punctuation. Returns a
+    (normalized_text, idx_map) pair via the wrapper below. This helper just
+    produces the normalized string; positions are computed by the wrapper."""
+    out = []
+    for ch in s.lower():
+        if ch.isalnum() or ch == " ":
+            out.append(ch)
+        elif ch.isspace():
+            out.append(" ")
+        # drop everything else (punctuation, symbols)
+    # collapse runs of spaces
+    norm = re.sub(r"\s+", " ", "".join(out)).strip()
+    return norm
+
+
+def _normalize_with_index_map(s: str):
+    """Like _normalize_for_match but also returns a parallel array `idx_map`
+    where idx_map[i] = the index in the ORIGINAL string corresponding to the
+    i-th char of the normalized string. Used to map a match back to the
+    original cleaned vocal_doc's char offsets."""
+    norm_chars = []
+    idx_map = []
+    last_was_space = True  # so leading whitespace is collapsed away
+    for i, ch in enumerate(s):
+        if ch.isalnum():
+            norm_chars.append(ch.lower())
+            idx_map.append(i)
+            last_was_space = False
+        elif ch.isspace() or not ch.isalnum():
+            if not last_was_space:
+                norm_chars.append(" ")
+                idx_map.append(i)
+                last_was_space = True
+            # else skip (collapse)
+    # trim trailing space
+    while norm_chars and norm_chars[-1] == " ":
+        norm_chars.pop()
+        idx_map.pop()
+    return "".join(norm_chars), idx_map
+
+
+def _find_script_in_doc(script: str, cleaned_doc: str):
+    """Locate `script` inside `cleaned_doc` with whitespace/punctuation-tolerant
+    matching. Returns (char_start, char_end) into `cleaned_doc`, or None if no
+    confident match.
+
+    Strategy: normalize both, search for the full normalized script first; if
+    not found, fall back to the first ~12 words of the script as a key (handles
+    diagrams whose `script` drifted slightly from the final vocal doc)."""
+    if not script or not cleaned_doc:
+        return None
+    norm_doc, doc_map = _normalize_with_index_map(cleaned_doc)
+    norm_script_full = _normalize_for_match(script)
+    if not norm_script_full:
+        return None
+
+    def locate(needle: str):
+        if not needle or len(needle) < 8:
+            return None
+        idx = norm_doc.find(needle)
+        if idx < 0:
+            return None
+        end_idx = idx + len(needle) - 1
+        char_start = doc_map[idx] if idx < len(doc_map) else None
+        char_end = doc_map[end_idx] + 1 if end_idx < len(doc_map) else None
+        if char_start is None or char_end is None:
+            return None
+        return (char_start, char_end)
+
+    # 1) Full script
+    hit = locate(norm_script_full)
+    if hit:
+        return hit
+    # 2) First 12 words as anchor — extend end to match the script's word count
+    words = norm_script_full.split()
+    if len(words) >= 4:
+        anchor = " ".join(words[:min(12, len(words))])
+        anchor_hit = locate(anchor)
+        if anchor_hit:
+            # Estimate end by walking the same number of normalized words as
+            # the full script. Caps at end-of-doc.
+            start_in_norm = norm_doc.find(anchor)
+            if start_in_norm >= 0:
+                target_word_count = len(words)
+                remaining = norm_doc[start_in_norm:]
+                rem_words = remaining.split()
+                consumed_chars = 0
+                taken = 0
+                for w in rem_words:
+                    if taken >= target_word_count:
+                        break
+                    next_idx = remaining.find(w, consumed_chars)
+                    if next_idx < 0:
+                        break
+                    consumed_chars = next_idx + len(w)
+                    taken += 1
+                end_in_norm = start_in_norm + consumed_chars - 1
+                if end_in_norm < len(doc_map):
+                    end_char = doc_map[end_in_norm] + 1
+                    return (anchor_hit[0], end_char)
+            return anchor_hit
+    return None
+
+
+@app.route("/api/videos/<int:vid>/diagrams/auto-place", methods=["POST"])
+def diagrams_auto_place(vid):
+    """For each diagram with a stored `script`, verbatim-match it against the
+    cleaned vocal_doc and return its timestamped placement on the timeline.
+
+    Uses the latest voiceover take's stored duration for char→time mapping
+    (linear interpolation against cleaned_doc length). If you have segments
+    with `char_start_times_seconds` arrays we could swap to exact alignment;
+    for now the linear pass matches the rest of the editor's timing math
+    and ships in seconds per video."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    vrow = conn.execute(
+        "SELECT vocal_doc FROM videos WHERE id=?", (vid,)
+    ).fetchone()
+    drows = conn.execute(
+        "SELECT * FROM diagrams WHERE video_id=? ORDER BY position, created_at",
+        (vid,)
+    ).fetchall()
+    conn.close()
+
+    raw_text = (vrow["vocal_doc"] or "") if vrow else ""
+    if not raw_text.strip():
+        return jsonify({"error": "vocal_doc is empty — generate the Say doc first"}), 400
+    cleaned, doc_segments = _strip_and_segment(raw_text)
+    if not cleaned:
+        return jsonify({"error": "vocal_doc has no spoken text"}), 400
+
+    # Build a step-number → segment lookup for fallback placement when a
+    # diagram has no `script`. Also extract N from "Diagram N" so manually-
+    # created diagrams (which never get a Step N: prefix) can still land.
+    def _ordinal(s: str):
+        m = re.search(r"(?:step|diagram)\s*(\d+)", s or "", re.IGNORECASE)
+        return int(m.group(1)) if m else None
+    step_segments = {}
+    for s in doc_segments:
+        n = _ordinal(s.get("name") or "")
+        if n is not None and n not in step_segments:
+            step_segments[n] = s
+    # Build a fallback "even distribution" map: when no script + no matching
+    # step segment, we'll place diagrams proportionally by position so they at
+    # least spread across the take instead of all stacking at t=0.
+    total_diagrams = len(drows)
+    # Compute the position rank (sorted by position, then created_at) for each
+    # diagram so deletions don't leave gaps in the even distribution.
+    sorted_by_pos = sorted(
+        drows, key=lambda r: (r["position"] or 0, r["created_at"] or "")
+    )
+    rank_by_id = {r["id"]: idx for idx, r in enumerate(sorted_by_pos)}
+
+    state = _load_voiceover_state(vid)
+    gens = state.get("generations", [])
+    duration = 0.0
+    for g in reversed(gens):
+        d = g.get("duration") or g.get("audio_duration") or 0
+        if d:
+            duration = float(d)
+            break
+        segs = g.get("segments") or []
+        if segs:
+            duration = float(segs[-1].get("end", 0)) or duration
+            if duration:
+                break
+    if duration <= 0:
+        duration = max(30.0, len(cleaned) / 13.0)
+        method = "estimate-13cps"
+    else:
+        method = "linear-from-take-duration"
+
+    total_chars = max(1, len(cleaned))
+
+    placements = []
+    for r in drows:
+        d = _diagram_row_to_dict(r)
+        script = (d.get("script") or "").strip()
+        result_url = _proxy_asset_url(d.get("result_url") or "")
+        if not result_url:
+            placements.append({
+                "diagram_id": d["id"],
+                "name": d.get("name"),
+                "matched": False,
+                "reason": "no rendered result_url (diagram not rendered yet)",
+            })
+            continue
+        match_method = None
+        hit = None
+        if script:
+            hit = _find_script_in_doc(script, cleaned)
+            if hit:
+                match_method = "verbatim_script"
+        # Fallback 1: no script (or script didn't match) → look up the step
+        # segment from "Step N" / "Diagram N" pattern in name → step N span.
+        if not hit:
+            step_n = _ordinal(d.get("name") or "")
+            seg = step_segments.get(step_n) if step_n is not None else None
+            if seg is not None and seg.get("char_end") is not None:
+                hit = (int(seg["char_start"]), int(seg["char_end"]))
+                match_method = "step_fallback"
+        # Fallback 2: still no hit → even distribution across take by position
+        # rank. Better than skipping; Andy can drag clips to refine.
+        if not hit:
+            rank = rank_by_id.get(d["id"], 0)
+            denom = max(1, total_diagrams)
+            slot_chars = total_chars / denom
+            cs = int(rank * slot_chars)
+            ce = int(min(total_chars, cs + slot_chars))
+            if ce > cs:
+                hit = (cs, ce)
+                match_method = "even_distribution"
+        if not hit:
+            reason = (
+                "script not found in vocal_doc"
+                if script
+                else f"could not place '{d.get('name')}'"
+            )
+            placements.append({
+                "diagram_id": d["id"],
+                "name": d.get("name"),
+                "matched": False,
+                "reason": reason,
+                "script_preview": script[:120] if script else None,
+            })
+            continue
+        char_start, char_end = hit
+        start_sec = duration * (char_start / total_chars)
+        # Prefer the diagram's own audio_duration when known so the MP4 plays
+        # its full length even if the vocal_doc match is shorter. Fall back to
+        # the matched span otherwise.
+        own_dur = 0.0
+        try:
+            own_dur = float(d.get("audio_duration") or 0)
+        except (TypeError, ValueError):
+            own_dur = 0.0
+        span_sec = duration * ((char_end - char_start) / total_chars)
+        end_sec = start_sec + max(own_dur, span_sec, 1.0)
+        placements.append({
+            "diagram_id": d["id"],
+            "name": d.get("name"),
+            "matched": True,
+            "match_method": match_method,
+            "result_url": result_url,
+            "char_start": char_start,
+            "char_end": char_end,
+            "start": round(start_sec, 3),
+            "end": round(end_sec, 3),
+            "snippet": cleaned[char_start:min(char_end, char_start + 160)],
+        })
+
+    return jsonify({
+        "placements": placements,
+        "duration": duration,
+        "method": method,
+        "total_chars": total_chars,
+        "matched": sum(1 for p in placements if p.get("matched")),
+        "skipped": sum(1 for p in placements if not p.get("matched")),
+    })
+
+
+def _split_text_for_tts(text, max_chars=9500):
+    """Split into chunks <= max_chars, preferring paragraph > sentence > word boundaries.
+    ElevenLabs free/Creator/Pro endpoint caps each request at 10k chars; we chunk and stitch."""
+    if len(text) <= max_chars:
+        return [text]
+
+    def by_sentence(p):
+        sentences = re.split(r'(?<=[.!?…])\s+', p)
+        out, cur = [], ""
+        for s in sentences:
+            cand = (cur + " " + s) if cur else s
+            if len(cand) <= max_chars:
+                cur = cand
+            else:
+                if cur: out.append(cur)
+                if len(s) <= max_chars:
+                    cur = s
+                else:
+                    # Final fallback: word-by-word, with hard char-slice for pathological single words
+                    words, sub = s.split(), ""
+                    for w in words:
+                        if len(w) > max_chars:
+                            if sub: out.append(sub); sub = ""
+                            for i in range(0, len(w), max_chars):
+                                out.append(w[i:i+max_chars])
+                            continue
+                        c2 = (sub + " " + w) if sub else w
+                        if len(c2) <= max_chars:
+                            sub = c2
+                        else:
+                            if sub: out.append(sub)
+                            sub = w
+                    cur = sub
+        if cur: out.append(cur)
+        return out
+
+    chunks, cur = [], ""
+    for p in text.split("\n\n"):
+        if not p.strip():
+            continue
+        cand = (cur + "\n\n" + p) if cur else p
+        if len(cand) <= max_chars:
+            cur = cand
+            continue
+        if cur:
+            chunks.append(cur)
+            cur = ""
+        if len(p) <= max_chars:
+            cur = p
+        else:
+            chunks.extend(by_sentence(p))
+            cur = ""
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _strip_say_markers(text):
+    """Drop === HOOK / STEP N / CLOSING === lines and collapse blank runs."""
+    out = []
+    for line in (text or "").split("\n"):
+        if re.match(r"^\s*=+\s*[A-Z0-9].*=+\s*$", line):
+            continue
+        out.append(line)
+    cleaned = "\n".join(out)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def _strip_and_segment(text):
+    """Like _strip_say_markers but also returns step boundaries as character offsets
+    into the stripped text.
+
+    Returns (stripped_text, segments) where segments is a list of
+    {name, char_start, char_end}. char_end is the offset of the char AFTER the
+    segment's last char (so cleaned[char_start:char_end] is the segment body).
+
+    A leading body before the first marker is labelled "INTRO" so it isn't lost.
+    """
+    if not text:
+        return "", []
+
+    raw_segments = []
+    out_lines = []
+    joined_len = 0  # always equals len("\n".join(out_lines))
+
+    def push_segment(name, start):
+        if raw_segments and raw_segments[-1].get("char_end") is None:
+            raw_segments[-1]["char_end"] = start
+        raw_segments.append({"name": name, "char_start": start, "char_end": None})
+
+    for line in text.split("\n"):
+        m = re.match(r"^\s*=+\s*([A-Z0-9][^=]*?)\s*=+\s*$", line)
+        if m:
+            # Next non-marker char will land at: joined_len + (1 if there's already
+            # a line, since "\n".join inserts a newline before appending).
+            marker_pos = joined_len + (1 if out_lines else 0)
+            push_segment(m.group(1).strip(), marker_pos)
+            continue
+        sep = 1 if out_lines else 0
+        out_lines.append(line)
+        joined_len += sep + len(line)
+
+    if raw_segments and raw_segments[-1].get("char_end") is None:
+        raw_segments[-1]["char_end"] = joined_len
+
+    cleaned = "\n".join(out_lines)
+
+    # If the doc has body before the first marker, prepend an INTRO segment so
+    # the marker timing covers the full audio.
+    if (not raw_segments) or (raw_segments and raw_segments[0]["char_start"] > 0):
+        raw_segments.insert(0, {
+            "name": "INTRO",
+            "char_start": 0,
+            "char_end": raw_segments[0]["char_start"] if raw_segments else len(cleaned),
+        })
+
+    # Drop empty segments (consecutive markers with nothing between them).
+    raw_segments = [s for s in raw_segments
+                    if (s.get("char_end") or 0) > s["char_start"]]
+
+    # Mirror the lstrip() that the original cleaner does, shifting offsets.
+    prefix = len(cleaned) - len(cleaned.lstrip())
+    if prefix:
+        cleaned = cleaned[prefix:]
+        for s in raw_segments:
+            s["char_start"] = max(0, s["char_start"] - prefix)
+            if s["char_end"] is not None:
+                s["char_end"] = max(0, s["char_end"] - prefix)
+
+    # Trailing rstrip — clamp to cleaned length.
+    cleaned = cleaned.rstrip()
+    n = len(cleaned)
+    for s in raw_segments:
+        s["char_start"] = min(s["char_start"], n)
+        if s["char_end"] is not None:
+            s["char_end"] = min(s["char_end"], n)
+    raw_segments = [s for s in raw_segments if s["char_end"] > s["char_start"]]
+
+    return cleaned, raw_segments
+
+
+def _segments_to_times(segments, char_start_seconds, char_end_seconds, total_chars):
+    """Convert character-offset segments into time-offset segments using an
+    ElevenLabs alignment.
+
+    char_start_seconds / char_end_seconds are parallel arrays whose length matches
+    the total character count sent to TTS. total_chars is len(char_start_seconds).
+    Returns segments with extra fields start (s), end (s), and a clipped char range.
+    """
+    if not segments or not char_start_seconds:
+        return []
+    out = []
+    for s in segments:
+        cs = max(0, min(s["char_start"], total_chars - 1))
+        ce = max(cs + 1, min(s["char_end"], total_chars))
+        out.append({
+            "name": s["name"],
+            "char_start": cs,
+            "char_end": ce,
+            "start": float(char_start_seconds[cs]),
+            "end": float(char_end_seconds[ce - 1]),
+        })
+    return out
+
+
+def _load_voiceover_state(vid):
+    """Return state dict with a `generations` list. Migrates old single-record
+    shape `{url, voice_id, ...}` to `{generations: [{...}]}` transparently."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT voiceover_state FROM videos WHERE id=?", (vid,)).fetchone()
+    conn.close()
+    if not row or not row["voiceover_state"]:
+        return {"generations": []}
+    try:
+        state = json.loads(row["voiceover_state"])
+    except Exception:
+        return {"generations": []}
+    if isinstance(state, dict) and "generations" not in state:
+        # Legacy single-record shape
+        if state.get("url"):
+            state = {"generations": [state]}
+        else:
+            state = {"generations": []}
+    if "generations" not in state:
+        state["generations"] = []
+    return state
+
+
+def _save_voiceover_state(vid, state):
+    conn = get_db()
+    conn.execute("UPDATE videos SET voiceover_state=? WHERE id=?",
+                 (json.dumps(state), vid))
+    conn.commit()
+    conn.close()
+
+
+@app.route("/api/videos/<int:vid>/say/voiceover", methods=["GET"])
+def get_say_voiceover(vid):
+    return jsonify(_load_voiceover_state(vid))
+
+
+@app.route("/api/videos/<int:vid>/say/voiceover/<int:idx>/compute-segments",
+           methods=["POST"])
+def compute_voiceover_segments(vid, idx):
+    """Backfill step segments on an existing voiceover take without re-calling
+    ElevenLabs. Uses ffprobe for duration + linear char→time interpolation
+    against the current vocal_doc. Marker accuracy: roughly within speech-rate
+    variation (~1-2s drift per step). Good enough for placement; not exact."""
+    state = _load_voiceover_state(vid)
+    gens = state.get("generations", [])
+    if idx < 0 or idx >= len(gens):
+        return jsonify({"error": "take not found"}), 404
+    gen = gens[idx]
+
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT vocal_doc FROM videos WHERE id=?", (vid,)
+    ).fetchone()
+    conn.close()
+    raw_text = (row["vocal_doc"] or "") if row else ""
+    if not raw_text:
+        return jsonify({"error": "vocal_doc is empty"}), 400
+
+    cleaned, segments = _strip_and_segment(raw_text)
+
+    # If this take was max-words-truncated, clip the doc to the same length so
+    # the linear interpolation maps onto the audio that actually exists.
+    target_words = int(gen.get("words") or 0)
+    if target_words > 0:
+        words = cleaned.split()
+        if len(words) > target_words:
+            count = 0
+            in_word = False
+            cut_at = len(cleaned)
+            for i, ch in enumerate(cleaned):
+                if ch.isspace():
+                    if in_word:
+                        count += 1
+                        if count >= target_words:
+                            cut_at = i
+                            break
+                    in_word = False
+                else:
+                    in_word = True
+            cleaned = cleaned[:cut_at]
+            segments = [s for s in segments if s["char_start"] < cut_at]
+            for s in segments:
+                s["char_end"] = min(s["char_end"], cut_at)
+            segments = [s for s in segments if s["char_end"] > s["char_start"]]
+
+    if not segments:
+        return jsonify({"error": "no === STEP === markers in vocal_doc"}), 400
+
+    audio_rel = (gen.get("url") or "").lstrip("/")
+    if not audio_rel:
+        return jsonify({"error": "take has no audio url"}), 400
+    audio_path = Path(app.root_path) / audio_rel
+    if not audio_path.exists():
+        return jsonify({"error": f"audio file missing: {audio_rel}"}), 404
+    try:
+        r = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        duration = float(r.stdout.strip())
+    except Exception as e:
+        return jsonify({"error": f"ffprobe failed: {e}"}), 500
+
+    total_chars = max(1, len(cleaned))
+    timed = []
+    for s in segments:
+        timed.append({
+            "name": s["name"],
+            "char_start": s["char_start"],
+            "char_end": s["char_end"],
+            "start": round(s["char_start"] / total_chars * duration, 3),
+            "end": round(s["char_end"] / total_chars * duration, 3),
+        })
+
+    gen["segments"] = timed
+    gen["duration"] = duration
+    gen["segments_method"] = "linear-approx"
+    _save_voiceover_state(vid, state)
+    return jsonify({"ok": True, "segments": timed, "duration": duration})
+
+
+@app.route("/api/videos/<int:vid>/say/voiceover/<int:idx>", methods=["DELETE"])
+def delete_say_voiceover(vid, idx):
+    state = _load_voiceover_state(vid)
+    gens = state.get("generations", [])
+    if idx < 0 or idx >= len(gens):
+        return jsonify({"error": "index out of range"}), 404
+    removed = gens.pop(idx)
+    # Best-effort delete of the file
+    try:
+        rel = (removed.get("url") or "").lstrip("/")
+        if rel:
+            p = Path(app.root_path) / rel
+            if p.exists() and p.is_file():
+                p.unlink()
+    except Exception:
+        pass
+    _save_voiceover_state(vid, state)
+    return jsonify(state)
+
+
+def _tts_job_set(job_id, **fields):
+    fields["updated_at"] = time.time()
+    keys = list(fields.keys())
+    set_clause = ", ".join(f"{k}=?" for k in keys)
+    vals = [fields[k] for k in keys] + [job_id]
+    conn = get_db()
+    conn.execute(f"UPDATE tts_jobs SET {set_clause} WHERE id=?", vals)
+    conn.commit()
+    conn.close()
+
+
+def _tts_job_get(job_id):
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM tts_jobs WHERE id=?", (job_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def _tts_run(job_id, vid, text, voice_id, model_id, api_key, segments=None):
+    """Background worker — synthesize chunks via ElevenLabs (with-timestamps),
+    stitch, save, persist voiceover_state including step segments + alignment.
+
+    `segments` is a list of {name, char_start, char_end} into `text` (the same
+    text we send to TTS). When provided, we compute time-offsets per segment
+    using the alignment returned by /v1/text-to-speech/<v>/with-timestamps.
+    """
+    import base64
+    from urllib.error import HTTPError, URLError
+    try:
+        chunks = _split_text_for_tts(text, max_chars=9500)
+        _tts_job_set(job_id, status="synthesizing", chunks_total=len(chunks))
+
+        base_voice_settings = {
+            "stability": 0.45,
+            "similarity_boost": 0.75,
+            "style": 0.0,
+            "use_speaker_boost": True,
+        }
+        chunk_audio = []
+        # Parallel arrays, one entry per character ElevenLabs reported (across all chunks).
+        all_chars = []
+        all_char_starts = []   # global seconds
+        all_char_ends = []     # global seconds
+        time_offset = 0.0
+        prev_ids = []
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/with-timestamps"
+        for i, chunk in enumerate(chunks):
+            payload = {
+                "text": chunk,
+                "model_id": model_id,
+                "voice_settings": base_voice_settings,
+            }
+            if prev_ids:
+                payload["previous_request_ids"] = prev_ids[-3:]
+            req = Request(url, data=json.dumps(payload).encode("utf-8"), method="POST",
+                          headers={
+                              "xi-api-key": api_key,
+                              "Content-Type": "application/json",
+                              "Accept": "application/json",
+                          })
+            try:
+                with urlopen(req, timeout=180) as resp:
+                    body = json.loads(resp.read().decode("utf-8"))
+                    rid = resp.getheader("request-id") or resp.getheader("x-request-id") or ""
+                    if rid:
+                        prev_ids.append(rid)
+            except HTTPError as e:
+                detail = e.read().decode("utf-8", "ignore")[:600]
+                _tts_job_set(job_id, status="error",
+                             error=f"elevenlabs http {e.code}", detail=detail)
+                return
+            except URLError as e:
+                _tts_job_set(job_id, status="error",
+                             error=f"elevenlabs network: {e.reason}")
+                return
+
+            try:
+                chunk_audio.append(base64.b64decode(body["audio_base64"]))
+            except Exception as e:
+                _tts_job_set(job_id, status="error",
+                             error=f"audio decode failed: {e}",
+                             detail=json.dumps(body)[:600])
+                return
+
+            align = body.get("alignment") or {}
+            chars = align.get("characters") or []
+            starts = align.get("character_start_times_seconds") or []
+            ends = align.get("character_end_times_seconds") or []
+            if chars and starts and ends and len(chars) == len(starts) == len(ends):
+                all_chars.extend(chars)
+                all_char_starts.extend(s + time_offset for s in starts)
+                all_char_ends.extend(e + time_offset for e in ends)
+                time_offset += float(ends[-1])
+            _tts_job_set(job_id, chunks_done=i + 1)
+
+        _tts_job_set(job_id, status="stitching")
+
+        out_dir = Path(app.root_path) / "static" / "uploads" / "voiceover"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_id = uuid.uuid4().hex[:10]
+        out_path = out_dir / f"v{vid}_{out_id}.mp3"
+
+        if len(chunk_audio) == 1:
+            out_path.write_bytes(chunk_audio[0])
+            audio_bytes = chunk_audio[0]
+        else:
+            import tempfile, shutil
+            work = Path(tempfile.mkdtemp(prefix=f"tts_stitch_{out_id}_"))
+            try:
+                parts = []
+                for k, b in enumerate(chunk_audio):
+                    p = work / f"part_{k}.mp3"
+                    p.write_bytes(b)
+                    parts.append(p)
+                list_file = work / "concat.txt"
+                list_file.write_text("\n".join(
+                    "file '" + str(p).replace("'", "'\\''") + "'" for p in parts
+                ))
+                cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                       "-i", str(list_file), "-c", "copy", str(out_path)]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+                if r.returncode != 0:
+                    _tts_job_set(job_id, status="error",
+                                 error="ffmpeg concat failed",
+                                 detail=r.stderr[-1500:])
+                    return
+                audio_bytes = out_path.read_bytes()
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+
+        rel = str(out_path.relative_to(Path(app.root_path)))
+        audio_url = "/" + rel
+
+        duration_s = float(all_char_ends[-1]) if all_char_ends else 0.0
+        timed_segments = []
+        if segments and all_char_starts and all_char_ends:
+            timed_segments = _segments_to_times(
+                segments, all_char_starts, all_char_ends, len(all_chars),
+            )
+
+        generation = {
+            "url": audio_url,
+            "voice_id": voice_id,
+            "model_id": model_id,
+            "words": len(text.split()),
+            "chars": len(text),
+            "bytes": len(audio_bytes),
+            "chunks": len(chunks),
+            "duration": duration_s,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "preview": text[:140] + ("…" if len(text) > 140 else ""),
+            "segments": timed_segments,
+            # Alignment kept for future per-word features (captions, hover-to-seek).
+            # Compact form: skip ends (start[i+1] is a fine approximation).
+            "alignment": {
+                "characters": all_chars,
+                "char_start_seconds": [round(s, 3) for s in all_char_starts],
+            } if all_chars else None,
+        }
+        state = _load_voiceover_state(vid)
+        state.setdefault("generations", []).append(generation)
+        _save_voiceover_state(vid, state)
+
+        _tts_job_set(job_id, status="done", generation_json=json.dumps(generation))
+    except Exception as e:
+        _tts_job_set(job_id, status="error", error=f"{type(e).__name__}: {e}")
+
+
+@app.route("/api/videos/<int:vid>/say/synthesize", methods=["POST"])
+def synthesize_say(vid):
+    """Kick off an async ElevenLabs synthesis. Returns {job_id} immediately;
+    client polls /status/<job_id> for progress and final result.
+
+    Body: {text?, max_words?: int (default 200), voice_id?, model_id?}
+    """
+    api_key = os.environ.get("ELEVENLABS_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "ELEVENLABS_API_KEY not set on server"}), 500
+
+    body = request.get_json(force=True, silent=True) or {}
+    raw_text = (body.get("text") or "").strip()
+    if not raw_text:
+        conn = get_db()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT vocal_doc FROM videos WHERE id=?", (vid,)).fetchone()
+        conn.close()
+        raw_text = (row["vocal_doc"] or "") if row else ""
+
+    text, segments = _strip_and_segment(raw_text)
+    if not text:
+        return jsonify({"error": "no SAY text to synthesize"}), 400
+
+    max_words = int(body.get("max_words") or 200)
+    if max_words > 0:
+        words = text.split()
+        if len(words) > max_words:
+            # Find where the max_words-th word ends so we can clip segments cleanly.
+            count = 0
+            in_word = False
+            cut_at = len(text)
+            for idx, ch in enumerate(text):
+                if ch.isspace():
+                    if in_word:
+                        count += 1
+                        if count >= max_words:
+                            cut_at = idx
+                            break
+                    in_word = False
+                else:
+                    in_word = True
+            text = text[:cut_at]
+            segments = [s for s in segments if s["char_start"] < cut_at]
+            for s in segments:
+                s["char_end"] = min(s["char_end"], cut_at)
+
+    voice_id = (body.get("voice_id") or os.environ.get("ELEVENLABS_VOICE_ID")
+                or "21m00Tcm4TlvDq8ikWAM").strip()
+    model_id = (body.get("model_id") or os.environ.get("ELEVENLABS_MODEL_ID")
+                or "eleven_multilingual_v2").strip()
+
+    job_id = uuid.uuid4().hex[:12]
+    now = time.time()
+    conn = get_db()
+    conn.execute("""
+        INSERT INTO tts_jobs (id, video_id, status, chunks_done, chunks_total, started_at, updated_at)
+        VALUES (?, ?, 'queued', 0, 0, ?, ?)
+    """, (job_id, vid, now, now))
+    conn.commit()
+    conn.close()
+
+    t = threading.Thread(target=_tts_run,
+                         args=(job_id, vid, text, voice_id, model_id, api_key, segments),
+                         daemon=True)
+    t.start()
+
+    return jsonify({
+        "job_id": job_id,
+        "status": "queued",
+        "text_chars": len(text),
+        "text_words": len(text.split()),
+    })
+
+
+@app.route("/api/videos/<int:vid>/say/synthesize/status/<job_id>", methods=["GET"])
+def synthesize_status(vid, job_id):
+    job = _tts_job_get(job_id)
+    if not job:
+        return jsonify({"error": "job not found"}), 404
+    out = {
+        "status": job.get("status"),
+        "chunks_done": job.get("chunks_done") or 0,
+        "chunks_total": job.get("chunks_total") or 0,
+        "error": job.get("error"),
+        "detail": job.get("detail"),
+        "started_at": job.get("started_at"),
+        "updated_at": job.get("updated_at"),
+    }
+    if job.get("status") == "done" and job.get("generation_json"):
+        try:
+            out["generation"] = json.loads(job["generation_json"])
+        except Exception:
+            pass
+        state = _load_voiceover_state(vid)
+        out["generations"] = state.get("generations", [])
+    return jsonify(out)
+
+
 # ── Editor (CapCut-style timeline) ───────────────────────────────────────
 
 @app.route("/api/videos/<int:vid>/assets", methods=["GET"])
@@ -3885,6 +6140,1312 @@ def video_assets(vid):
     return jsonify(out)
 
 
+def _read_doc_field(custom_fields, key_name):
+    """Resolve a 'Content Doc' / 'Bullet Doc' custom_fields entry to {text, rel_path}.
+    rel_path is what PUT /api/content/file expects (relative to CONTENT_DIR). Returns
+    {'text':'', 'rel_path':''} if absent or unreadable."""
+    target = None
+    for f in custom_fields or []:
+        if (f.get("key") or "").strip().lower() == key_name.strip().lower():
+            target = (f.get("value") or "").strip()
+            break
+    if not target:
+        return {"text": "", "rel_path": ""}
+    fname = Path(target).name
+    p0 = Path(target)
+    candidates = []
+    if p0.is_absolute():
+        candidates.append(p0)
+    candidates += [
+        CONTENT_DIR / target,
+        CONTENT_DIR / "content_docs" / fname,
+        CONTENT_DIR / fname,
+    ]
+    p = next((c for c in candidates if c.exists()), None)
+    if not p:
+        return {"text": "", "rel_path": target}
+    try:
+        text = p.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        text = ""
+    try:
+        rel = str(p.resolve().relative_to(CONTENT_DIR.resolve()))
+    except ValueError:
+        rel = target
+    return {"text": text, "rel_path": rel}
+
+
+_ASSET_PROXY_ALLOWED_HOSTS = {"media.agentflow.net"}
+
+
+def _proxy_asset_url(url):
+    """If url is on a CORS-blocked allowlisted host, route through /api/asset-proxy so the editor can fetch bytes."""
+    from urllib.parse import urlparse, quote
+    if not url:
+        return url
+    try:
+        host = urlparse(url).hostname
+    except ValueError:
+        return url
+    if host in _ASSET_PROXY_ALLOWED_HOSTS:
+        return "/api/asset-proxy?u=" + quote(url, safe="")
+    return url
+
+
+@app.route("/api/asset-proxy", methods=["GET"])
+def asset_proxy():
+    """Stream a remote asset back to the browser so cross-origin fetches work.
+    Same-origin to the editor (creatorgrowth.com); avoids needing CORS on media subdomain.
+    Allowlisted to media.agentflow.net to prevent SSRF."""
+    from urllib.parse import urlparse
+    from flask import Response, stream_with_context
+    url = (request.args.get("u") or "").strip()
+    if not url:
+        return jsonify({"error": "missing u"}), 400
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or parsed.hostname not in _ASSET_PROXY_ALLOWED_HOSTS:
+        return jsonify({"error": "host not allowed"}), 403
+    try:
+        upstream = urlopen(Request(url, headers={"User-Agent": "creatorgrowth-asset-proxy"}), timeout=30)
+    except Exception as e:
+        return jsonify({"error": f"upstream fetch failed: {e}"}), 502
+    content_type = upstream.headers.get("Content-Type", "application/octet-stream")
+    content_length = upstream.headers.get("Content-Length")
+    def gen():
+        try:
+            while True:
+                chunk = upstream.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            upstream.close()
+    headers = {"Content-Type": content_type, "Cache-Control": "private, max-age=300"}
+    if content_length:
+        headers["Content-Length"] = content_length
+    return Response(stream_with_context(gen()), headers=headers)
+
+
+# ── Diagram batch generation (Gemini Nano Banana / Image gen) ────────────
+# `Generate all` produces 16-bit pixel art illustrations directly from each
+# step title — channel signature style. The per-diagram /pixel-art endpoint
+# below is a separate transform for already-existing images.
+
+# LOCKED PIXEL_STYLE — copy verbatim from skills DRAWING_TO_PIXEL_ART_SOP.md.
+# Never modify per-request.
+_DIAGRAM_PIXEL_STYLE = (
+    "16-bit SNES pixel art, 16:9 aspect ratio (1920x1080). "
+    "Background: deep dark navy blue (#0b1220) with subtle sparse pixel star dots -- "
+    "small single white pixels scattered across it like a night sky. "
+    "All titles and headers: bold GOLD/YELLOW pixel font (#ffd700). "
+    "Labels and body text: white pixel font. "
+    "Accent colors for panels: neon green (#00ff88) for positive/right, "
+    "coral red (#ff4444) for negative/wrong. "
+    "Section borders: thick neon pixel borders matching accent color. "
+    "Visible chunky pixel blocks. No gradients, no photography, no smooth lines. "
+    "Retro game UI feel -- dramatic, high contrast, readable. "
+)
+
+# Planner prompt — Gemini text generates a SOP-compliant image-gen prompt
+# per concept, then we feed it to the image model. This mirrors the SOP's
+# "Step 2 — Design Each Concept (Mental Only)" stage that a human would do.
+_DIAGRAM_PLANNER_PROMPT = (
+    "You are the planner for the 'Drawing to Pixel Art' SOP for a YouTube "
+    "tutorial video. For ONE step, design a detailed image-generation "
+    "prompt that will produce a striking pixel-art DIAGRAM SLIDE. Output "
+    "ONLY the prompt body — no markdown, no explanation, no preamble.\n\n"
+    "STEP TITLE: {title}\n\n"
+    "STEP CONTENT:\n{body}\n\n"
+    "==== HARD RULES (NEVER VIOLATE) ====\n\n"
+    "**The slide is a DIAGRAM, not a poster.** It MUST have at least 3 "
+    "distinct visual elements arranged with spatial separation. NEVER "
+    "output a layout that is just 'title + one centered photo/illustration', "
+    "and NEVER stop at 2 callouts that only restate the title's words. "
+    "Break the concept into a comparison, a multi-stage flow, a hub with "
+    "satellites, a process pipeline, or an annotated scene with 3-6 callouts.\n\n"
+    "**COVER THE WHOLE STEP, not just the title.** The diagram must "
+    "represent the FULL scope of what STEP CONTENT below describes — the "
+    "process, the input, the output, the cost, the trick, the contrast. "
+    "Read the body content and turn its key beats into visual elements. "
+    "If the body has 5 distinct talking points, the diagram should show "
+    "all 5 (as pipeline stages, callouts, or panel rows). A 'title plus "
+    "two restated buzzwords' is FAILURE — that just regurgitates the "
+    "title and ignores 95% of the actual content.\n\n"
+    "**If the step describes a PROCESS (command → action → output → "
+    "iterate), default to a left-to-right pipeline with 3-5 stages, each "
+    "stage labeled with its action and connected by arrows. Show inputs, "
+    "outputs, and any cost/time badge in the gap.**\n\n"
+    "If you can't think of how to split it, default to: a centered SCENE "
+    "with 3-6 labeled callout boxes pointing at parts of the scene. Each "
+    "callout = small bordered pixel panel with a pixel-font label + arrow.\n\n"
+    "==== LAYOUT PICKER ====\n\n"
+    "Pick the layout that fits THIS concept (do NOT default to 'two-panel "
+    "bullet list'):\n"
+    "- side-by-side split → wrong vs right, before vs after, with/without\n"
+    "- left-to-right pipeline → setup steps, multi-stage process, "
+    "input→processing→output\n"
+    "- top-to-bottom flow → cause→effect, hierarchy\n"
+    "- three columns → 3 distinct items or options\n"
+    "- **hub-and-spoke** → MULTIPLE tools/brands/options converging on one "
+    "thing. ALWAYS pick this when the step talks about chaos, multiple "
+    "apps, juggling tools, or 'too many options'. Brand logos go around "
+    "the center with connecting lines.\n"
+    "- comparison table → feature-by-feature\n"
+    "- annotated scene → ONE scene with multiple labeled callouts (use this "
+    "INSTEAD of single-photo when the concept is one focal idea)\n\n"
+    "==== STRUCTURE EVERY OUTPUT FOLLOWS ====\n\n"
+    "1. `TOP CENTER: large bold gold pixel font title: '{title}'.` (mandatory)\n"
+    "2. Optional subtitle in white pixel font.\n"
+    "3. `LAYOUT: <picked layout>.`\n"
+    "4. Per-panel/element descriptions using compass labels (LEFT PANEL, "
+    "RIGHT PANEL, CENTER, TOP LEFT, etc.). Each panel/element gets a neon "
+    "border color spec like `(neon green border #00ff88, dark green tint)`.\n"
+    "5. `BOTTOM CENTER: small white pixel font: <one-sentence takeaway>.` "
+    "(mandatory)\n\n"
+    "==== BORDER COLORS BY MEANING ====\n"
+    "- neon green #00ff88 = positive/right/with-system\n"
+    "- coral red #ff4444 = negative/wrong/without-system\n"
+    "- gold #ffd700 = neutral/highlight/featured\n"
+    "- neon blue #00aaff = stage/neutral flow\n"
+    "- neon purple #cc88ff = secondary concepts\n"
+    "- neon teal #00ddcc = variety\n\n"
+    "==== BRAND LOGOS YOU CAN REFERENCE ====\n"
+    "Gemini knows these — describe each as 'pixel art [LOGO NAME] logo':\n"
+    "Midjourney (spiral/boat), Canva (rainbow 'C'), Runway (orange play "
+    "wedge), Replicate (purple infinity), ChatGPT (green/teal swirl), "
+    "OpenAI (white flower), Anthropic Claude (orange leaf), GitHub "
+    "(octocat/branch), Photoshop (blue square 'Ps'), DaVinci Resolve "
+    "(rainbow camera), CapCut (black scissors), Adobe (red 'A'), Figma "
+    "(four colored shapes), Gmail (red M), Slack (multi-color hash), "
+    "Notion (white 'N'), Airtable (red/blue/yellow), n8n (orange "
+    "hexagons), Loom (blue play), Final Cut (X), Procreate (orange P).\n\n"
+    "==== ICONS / SCENES PALETTE ====\n"
+    "pixel art terminal with cursor, pixel art robot with glowing eyes, "
+    "pixel art creator stick figure (Andy: brown hair, beard, white shirt), "
+    "cloud server, lightning bolt, gear, brain, neon green checkmark, "
+    "coral red X, clock, dollar sign, pipeline progress bar, ZIP file, "
+    "waveform bars, magnifying glass, mountain, fire, key.\n\n"
+    "==== EXAMPLE for a 'tools cause chaos' step ====\n"
+    "TOP CENTER: large bold gold pixel font title: 'THE PROBLEM'. Subtitle "
+    "in white pixel font: 'every visual is a different app'. LAYOUT: "
+    "hub-and-spoke. CENTER: a pixel art creator (Andy stick figure: brown "
+    "hair, beard, white shirt) at a glowing pixel computer, stressed "
+    "expression, red zigzag lightning bolts radiating outward. AROUND "
+    "the creator: 4 pixel art brand logos arranged in a circle — TOP "
+    "LEFT pixel art Midjourney spiral logo, TOP RIGHT pixel art Runway "
+    "orange play wedge, BOTTOM LEFT pixel art Canva rainbow C, BOTTOM "
+    "RIGHT pixel art stock-image grid. Each logo sits in a small coral "
+    "red (#ff4444) pixel border and a thin coral red dotted line connects "
+    "back to the creator. Small white pixel-font label under each logo "
+    "naming it. To the right of the hub: a coral red pixel clock reading "
+    "'22 MIN' and a coral red dollar-sign with '$$$'. BOTTOM CENTER: small "
+    "white pixel font: 'Every visual = a different app. Logins, prompts, "
+    "subscriptions, 20+ minutes burned.'\n\n"
+    "Now output the prompt body for THIS step, following the rules above. "
+    "Just the prompt text — nothing else."
+)
+
+
+# Image-gen prompt is the locked PIXEL_STYLE prefix + the planner output +
+# a final hard-rule reminder so the model doesn't degenerate to "title + one photo".
+_DIAGRAM_PIXEL_GEN_PROMPT_TPL = (
+    "{style}\n\n"
+    "{body}\n\n"
+    "HARD RULES (apply on top of everything above):\n"
+    "- This is a DIAGRAM slide. It MUST contain at least 2 distinct visual "
+    "elements with clear spatial separation — never one centered image with "
+    "just a title.\n"
+    "- Every panel/element must have its own pixel border in a neon color.\n"
+    "- Real labels in pixel font, not placeholder text.\n"
+    "- If the layout calls for brand logos, render each as recognizable "
+    "pixel art (Midjourney spiral, Canva rainbow C, Runway orange wedge, "
+    "etc.).\n"
+    "- Background is exactly #0b1220.\n"
+)
+
+# Flash is what Andy prefers — faster, and quality is fine when the planner
+# pre-stages a strong prompt (the 2-step pipeline carries most of the load).
+_DIAGRAM_GEMINI_MODEL = "gemini-3.1-flash-image-preview"
+
+
+# Several patterns Andy's docs use for step headers — we try them in order
+# and keep whichever yields the most matches.
+_STEP_PATTERNS = [
+    # content-doc style: `### Step 1 - Title` / `## Step 1 — Title` / `Step 1: Title`
+    re.compile(
+        r"^\s*(?:#{2,4}\s+)?Step\s+\d+\s*[-–—:]\s*(.+?)(?:\s*[✅✓☑])?\s*$",
+        re.MULTILINE | re.IGNORECASE,
+    ),
+    # show-doc style: `========== STEP 1 — TITLE ==========` or just `STEP 1 — TITLE`
+    re.compile(
+        r"^\s*={2,}\s*STEP\s+\d+\s*[-–—:]\s*(.+?)\s*={2,}\s*$",
+        re.MULTILINE,
+    ),
+    re.compile(
+        r"^\s*STEP\s+\d+\s*[-–—:]\s*(.+?)\s*$",
+        re.MULTILINE,
+    ),
+    # part-style: `Part one: …` / `Part 1 — …`
+    re.compile(
+        r"^\s*Part\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s*[-–—:]\s*(.+?)\s*$",
+        re.MULTILINE | re.IGNORECASE,
+    ),
+    # Last-resort: Say-doc prose like "let's get into Step 2 — The 2-Minute Setup."
+    # Captures from `Step N -` to the next sentence end. Permissive — only used
+    # if every line-anchored pattern above produced nothing.
+    re.compile(
+        r"Step\s+\d+\s*[-–—:]\s*([A-Z][^.!?\n]{2,80}?)(?=[.!?\n])",
+        re.IGNORECASE,
+    ),
+]
+
+
+def _extract_steps_from_text(text):
+    """Pull step titles. Tries multiple patterns; picks the one with the most hits."""
+    if not text:
+        return []
+    best = []
+    for pat in _STEP_PATTERNS:
+        matches = [m.strip() for m in pat.findall(text) if m.strip()]
+        if len(matches) > len(best):
+            best = matches
+    items, seen = [], set()
+    for t in best:
+        k = t.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        items.append(t)
+    return items
+
+
+# Header patterns that also capture body (everything until the next header).
+# Tried in order; first one that finds 2+ matches wins.
+_STEP_SECTION_PATTERNS = [
+    # show-doc / "STEP 1 — TITLE" bare uppercase
+    re.compile(
+        r"^[ \t]*STEP\s+\d+\s*[-–—:]\s*(?P<title>.+?)[ \t]*\n(?P<body>.*?)(?=^[ \t]*STEP\s+\d+\s*[-–—:]|\Z)",
+        re.MULTILINE | re.DOTALL,
+    ),
+    # content-doc "### Step 1 - Title" / "## Step 1 — Title"
+    re.compile(
+        r"^[ \t]*#{2,4}\s+Step\s+\d+\s*[-–—:]\s*(?P<title>.+?)[ \t]*\n(?P<body>.*?)(?=^[ \t]*#{2,4}\s+Step\s+\d+|\Z)",
+        re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    ),
+    # bullet-doc escaped markdown: `\### **Step 1 — Title**`
+    re.compile(
+        r"^[ \t]*\\?#{2,4}\s+\*+Step\s+\d+\s*[-–—:]\s*(?P<title>.+?)\*+[ \t]*\n(?P<body>.*?)(?=^[ \t]*\\?#{2,4}\s+\*+Step\s+\d+|\Z)",
+        re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    ),
+]
+
+
+def _extract_step_sections_from_text(text):
+    """Return [(title, body)] — body is the prose between this step header and the next.
+    Body is capped at ~1800 chars so we keep image prompts focused."""
+    if not text:
+        return []
+    best = []
+    for pat in _STEP_SECTION_PATTERNS:
+        found = []
+        for m in pat.finditer(text):
+            title = (m.group("title") or "").strip().rstrip("*").strip()
+            body = (m.group("body") or "").strip()
+            if title:
+                found.append((title, body[:1800]))
+        if len(found) > len(best):
+            best = found
+    # Dedupe by title (case-insensitive)
+    out, seen = [], set()
+    for title, body in best:
+        k = title.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append((title, body))
+    return out
+
+
+def _briefs_diagnostic(vid):
+    """Counts for each fallback source — used in the 400-error body so the UI can tell the user what to fix."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM chapters WHERE video_id=?", (vid,)).fetchone()
+    chapters = 0
+    if row:
+        try:
+            chapters = len(json.loads(row["items_json"] or "[]"))
+        except (TypeError, ValueError):
+            chapters = 0
+    drow = conn.execute(
+        "SELECT custom_fields FROM video_details WHERE video_id=?", (vid,)
+    ).fetchone()
+    conn.close()
+    try:
+        fields = json.loads(drow["custom_fields"]) if drow and drow["custom_fields"] else []
+    except (TypeError, ValueError):
+        fields = []
+    content_steps = len(_extract_steps_from_text(
+        _read_doc_field(fields, "Content Doc").get("text", "")
+    ))
+    bullet_steps = len(_extract_steps_from_text(
+        _read_doc_field(fields, "Bullet Doc").get("text", "")
+    ))
+    conn2 = get_db()
+    conn2.row_factory = sqlite3.Row
+    vrow = conn2.execute("SELECT vocal_doc FROM videos WHERE id=?", (vid,)).fetchone()
+    conn2.close()
+    say_steps = len(_extract_steps_from_text(
+        (vrow["vocal_doc"] or "") if vrow else ""
+    ))
+    return {"chapters": chapters, "content": content_steps, "bullet": bullet_steps, "say": say_steps}
+
+
+def _derive_diagram_briefs(vid):
+    """Return [{name, brief}] in this order of fallback:
+    1) chapters.items_json (manually curated)
+    2) Steps parsed from the Content Doc file
+    3) Steps parsed from the Bullet Doc file
+    """
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM chapters WHERE video_id=?", (vid,)).fetchone()
+    items = []
+    if row:
+        try:
+            items = json.loads(row["items_json"] or "[]")
+        except (TypeError, ValueError):
+            items = []
+    if not items:
+        drow = conn.execute(
+            "SELECT custom_fields FROM video_details WHERE video_id=?", (vid,)
+        ).fetchone()
+        try:
+            fields = json.loads(drow["custom_fields"]) if drow and drow["custom_fields"] else []
+        except (TypeError, ValueError):
+            fields = []
+        for key in ("Content Doc", "Bullet Doc"):
+            doc = _read_doc_field(fields, key)
+            extracted = _extract_steps_from_text(doc.get("text", ""))
+            if extracted:
+                items = extracted
+                break
+        if not items:
+            # Last resort: try the vocal/say doc (stored in videos.vocal_doc).
+            vrow = conn.execute("SELECT vocal_doc FROM videos WHERE id=?", (vid,)).fetchone()
+            extracted = _extract_steps_from_text((vrow["vocal_doc"] or "") if vrow else "")
+            if extracted:
+                items = extracted
+    conn.close()
+    if not items:
+        return []
+    # Re-fetch fields here too (the earlier scope only triggers on the fallback path).
+    # We attach a body to each title by re-extracting sections from whichever doc has them.
+    conn2 = get_db()
+    conn2.row_factory = sqlite3.Row
+    drow2 = conn2.execute(
+        "SELECT custom_fields FROM video_details WHERE video_id=?", (vid,)
+    ).fetchone()
+    conn2.close()
+    try:
+        fields2 = json.loads(drow2["custom_fields"]) if drow2 and drow2["custom_fields"] else []
+    except (TypeError, ValueError):
+        fields2 = []
+    sections_by_title = {}
+    for key in ("Content Doc", "Bullet Doc"):
+        doc_text = _read_doc_field(fields2, key).get("text", "")
+        if not doc_text:
+            continue
+        for (title, body) in _extract_step_sections_from_text(doc_text):
+            sections_by_title.setdefault(title.lower(), body)
+
+    def _resolve_body(item_title):
+        """Match chapter title (short) to section title (often long, e.g. with
+        ': subtitle' suffix). Try exact, then prefix, then either-contains."""
+        key = item_title.lower().strip()
+        if not key:
+            return ""
+        if key in sections_by_title:
+            return sections_by_title[key]
+        # Prefix: chapter "THE PROBLEM" vs section "THE PROBLEM: EVERY VISUAL..."
+        for sk, sb in sections_by_title.items():
+            if sk.startswith(key):
+                return sb
+        # Either contains
+        for sk, sb in sections_by_title.items():
+            if key in sk or sk in key:
+                return sb
+        return ""
+
+    out = []
+    for i, t in enumerate(items):
+        title = (t or "").strip()
+        body = _resolve_body(title)
+        out.append({
+            "name": f"Step {i+1}: {title}" if title else f"Step {i+1}",
+            "brief": title,
+            "body": body,
+        })
+    return out
+
+
+def _gemini_plan_diagram_prompt(title, body, api_key):
+    """Step 1 of the SOP: Gemini text picks the layout + writes the
+    image-gen prompt body. Returns the prompt body string, or None on failure."""
+    from urllib.error import HTTPError, URLError
+    planner_text = _DIAGRAM_PLANNER_PROMPT.format(title=title, body=body)
+    payload = {
+        "contents": [{"parts": [{"text": planner_text}]}],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 1500,
+        },
+    }
+    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+           "gemini-2.5-flash:generateContent?key=" + api_key)
+    req = Request(url, data=json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "ignore")[:300]
+        except Exception:
+            pass
+        app.logger.warning(f"diagrams.plan: gemini http {e.code}: {detail}")
+        return None
+    except URLError as e:
+        app.logger.warning(f"diagrams.plan: gemini network: {e.reason}")
+        return None
+    try:
+        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return text or None
+    except (KeyError, IndexError, TypeError):
+        app.logger.warning(f"diagrams.plan: malformed planner response: {str(data)[:300]}")
+        return None
+
+
+def _gemini_generate_diagram_image(brief_obj, api_key):
+    """Two-step pipeline per SOP: planner (text) → renderer (image).
+    Returns (PNG bytes, planned_prompt str) or (None, planned_prompt|None) on failure."""
+    title = (brief_obj.get("brief") or brief_obj.get("name") or "").upper()
+    body = (brief_obj.get("body") or "").strip()
+    app.logger.info(
+        f"diagrams.gen: title={title!r} body_chars={len(body)} body_preview={body[:160]!r}"
+    )
+    if not body:
+        body = ("(no extra script content — design something visual that fits "
+                "the title)")
+    planned = _gemini_plan_diagram_prompt(title, body, api_key)
+    if planned:
+        app.logger.info(
+            f"diagrams.plan: title={title!r} planned_chars={len(planned)}\n"
+            f"PLANNED PROMPT >>>\n{planned}\n<<<"
+        )
+    else:
+        app.logger.warning(f"diagrams.plan: planner returned NOTHING for title={title!r}")
+        planned = (f"TOP CENTER: large bold gold pixel font title: '{title}'. "
+                   f"Design a pixel art slide for this step. Pick the layout "
+                   f"that best fits the content (hub-and-spoke / split / "
+                   f"pipeline / focal point). Use brand logos and scenes "
+                   f"where relevant.\n\nCONTENT:\n{body}\n\n"
+                   f"BOTTOM CENTER: small white pixel font: one-sentence takeaway.")
+    full_prompt = _DIAGRAM_PIXEL_GEN_PROMPT_TPL.format(
+        style=_DIAGRAM_PIXEL_STYLE,
+        body=planned,
+    )
+    png = _gemini_image_call(
+        [{"text": full_prompt}],
+        api_key,
+        _DIAGRAM_GEMINI_MODEL,
+        "diagrams.gen",
+    )
+    return png, planned
+
+
+@app.route("/api/videos/<int:vid>/diagrams/generate-batch", methods=["POST"])
+def diagrams_generate_batch(vid):
+    """Generate N diagrams in one shot. Body: {briefs?: [{name, brief}]}.
+    If briefs missing, derive from chapter items. Runs in parallel."""
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set on server"}), 500
+    body = request.get_json(force=True, silent=True) or {}
+    briefs = body.get("briefs") or _derive_diagram_briefs(vid)
+    briefs = [b for b in briefs if isinstance(b, dict) and (b.get("brief") or "").strip()]
+    if not briefs:
+        # Give the UI a useful diagnostic so the user knows WHICH fallback failed.
+        diag = _briefs_diagnostic(vid)
+        return jsonify({
+            "error": (
+                "No steps found to generate diagrams from. "
+                "Looked in: chapters ({chapters}), Content Doc ({content}), "
+                "Bullet Doc ({bullet}), Say Doc ({say}). "
+                "Add `Step N - Title` / `STEP N — TITLE` headers, or populate chapters."
+            ).format(**diag),
+            "diagnostic": diag,
+        }), 400
+    if len(briefs) > 12:
+        briefs = briefs[:12]
+
+    # Replace prior auto-generated diagrams for this video (anything named
+    # "Step N: ...") so we don't accumulate stale duplicates each click.
+    # Manually-named diagrams (Diagram 1, etc.) are left untouched.
+    replace = body.get("replace", True)
+    deleted_count = 0
+    if replace:
+        conn = get_db()
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, image_path FROM diagrams WHERE video_id=? AND name LIKE 'Step %:%'",
+            (vid,),
+        ).fetchall()
+        for r in rows:
+            # Best-effort: remove on-disk file too
+            try:
+                ip = r["image_path"]
+                if ip:
+                    fp = Path(app.root_path) / ip
+                    if fp.exists():
+                        fp.unlink()
+            except Exception:
+                pass
+        if rows:
+            conn.executemany(
+                "DELETE FROM diagrams WHERE id=?",
+                [(r["id"],) for r in rows],
+            )
+            conn.commit()
+            deleted_count = len(rows)
+        conn.close()
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    out_root = UPLOAD_DIR / "diagrams" / str(vid)
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    def _worker(idx, b):
+        png, _planned = _gemini_generate_diagram_image(b, api_key)
+        if not png:
+            return idx, b, None, None
+        diagram_id = "d" + uuid.uuid4().hex[:14]
+        fname = f"{diagram_id}.png"
+        out_path = out_root / fname
+        out_path.write_bytes(png)
+        rel = str(out_path.relative_to(Path(app.root_path)))
+        return idx, b, diagram_id, rel
+
+    results = [None] * len(briefs)
+    with ThreadPoolExecutor(max_workers=min(7, len(briefs))) as ex:
+        futures = {ex.submit(_worker, i, b): i for i, b in enumerate(briefs)}
+        for fut in as_completed(futures):
+            try:
+                idx, b, diagram_id, rel = fut.result()
+            except Exception as e:
+                app.logger.exception(f"diagrams.gen: worker crashed: {e}")
+                continue
+            results[idx] = (b, diagram_id, rel)
+
+    # Persist successful ones as diagram rows
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    pos_row = conn.execute(
+        "SELECT COALESCE(MAX(position), -1) + 1 AS p FROM diagrams WHERE video_id=?",
+        (vid,)
+    ).fetchone()
+    base_pos = pos_row[0] if pos_row else 0
+    created = []
+    failures = 0
+    now = datetime.now(timezone.utc).isoformat()
+    for i, r in enumerate(results):
+        if not r or not r[1]:
+            failures += 1
+            continue
+        b, diagram_id, rel = r
+        conn.execute(
+            "INSERT INTO diagrams (id, video_id, name, boxes_json, image_path, position, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (diagram_id, vid, b["name"], "[]", rel, base_pos + i, now, now),
+        )
+        row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+        created.append(_diagram_row_to_dict(row))
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "created": created,
+        "requested": len(briefs),
+        "failed": failures,
+        "replaced": deleted_count,
+    })
+
+
+def _gemini_image_call(parts_payload, api_key, model, tag):
+    """Shared Gemini image-gen REST call. parts_payload is a list of v1beta parts
+    (each {text:...} or {inline_data:{mime_type,data}}). Returns PNG bytes or None."""
+    from urllib.error import HTTPError, URLError
+    import base64
+    payload = {
+        "contents": [{"parts": parts_payload}],
+        "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
+    }
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{model}:generateContent?key={api_key}")
+    req = Request(url, data=json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "ignore")[:500]
+        except Exception:
+            pass
+        app.logger.warning(f"{tag}: gemini http {e.code}: {detail}")
+        return None
+    except URLError as e:
+        app.logger.warning(f"{tag}: gemini network: {e.reason}")
+        return None
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError):
+        app.logger.warning(f"{tag}: malformed gemini response: {str(data)[:300]}")
+        return None
+    for p in parts:
+        inline = p.get("inlineData") or p.get("inline_data")
+        if inline and inline.get("data"):
+            try:
+                return base64.b64decode(inline["data"])
+            except Exception as e:
+                app.logger.warning(f"{tag}: b64 decode failed: {e}")
+                return None
+    app.logger.warning(f"{tag}: no image part in response")
+    return None
+
+
+def _gemini_image_call_detail(parts_payload, api_key, model, tag):
+    """Like _gemini_image_call but returns (bytes_or_None, error_reason_or_None)
+    so callers can surface why a call failed."""
+    from urllib.error import HTTPError, URLError
+    import base64
+    payload = {
+        "contents": [{"parts": parts_payload}],
+        "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
+    }
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
+           f"{model}:generateContent?key={api_key}")
+    req = Request(url, data=json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=180) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", "ignore")[:200]
+        except Exception:
+            pass
+        reason = f"http {e.code}: {detail}"
+        app.logger.warning(f"{tag}: gemini {reason}")
+        return None, reason
+    except URLError as e:
+        reason = f"network: {e.reason}"
+        app.logger.warning(f"{tag}: gemini {reason}")
+        return None, reason
+    except Exception as e:
+        reason = f"unexpected: {type(e).__name__}: {e}"
+        app.logger.warning(f"{tag}: gemini {reason}")
+        return None, reason
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError):
+        finish = ""
+        try:
+            finish = data["candidates"][0].get("finishReason", "")
+        except (KeyError, IndexError, TypeError):
+            pass
+        reason = f"no candidate parts (finishReason={finish or 'unknown'}, raw={str(data)[:200]})"
+        app.logger.warning(f"{tag}: {reason}")
+        return None, reason
+    for p in parts:
+        inline = p.get("inlineData") or p.get("inline_data")
+        if inline and inline.get("data"):
+            try:
+                return base64.b64decode(inline["data"]), None
+            except Exception as e:
+                reason = f"b64 decode: {e}"
+                app.logger.warning(f"{tag}: {reason}")
+                return None, reason
+    finish = ""
+    try:
+        finish = data["candidates"][0].get("finishReason", "")
+    except (KeyError, IndexError, TypeError):
+        pass
+    reason = f"no image in response (finishReason={finish or 'unknown'})"
+    app.logger.warning(f"{tag}: {reason}")
+    return None, reason
+
+
+_DIAGRAM_PIXEL_PROMPT = (
+    "Transform this diagram into 16-bit SNES pixel art. Keep every box, arrow, "
+    "label, and the overall layout EXACTLY where they are — do not rearrange "
+    "anything. Render everything with chunky visible pixels, a flat limited "
+    "color palette, no anti-aliasing, no smoothing, no photorealism — pure "
+    "retro pixel art aesthetic.\n\n"
+    "Color palette (pixel art version of the dark-mode diagram colors): "
+    "muted blue fills (#1e3a5f) with light blue borders (#74b9ff), muted amber "
+    "(#5c4813 / #ffec99), muted green (#1e4d2b / #8ce99a), muted red (#5c1a1a "
+    "/ #ff8787), muted purple (#3b2d6b / #b197fc). Background is a flat dark "
+    "navy (#121212). Text is blocky white (#f8f9fa) pixel font. Shape borders "
+    "are wobbly 2-3px pixel outlines.\n\n"
+    "Sprinkle a few pixel sparkles scattered around the diagram for that "
+    "16-bit game-screenshot feel. Output 16:9 aspect ratio (1920x1080)."
+)
+
+
+@app.route("/api/diagrams/<diagram_id>/regenerate", methods=["POST"])
+def diagram_regenerate(diagram_id):
+    """Redo a single diagram's source image via the same 2-step SOP pipeline
+    used by /generate-batch. Reuses the chapter brief associated with this
+    diagram's name (Step N: TITLE). Replaces image_path on success."""
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "diagram not found"}), 404
+    vid = row["video_id"]
+    name = row["name"] or ""
+    conn.close()
+
+    # Find the brief in the current chapter/step list whose title matches.
+    briefs = _derive_diagram_briefs(vid)
+    match = None
+    # `Step N: TITLE` → derive position + title
+    m = re.match(r"^\s*Step\s+(\d+)\s*:\s*(.+?)\s*$", name, re.IGNORECASE)
+    if m:
+        step_num = int(m.group(1))
+        title_lc = m.group(2).strip().lower()
+        # Prefer position match (1-indexed)
+        if 1 <= step_num <= len(briefs):
+            cand = briefs[step_num - 1]
+            if (cand.get("brief") or "").strip().lower() == title_lc:
+                match = cand
+        if not match:
+            # Fall back to title-only match
+            for b in briefs:
+                if (b.get("brief") or "").strip().lower() == title_lc:
+                    match = b
+                    break
+    if not match:
+        # Last resort: synthesize a brief from the diagram's name
+        match = {"name": name, "brief": name.split(":", 1)[-1].strip() or name, "body": ""}
+
+    png, planned = _gemini_generate_diagram_image(match, api_key)
+    if not png:
+        return jsonify({
+            "error": "generation failed (see server logs)",
+            "debug": {
+                "body_chars": len((match.get("body") or "")),
+                "body_preview": (match.get("body") or "")[:300],
+                "planned_prompt": planned,
+            },
+        }), 502
+    out_root = UPLOAD_DIR / "diagrams" / str(vid)
+    out_root.mkdir(parents=True, exist_ok=True)
+    out_path = out_root / f"{diagram_id}_{int(time.time())}.png"
+    out_path.write_bytes(png)
+    rel = str(out_path.relative_to(Path(app.root_path)))
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    conn.execute("UPDATE diagrams SET image_path=?, updated_at=? WHERE id=?",
+                 (rel, now, diagram_id))
+    conn.commit()
+    row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    conn.close()
+    out = _diagram_row_to_dict(row)
+    # Echo back what the planner saw + produced so the UI can show it for debugging.
+    out["debug"] = {
+        "body_chars": len((match.get("body") or "")),
+        "body_preview": (match.get("body") or "")[:300],
+        "planned_prompt": planned,
+    }
+    return jsonify(out)
+
+
+@app.route("/api/diagrams/<diagram_id>/pixel-art", methods=["POST"])
+def diagram_pixel_art(diagram_id):
+    """Transform the diagram's current image into 16-bit pixel art via Nano Banana Pro
+    (`gemini-3-pro-image-preview`). Replaces image_path with the new pixel version."""
+    import base64
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "diagram not found"}), 404
+    img_rel = row["image_path"]
+    if not img_rel:
+        conn.close()
+        return jsonify({"error": "diagram has no source image — generate one first"}), 400
+    img_path = Path(app.root_path) / img_rel
+    if not img_path.exists():
+        conn.close()
+        return jsonify({"error": f"image file missing on disk: {img_rel}"}), 404
+    src_bytes = img_path.read_bytes()
+    parts_payload = [
+        {"inline_data": {
+            "mime_type": "image/png",
+            "data": base64.b64encode(src_bytes).decode("ascii"),
+        }},
+        {"text": _DIAGRAM_PIXEL_PROMPT},
+    ]
+    new_bytes = _gemini_image_call(parts_payload, api_key,
+                                   "gemini-3-pro-image-preview",
+                                   "diagrams.pixel")
+    if not new_bytes:
+        conn.close()
+        return jsonify({"error": "pixel-art generation failed (see server logs)"}), 502
+    vid = row["video_id"]
+    out_root = UPLOAD_DIR / "diagrams" / str(vid)
+    out_root.mkdir(parents=True, exist_ok=True)
+    out_path = out_root / f"{diagram_id}_pixel.png"
+    out_path.write_bytes(new_bytes)
+    rel = str(out_path.relative_to(Path(app.root_path)))
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute("UPDATE diagrams SET image_path=?, updated_at=? WHERE id=?",
+                 (rel, now, diagram_id))
+    conn.commit()
+    row = conn.execute("SELECT * FROM diagrams WHERE id=?", (diagram_id,)).fetchone()
+    conn.close()
+    return jsonify(_diagram_row_to_dict(row))
+
+
+_FACELESS_SOP_PATH = Path(__file__).resolve().parent / "prompts" / "thumbnail_faceless.md"
+_PIXEL_FACE_SOP_PATH = Path(__file__).resolve().parent / "prompts" / "thumbnail_pixel_face.md"
+_FACE_REFS_DIR = Path(__file__).resolve().parent / "assets" / "face_references"
+_LOGOS_DIR = Path(__file__).resolve().parent / "assets" / "logos"
+
+
+def _load_face_refs():
+    """Return list of (mime_type, image_bytes) for every PNG/JPG in the bundled
+    face_references dir (alphabetical). Andy curates this folder directly —
+    drop in / rename / delete files and the next request picks up the change."""
+    import mimetypes
+    refs = []
+    if not _FACE_REFS_DIR.exists():
+        return refs
+    for p in sorted(_FACE_REFS_DIR.iterdir()):
+        if p.name.startswith("."):
+            continue
+        if p.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+            continue
+        mime = mimetypes.guess_type(str(p))[0] or "image/png"
+        refs.append((mime, p.read_bytes()))
+    return refs
+
+
+def _load_logo(name):
+    """Return (mime_type, png_bytes) for a logo, or None if missing."""
+    import mimetypes
+    p = _LOGOS_DIR / f"{name}.png"
+    if not p.exists():
+        return None
+    mime = mimetypes.guess_type(str(p))[0] or "image/png"
+    return (mime, p.read_bytes())
+
+
+_PIXEL_FACE_PROMPT_TEMPLATE = """\
+These are reference photos. The first [N_FACES] image(s) are my face —
+I have long flowing brown hair that falls past my shoulders and a full
+beard. The final image is the [BRAND NAME]: [BRAND DESCRIPTION].
+
+BRAND LOGO PLACEMENT RULE (critical): The [BRAND NAME] MUST appear in
+the final image EXACTLY as it looks in the reference image — identical
+colors, identical shape, identical [BRAND KEY FEATURES], identical
+outline. Treat it like a sticker being pasted onto the scene. DO NOT
+redraw it in pixel art style. DO NOT add visible pixels to it. DO NOT
+change its proportions. DO NOT change its expression. The logo stays
+clean, flat, and crisp — it is the only element in the image that is
+NOT pixel art.
+
+Everything ELSE in the image is 16-bit SNES pixel art: chunky visible
+pixels, flat limited color palette, no anti-aliasing, no smoothing,
+no photorealism, pure retro pixel art aesthetic.
+
+STRICT LAYOUT (follow exactly):
+
+LEFT THIRD (left side of the 16:9 frame): a LARGE close-up pixel art
+portrait of me — head and just the tops of my shoulders, zoomed IN.
+My head and hair FILL almost the entire left third vertically
+(top-to-bottom). This is a close-up portrait, NOT a small distant
+avatar. Long flowing brown hair past the shoulders (flowing down to
+the bottom of the frame on both sides of the face). Full brown beard.
+Plain white t-shirt (only neckline and shoulder tops visible). The
+face LIKENESS must match the reference photos — same eyes, nose,
+beard shape, recognizable as the same person. Confident excited
+expression, slight smile, looking directly at the viewer. Pixel art
+— chunky pixels, flat colors, but detailed enough at this close-up
+size to capture the likeness. Must still read at 320×180 preview
+size (YouTube thumbnail scale).
+
+TOP RIGHT (upper half of the right two-thirds): bold 16-bit pixel art
+text [TITLE_INSTRUCTION] on two lines. Vertical gradient from bright
+yellow (#FFD700) to deep gold (#E8A800). Thick dark navy pixel shadow
+behind the text. Text fills the upper right portion of the frame.
+
+BOTTOM RIGHT (lower half of the right two-thirds): the [BRAND NAME]
+PASTED AS-IS from the reference image, NOT redrawn in pixel art.
+Covering approximately ONE QUARTER (25%) of the total screen area.
+[BRAND KEY FEATURES]. Looks like the reference PNG placed directly
+onto the scene.
+
+BACKGROUND: dark navy pixel art with subtle blue glow, a few pixel
+sparkles scattered around the title text and the brand logo. Pure
+pixel art background, no gradients.
+
+Output must be 16:9 aspect ratio (1920x1080). The brand logo in the
+bottom right must look IDENTICAL to the reference image (flat, crisp,
+not pixelated) — every other element must be pure 16-bit SNES pixel
+art style.
+"""
+
+
+_DEFAULT_BRAND = {
+    "logo_name": "claude_code",
+    "brand_name": "Claude Code logo character",
+    "brand_description": (
+        "a chunky flat orange creature with a rounded rectangular body, "
+        "'>' and '<' black eyes, short stubby legs, and a crisp white outline"
+    ),
+    "brand_key_features": (
+        "orange body, '>' and '<' eyes, white outline, stubby legs"
+    ),
+}
+
+
+def _build_pixel_face_prompt(video_title, brand=None):
+    """Return (prompt_text, [(mime,bytes), ...]) for the pixel-face direct call.
+    Substitutes the locked SOP template with brand info + tells Gemini to
+    pick its own 2-4 word [TITLE TEXT] from the full video title."""
+    brand = brand or _DEFAULT_BRAND
+    title_instruction = (
+        f"(pick a punchy 2-4 word version yourself of this full video title: "
+        f"\"{video_title}\" — examples: \"71,000 Creators Installed This Skill\" "
+        f"→ \"71K INSTALLS\"; \"You Can Get Claude Code Free Now\" → \"NOW FREE\")"
+    )
+    face_refs = _load_face_refs()
+    template = (_PIXEL_FACE_PROMPT_TEMPLATE
+                .replace("[N_FACES]", str(len(face_refs)))
+                .replace("[BRAND NAME]", brand["brand_name"])
+                .replace("[BRAND DESCRIPTION]", brand["brand_description"])
+                .replace("[BRAND KEY FEATURES]", brand["brand_key_features"])
+                .replace("[TITLE_INSTRUCTION]", title_instruction))
+    image_refs = list(face_refs)
+    logo = _load_logo(brand["logo_name"])
+    if logo:
+        image_refs.append(logo)
+    return template, image_refs
+
+
+def _allocate_thumb_slots(thumbs, titles, n):
+    """Walk thumbs left-to-right, return n empty indices, extending the array by 9
+    (and padding titles to match) as needed. Mutates thumbs and titles in place."""
+    empty_slots = []
+    i = 0
+    while len(empty_slots) < n:
+        if i >= len(thumbs):
+            thumbs.extend([""] * 9)
+        if not thumbs[i]:
+            empty_slots.append(i)
+        i += 1
+    while len(titles) < len(thumbs):
+        titles.append("")
+    return empty_slots
+
+
+def _read_video_thumb_state(conn, vid):
+    """Return (title, thumbs_list, titles_list, drow_exists)."""
+    conn.row_factory = sqlite3.Row
+    vrow = conn.execute("SELECT title FROM videos WHERE id=?", (vid,)).fetchone()
+    if not vrow:
+        return None
+    title = (vrow["title"] or "").strip()
+    drow = conn.execute(
+        "SELECT original_thumbs, original_titles FROM video_details WHERE video_id=?",
+        (vid,),
+    ).fetchone()
+    if drow and drow["original_thumbs"]:
+        thumbs = json.loads(drow["original_thumbs"])
+    else:
+        thumbs = ["", "", "", "", "", "", "", "", ""]
+    if not isinstance(thumbs, list):
+        thumbs = ["", "", "", "", "", "", "", "", ""]
+    if drow and drow["original_titles"]:
+        titles = json.loads(drow["original_titles"])
+    else:
+        titles = ["", "", "", "", "", "", "", "", ""]
+    if not isinstance(titles, list):
+        titles = ["", "", "", "", "", "", "", "", ""]
+    return title, thumbs, titles, bool(drow)
+
+
+def _persist_thumb_state(conn, vid, thumbs, titles, drow_exists):
+    if drow_exists:
+        conn.execute(
+            "UPDATE video_details SET original_thumbs=?, original_titles=? WHERE video_id=?",
+            (json.dumps(thumbs), json.dumps(titles), vid),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO video_details (video_id, original_thumbs, original_titles) VALUES (?, ?, ?)",
+            (vid, json.dumps(thumbs), json.dumps(titles)),
+        )
+    conn.commit()
+
+
+def _gemini_thumb_direct(vid, *, kind, prompt_builder, slug):
+    """Shared direct-to-Gemini thumbnail generator.
+
+    kind: short identifier used in filenames + telemetry (e.g. 'faceless', 'pixel_face')
+    prompt_builder: callable(video_title) -> (prompt_text, [(mime,bytes), ...])
+    slug: filename prefix for outputs
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    import base64
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+
+    body = request.get_json(silent=True) or {}
+    try:
+        n = int(body.get("count", 3))
+    except (TypeError, ValueError):
+        n = 3
+    n = max(1, min(n, 6))
+
+    conn = get_db()
+    state = _read_video_thumb_state(conn, vid)
+    if state is None:
+        conn.close()
+        return jsonify({"error": "video not found"}), 404
+    title, thumbs, titles, drow_exists = state
+    if not title:
+        conn.close()
+        return jsonify({"error": "video has no title"}), 400
+
+    empty_slots = _allocate_thumb_slots(thumbs, titles, n)
+
+    prompt, image_refs = prompt_builder(title)
+
+    image_parts = [
+        {"inline_data": {
+            "mime_type": mime,
+            "data": base64.b64encode(b).decode("ascii"),
+        }}
+        for mime, b in image_refs
+    ]
+
+    def _gen(variant_idx, attempt):
+        parts_payload = image_parts + [{"text": prompt}]
+        return _gemini_image_call_detail(
+            parts_payload, api_key, "gemini-3-pro-image-preview",
+            f"thumb.gemini-{kind}.v{variant_idx}.a{attempt}",
+        )
+
+    # Pass 1: fire all n in parallel
+    results = [None] * n  # each entry: {"png": bytes|None, "error": str|None, "attempts": int}
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        futures = {ex.submit(_gen, i, 1): i for i in range(n)}
+        for fut in futures:
+            i = futures[fut]
+            png, err = fut.result()
+            results[i] = {"png": png, "error": err, "attempts": 1}
+
+    # Pass 2: retry each failed slot once
+    retry_idxs = [i for i, r in enumerate(results) if r["png"] is None]
+    if retry_idxs:
+        with ThreadPoolExecutor(max_workers=len(retry_idxs)) as ex:
+            futures = {ex.submit(_gen, i, 2): i for i in retry_idxs}
+            for fut in futures:
+                i = futures[fut]
+                png, err = fut.result()
+                results[i] = {"png": png, "error": err, "attempts": 2}
+
+    out_root = UPLOAD_DIR / "thumbs" / str(vid)
+    out_root.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time())
+    written = []
+    failures = []
+    for variant_idx, res in enumerate(results):
+        slot = empty_slots[variant_idx]
+        if res["png"]:
+            out_path = out_root / f"{slug}_{ts}_{variant_idx + 1}.png"
+            out_path.write_bytes(res["png"])
+            rel_url = "/" + str(out_path.relative_to(Path(app.root_path))).replace(os.sep, "/")
+            thumbs[slot] = rel_url
+            written.append({
+                "slot_index": slot,
+                "slot_label": slot + 1,
+                "url": rel_url,
+                "attempts": res["attempts"],
+            })
+        else:
+            failures.append({
+                "slot_label": slot + 1,
+                "attempts": res["attempts"],
+                "error": res["error"] or "unknown",
+            })
+
+    if not written:
+        conn.close()
+        return jsonify({
+            "error": "all gemini calls failed",
+            "failures": failures,
+        }), 502
+
+    _persist_thumb_state(conn, vid, thumbs, titles, drow_exists)
+    conn.close()
+    return jsonify({
+        "ok": True,
+        "kind": kind,
+        "count": len(written),
+        "requested": n,
+        "thumbs": written,
+        "failures": failures,
+        "original_thumbs": thumbs,
+        "original_titles": titles,
+        "prompt_chars": len(prompt),
+        "image_refs": len(image_refs),
+    })
+
+
+def _faceless_prompt_builder(video_title):
+    """Build the faceless prompt — embeds the full faceless SOP since it's
+    layout-pattern-driven (Gemini picks one of the 6)."""
+    sop_text = _FACELESS_SOP_PATH.read_text() if _FACELESS_SOP_PATH.exists() else ""
+    prompt = (
+        f"Make a YouTube thumbnail for a video titled: \"{video_title}\".\n\n"
+        f"Follow this SOP exactly — the channel signature, locked style "
+        f"constants, and one of the 6 layout patterns. Pick the layout pattern "
+        f"that best fits the title. Output 16:9, 1920x1080.\n\n"
+        f"=== SOP START ===\n{sop_text}\n=== SOP END ==="
+    )
+    return prompt, []
+
+
+@app.route("/api/videos/<int:vid>/gemini-faceless", methods=["POST"])
+@login_required
+def gemini_faceless(vid):
+    """Direct-to-Gemini faceless thumbnails — no Claude judgment, no face refs."""
+    if not _FACELESS_SOP_PATH.exists():
+        return jsonify({"error": f"SOP missing: {_FACELESS_SOP_PATH}"}), 500
+    return _gemini_thumb_direct(
+        vid,
+        kind="faceless",
+        prompt_builder=_faceless_prompt_builder,
+        slug="gemini_faceless",
+    )
+
+
+@app.route("/api/videos/<int:vid>/gemini-pixel-face", methods=["POST"])
+@login_required
+def gemini_pixel_face(vid):
+    """Direct-to-Gemini pixel-face — sends the locked SOP prompt template (not
+    the full SOP) substituted with Claude Code brand info, plus 4 face refs + 1
+    brand logo."""
+    if not _load_face_refs():
+        return jsonify({"error": "no face references found in assets/face_references/"}), 500
+    if not _load_logo(_DEFAULT_BRAND["logo_name"]):
+        return jsonify({"error": f"brand logo missing: {_DEFAULT_BRAND['logo_name']}"}), 500
+    return _gemini_thumb_direct(
+        vid,
+        kind="pixel_face",
+        prompt_builder=_build_pixel_face_prompt,
+        slug="gemini_pixel_face",
+    )
+
+
+@app.route("/api/videos/<int:vid>/editor-bootstrap", methods=["GET"])
+def editor_bootstrap(vid):
+    """Single payload the OpenCut bridge page needs to seed a new project:
+    title, content/bullet doc text, and the rendered asset list."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    vrow = conn.execute("SELECT id, video_id, title FROM videos WHERE id=?", (vid,)).fetchone()
+    if not vrow:
+        conn.close()
+        return jsonify({"error": "video not found"}), 404
+    drow = conn.execute("SELECT custom_fields FROM video_details WHERE video_id=?", (vid,)).fetchone()
+    try:
+        custom_fields = json.loads(drow["custom_fields"]) if drow and drow["custom_fields"] else []
+    except (TypeError, ValueError):
+        custom_fields = []
+    # Reuse assets logic inline (kept small to avoid a refactor)
+    assets = []
+    try:
+        diagrams = conn.execute(
+            "SELECT id, name, result_url, result_meta_json FROM diagrams "
+            "WHERE video_id=? AND result_url IS NOT NULL ORDER BY position, updated_at",
+            (vid,),
+        ).fetchall()
+        for d in diagrams:
+            try:
+                meta = json.loads(d["result_meta_json"] or "{}")
+            except Exception:
+                meta = {}
+            assets.append({
+                "id": "diag_" + d["id"],
+                "type": "diagram",
+                "name": d["name"] or "diagram",
+                "url": _proxy_asset_url(d["result_url"]),
+                "duration": meta.get("duration", 0),
+            })
+    except sqlite3.OperationalError:
+        pass
+    try:
+        chapters = conn.execute(
+            "SELECT id, name, result_url, result_meta_json FROM chapters "
+            "WHERE video_id=? AND result_url IS NOT NULL ORDER BY position, updated_at",
+            (vid,),
+        ).fetchall()
+        for c in chapters:
+            try:
+                meta = json.loads(c["result_meta_json"] or "{}")
+            except Exception:
+                meta = {}
+            assets.append({
+                "id": "chap_" + c["id"],
+                "type": "chapter",
+                "name": c["name"] or "chapter",
+                "url": _proxy_asset_url(c["result_url"]),
+                "duration": meta.get("duration", 0),
+            })
+    except sqlite3.OperationalError:
+        pass
+    conn.close()
+    return jsonify({
+        "vid": vrow["id"],
+        "video_id": vrow["video_id"],
+        "title": vrow["title"] or f"Video {vid}",
+        "content_doc": _read_doc_field(custom_fields, "Content Doc"),
+        "bullet_doc": _read_doc_field(custom_fields, "Bullet Doc"),
+        # Back-compat with the first bridge build that read text-only fields.
+        "content_doc_text": _read_doc_field(custom_fields, "Content Doc")["text"],
+        "bullet_doc_text": _read_doc_field(custom_fields, "Bullet Doc")["text"],
+        "assets": assets,
+    })
+
+
 @app.route("/api/videos/<int:vid>/editor", methods=["GET"])
 def get_editor_state(vid):
     conn = get_db()
@@ -3913,11 +7474,41 @@ def save_editor_state(vid):
     return jsonify({"ok": True})
 
 
+def _editor_resolve(url):
+    rel = (url or "").lstrip("/")
+    if not rel:
+        return None
+    p = Path(app.root_path) / rel
+    return p if p.exists() else None
+
+
+def _editor_normalize_state(state):
+    """Ensure tracks shape. Migrate legacy flat `timeline` array into video track."""
+    tracks = state.get("tracks") or {}
+    tracks.setdefault("video", [])
+    tracks.setdefault("audio", [])
+    legacy = state.get("timeline") or []
+    if legacy and not tracks["video"]:
+        t = 0.0
+        for c in legacy:
+            dur = float(c.get("duration") or 0)
+            tracks["video"].append({
+                **c, "kind": "video",
+                "start_time": t, "in": 0.0, "out": dur,
+            })
+            t += dur
+    state["tracks"] = tracks
+    state.pop("timeline", None)
+    return state
+
+
 @app.route("/api/videos/<int:vid>/editor/render", methods=["POST"])
 def render_editor_timeline(vid):
-    """Compose the timeline clips into a single MP4. v1: sequential concat with
-    optional re-encode for codec/dim consistency."""
-    import tempfile, subprocess, shutil
+    """Compose timeline into a single MP4.
+    - Video lane: per-clip trim (in/out), gaps padded to black, sequential concat
+    - Audio lane: per-clip trim, gaps padded with silence, mixed/replaces video audio
+    Both lanes time-aligned via the clip's `start_time`. Final length = longest lane."""
+    import tempfile, shutil
 
     conn = get_db()
     conn.row_factory = sqlite3.Row
@@ -3929,73 +7520,187 @@ def render_editor_timeline(vid):
         state = json.loads(row["editor_state"] or "{}")
     except Exception:
         return jsonify({"error": "editor state corrupt"}), 500
-    timeline = state.get("timeline", [])
-    if not timeline:
+    state = _editor_normalize_state(state)
+    video_clips = state["tracks"]["video"]
+    audio_clips = state["tracks"]["audio"]
+    if not video_clips and not audio_clips:
         return jsonify({"error": "timeline is empty"}), 400
 
+    def total_end(clips):
+        end = 0.0
+        for c in clips:
+            e = float(c.get("start_time") or 0) + max(0.0, float(c.get("out") or 0) - float(c.get("in") or 0))
+            if e > end: end = e
+        return end
+    total_dur = max(total_end(video_clips), total_end(audio_clips))
+    if total_dur <= 0:
+        return jsonify({"error": "timeline has zero duration"}), 400
+
     job_id = uuid.uuid4().hex[:12]
-    work_dir = Path(tempfile.mkdtemp(prefix=f"editor_{job_id}_"))
+    work = Path(tempfile.mkdtemp(prefix=f"editor_{job_id}_"))
     try:
-        # Resolve clip paths
-        clip_paths = []
-        for item in timeline:
-            url = (item.get("asset_url") or "").lstrip("/")
-            if not url:
-                continue
-            abs_path = Path(app.root_path) / url
-            if abs_path.exists():
-                clip_paths.append(abs_path)
-        if not clip_paths:
-            return jsonify({"error": "no resolvable clips on timeline"}), 400
+        # ── Build the video lane as a single MP4 (gaps padded with black) ──
+        video_lane_path = None
+        if video_clips:
+            # Sort by start_time
+            ordered = sorted(video_clips, key=lambda c: float(c.get("start_time") or 0))
+            parts = []  # list of (in_path or None for gap, duration_sec, in_offset)
+            cursor = 0.0
+            for c in ordered:
+                st = float(c.get("start_time") or 0)
+                inP = float(c.get("in") or 0)
+                outP = float(c.get("out") or 0)
+                clip_len = max(0.0, outP - inP)
+                if clip_len <= 0:
+                    continue
+                if st > cursor + 0.01:
+                    parts.append(("gap", st - cursor, 0.0))
+                src = _editor_resolve(c.get("asset_url"))
+                if not src:
+                    continue
+                parts.append((src, clip_len, inP))
+                cursor = st + clip_len
+            # Pad video lane to total_dur with black if shorter
+            if total_dur > cursor + 0.01:
+                parts.append(("gap", total_dur - cursor, 0.0))
 
-        # All clips are MP4s rendered by our pipeline, so they share the same
-        # codec/pixel-format/sample-rate. Use concat demuxer with stream copy.
-        concat_file = work_dir / "concat.txt"
-        with concat_file.open("w") as f:
-            for p in clip_paths:
-                f.write(f"file '{str(p).replace(chr(39), chr(92)+chr(39))}'\n")
+            # Convert each part to a normalized 1920x1080 30fps mp4 (re-encode), then concat
+            normalized = []
+            for i, (src, dur, off) in enumerate(parts):
+                out_part = work / f"vpart_{i}.mp4"
+                if src == "gap":
+                    # Black filler with silent audio so concat stays aligned
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-f", "lavfi", "-i", f"color=c=black:s=1920x1080:d={dur:.3f}:r=30",
+                        "-f", "lavfi", "-i", f"anullsrc=channel_layout=stereo:sample_rate=44100",
+                        "-shortest",
+                        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-r", "30",
+                        "-c:a", "aac", "-b:a", "128k",
+                        str(out_part),
+                    ]
+                else:
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-ss", f"{off:.3f}", "-t", f"{dur:.3f}", "-i", str(src),
+                        "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1",
+                        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-r", "30",
+                        "-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "44100",
+                        str(out_part),
+                    ]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                if r.returncode != 0:
+                    return jsonify({"error": "ffmpeg video-part failed",
+                                    "stderr": r.stderr[-2000:]}), 500
+                normalized.append(out_part)
 
-        out_path = work_dir / "out.mp4"
-        # Re-encode for safety (different durations, b-frames, GOP can break stream copy)
-        cmd = [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file),
-            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k",
-            "-r", "30",
-            "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-            str(out_path),
-        ]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-        if r.returncode != 0:
-            return jsonify({"error": "ffmpeg failed", "stderr": r.stderr[-2000:]}), 500
+            video_lane_path = work / "video_lane.mp4"
+            list_file = work / "vconcat.txt"
+            list_file.write_text("\n".join(
+                "file '" + str(p).replace("'", "'\\''") + "'" for p in normalized
+            ))
+            r = subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                                "-i", str(list_file), "-c", "copy", str(video_lane_path)],
+                               capture_output=True, text=True, timeout=600)
+            if r.returncode != 0:
+                return jsonify({"error": "ffmpeg video-concat failed",
+                                "stderr": r.stderr[-2000:]}), 500
 
+        # ── Build the audio lane (gaps = silence), full timeline length ──
+        audio_lane_path = None
+        if audio_clips:
+            inputs = []     # ffmpeg -i list
+            filter_in = []  # delayed+trimmed labels
+            for i, c in enumerate(audio_clips):
+                src = _editor_resolve(c.get("asset_url"))
+                if not src: continue
+                st = float(c.get("start_time") or 0)
+                inP = float(c.get("in") or 0)
+                outP = float(c.get("out") or 0)
+                if outP - inP <= 0: continue
+                inputs += ["-i", str(src)]
+                # Trim, then delay so the clip lands at its timeline position
+                delay_ms = int(st * 1000)
+                filter_in.append(
+                    f"[{len(inputs)//2 - 1}:a]atrim={inP:.3f}:{outP:.3f},asetpts=PTS-STARTPTS"
+                    f",adelay={delay_ms}|{delay_ms}[a{i}]"
+                )
+            if filter_in:
+                audio_lane_path = work / "audio_lane.m4a"
+                amix = "".join(f"[a{i}]" for i in range(len(filter_in)))
+                # apad ensures the mix is at least total_dur long; atrim caps it
+                filter_complex = ";".join(filter_in) + ";" + \
+                    f"{amix}amix=inputs={len(filter_in)}:normalize=0,apad,atrim=0:{total_dur:.3f}[aout]"
+                cmd = ["ffmpeg", "-y"] + inputs + [
+                    "-filter_complex", filter_complex,
+                    "-map", "[aout]",
+                    "-c:a", "aac", "-b:a", "192k",
+                    str(audio_lane_path),
+                ]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                if r.returncode != 0:
+                    return jsonify({"error": "ffmpeg audio-lane failed",
+                                    "stderr": r.stderr[-2000:]}), 500
+
+        # ── Combine: video lane + audio lane (audio lane replaces clip audio) ──
         out_dir = Path(app.root_path) / "static" / "uploads" / "editor"
         out_dir.mkdir(parents=True, exist_ok=True)
         final_path = out_dir / f"v{vid}_{job_id}.mp4"
-        shutil.move(str(out_path), str(final_path))
+        if video_lane_path and audio_lane_path:
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(video_lane_path),
+                "-i", str(audio_lane_path),
+                "-map", "0:v", "-map", "1:a",
+                "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+                "-shortest",
+                str(final_path),
+            ]
+        elif video_lane_path:
+            shutil.move(str(video_lane_path), str(final_path))
+            cmd = None
+        elif audio_lane_path:
+            # No video — produce a black-video MP4 the length of the audio
+            cmd = [
+                "ffmpeg", "-y",
+                "-f", "lavfi", "-i", f"color=c=black:s=1920x1080:d={total_dur:.3f}:r=30",
+                "-i", str(audio_lane_path),
+                "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k", "-shortest",
+                str(final_path),
+            ]
+        else:
+            return jsonify({"error": "no resolvable clips"}), 400
+        if cmd:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            if r.returncode != 0:
+                return jsonify({"error": "ffmpeg final mux failed",
+                                "stderr": r.stderr[-2000:]}), 500
+
         rel = str(final_path.relative_to(Path(app.root_path)))
         result_url = "/" + rel
-
-        # Persist last_render onto editor_state
         state["last_render"] = {
             "url": result_url,
             "at": datetime.now(timezone.utc).isoformat(),
-            "clips": len(clip_paths),
+            "video_clips": len(video_clips),
+            "audio_clips": len(audio_clips),
+            "duration": round(total_dur, 2),
         }
         conn = get_db()
         conn.execute("UPDATE videos SET editor_state=? WHERE id=?",
                      (json.dumps(state), vid))
         conn.commit()
         conn.close()
-
-        return jsonify({"url": result_url, "clips": len(clip_paths)})
+        return jsonify({"url": result_url,
+                        "video_clips": len(video_clips),
+                        "audio_clips": len(audio_clips),
+                        "duration": round(total_dur, 2)})
     except Exception as e:
-        return jsonify({"error": f"render exception: {type(e).__name__}: {e}"}), 500
+        import traceback
+        return jsonify({"error": f"render exception: {type(e).__name__}: {e}",
+                        "trace": traceback.format_exc()[-1500:]}), 500
     finally:
-        try:
-            shutil.rmtree(work_dir)
-        except Exception:
-            pass
+        shutil.rmtree(work, ignore_errors=True)
 
 
 if __name__ == "__main__":
