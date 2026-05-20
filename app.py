@@ -7661,6 +7661,78 @@ def gemini_pixel_face(vid):
     )
 
 
+@app.route("/videos/<int:vid>/thumb-edit/<int:slot>", methods=["GET"])
+@login_required
+def thumb_editor_page(vid, slot):
+    """Serve the miniPaint-wrapped thumbnail editor for a single slot.
+    Opens in a new tab from the studio. Pre-loads the slot's current PNG
+    (if any) as layer 1, and writes back on Save."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    vrow = conn.execute("SELECT title FROM videos WHERE id=?", (vid,)).fetchone()
+    if not vrow:
+        conn.close()
+        return "video not found", 404
+    title = (vrow["title"] or "").strip() or "(untitled)"
+    drow = conn.execute(
+        "SELECT original_thumbs FROM video_details WHERE video_id=?", (vid,)
+    ).fetchone()
+    thumb_url = ""
+    if drow and drow["original_thumbs"]:
+        try:
+            thumbs = json.loads(drow["original_thumbs"])
+            if isinstance(thumbs, list) and 0 <= slot < len(thumbs):
+                thumb_url = thumbs[slot] or ""
+        except Exception:
+            pass
+    conn.close()
+    return render_template(
+        "thumb_editor.html",
+        vid=vid,
+        slot=slot,
+        slot_label=slot + 1,
+        video_title=title,
+        thumb_url=thumb_url,
+    )
+
+
+@app.route("/api/videos/<int:vid>/thumb-slot/<int:slot>", methods=["POST"])
+@login_required
+def thumb_slot_save(vid, slot):
+    """Receive an edited PNG from the miniPaint wrapper, save it to disk, and
+    write the URL into original_thumbs[slot] (overwriting that slot only)."""
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "no file in multipart upload"}), 400
+    conn = get_db()
+    state = _read_video_thumb_state(conn, vid)
+    if state is None:
+        conn.close()
+        return jsonify({"error": "video not found"}), 404
+    _title, thumbs, titles, drow_exists = state
+    while len(thumbs) <= slot:
+        thumbs.append("")
+    while len(titles) < len(thumbs):
+        titles.append("")
+
+    out_root = UPLOAD_DIR / "thumbs" / str(vid)
+    out_root.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time())
+    out_path = out_root / f"edited_slot{slot + 1}_{ts}.png"
+    f.save(str(out_path))
+    rel_url = "/" + str(out_path.relative_to(Path(app.root_path))).replace(os.sep, "/")
+    thumbs[slot] = rel_url
+    _persist_thumb_state(conn, vid, thumbs, titles, drow_exists)
+    conn.close()
+    return jsonify({
+        "ok": True,
+        "slot_index": slot,
+        "slot_label": slot + 1,
+        "url": rel_url,
+        "original_thumbs": thumbs,
+    })
+
+
 @app.route("/api/videos/<int:vid>/editor-bootstrap", methods=["GET"])
 def editor_bootstrap(vid):
     """Single payload the OpenCut bridge page needs to seed a new project:
