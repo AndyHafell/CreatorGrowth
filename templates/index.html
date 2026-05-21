@@ -2034,6 +2034,7 @@
                         </div>
                         <div id="diagramsBoxToolbar" style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                             <button onclick="resetDiagramsImage()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Replace image</button>
+                            <button onclick="openDiagramInPaint()" title="Edit the source image in miniPaint (remove/move text, retouch). Boxes are cleared on save." style="background:none; border:1px solid #2a2a4a; color:#7ad17a; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Edit in Paint</button>
                             <button onclick="enterCropMode()" style="background:none; border:1px solid #2a2a4a; color:#f5b942; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Crop region</button>
                             <button onclick="undoLastBox()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Undo last box</button>
                             <button onclick="clearBoxes()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Clear boxes</button>
@@ -6311,6 +6312,46 @@
         if (d) { d.imageUrl = ''; d.boxes = []; _apiPatch(d.id, { boxes: [] }).catch(function(){}); }
         renderSidebar();
     }
+
+    function openDiagramInPaint() {
+        var d = diagramsList[activeDiagramIdx];
+        if (!d) { setStudioStatus('No active diagram', '#e07070'); return; }
+        if (!d.imageUrl) {
+            setStudioStatus('Upload an image first', '#e07070');
+            return;
+        }
+        var url = '/diagrams/' + encodeURIComponent(d.id) + '/image-edit';
+        // Named window so re-clicking re-focuses the same editor tab instead of stacking new ones.
+        window.open(url, 'diagram-paint-' + d.id);
+    }
+
+    // Listen for save-back messages from the miniPaint editor wrapper.
+    window.addEventListener('message', function(ev) {
+        var msg = ev && ev.data;
+        if (!msg || msg.type !== 'diagram-image-updated') return;
+        var did = msg.diagram_id;
+        // Find the diagram by id (may not be the active one if user switched).
+        var idx = -1;
+        for (var i = 0; i < diagramsList.length; i++) {
+            if (diagramsList[i].id === did) { idx = i; break; }
+        }
+        if (idx < 0) return;
+        var d = diagramsList[idx];
+        d.imageUrl = msg.image_path_url;
+        // miniPaint may resize/crop the canvas → existing box coords are no longer trustworthy.
+        d.boxes = [];
+        _apiPatch(d.id, { boxes: [] }).catch(function(){});
+        if (idx === activeDiagramIdx) {
+            document.getElementById('diagramsImage').src = d.imageUrl + '?t=' + Date.now();
+            document.getElementById('diagramsPreview').style.display = 'block';
+            document.getElementById('diagramsDropZone').style.display = 'none';
+            diagramBoxes = [];
+            if (typeof renderBoxes === 'function') renderBoxes();
+            if (typeof renderBoxAnimList === 'function') renderBoxAnimList();
+            setStudioStatus('Image updated from Paint — boxes cleared', '#4caf50');
+        }
+        renderSidebar();
+    });
 
     // ---- box drawing + crop mode ----
     var diagramBoxes = []; // [{x,y,w,h}] in fractions of image displayed size
