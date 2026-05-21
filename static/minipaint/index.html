@@ -302,13 +302,11 @@
         };
       }
 
-      var removeBtn = mkBtn('REMOVE', false, withRect(function(rect){ runFill('', rect); }));
-      var patchBtn  = mkBtn('PATCH',  'green', withRect(function(rect){ runPatch(rect); }));
-      var fillBtn   = mkBtn('FILL…',  true, withRect(function(rect){
+      var patchBtn = mkBtn('PATCH', 'green', withRect(function(rect){ runPatch(rect); }));
+      var fillBtn  = mkBtn('FILL…', true,    withRect(function(rect){
         var p = window.prompt('What do you want to generate?', '');
         if (p && p.trim()) runFill(p.trim(), rect);
       }));
-      actions.appendChild(removeBtn);
       actions.appendChild(patchBtn);
       actions.appendChild(fillBtn);
 
