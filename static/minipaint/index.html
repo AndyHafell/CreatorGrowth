@@ -110,64 +110,61 @@
       return setTimeout(boot, 100);
     }
 
-    var lastRect = null;  // {x,y,w,h} in canvas pixel space
-    var dragStart = null;
-
-    function activeTool() {
-      try { return window.AppConfig.GUI.GUI_tools.active_tool; } catch (e) { return null; }
+    // Read miniPaint's live selection rect. Returns {x,y,w,h} or null.
+    function getLiveRect() {
+      try {
+        var mod = window.AppConfig.GUI.GUI_tools.tools_modules.selection;
+        if (!mod || !mod.object || !mod.object.Base_selection) return null;
+        var d = mod.object.Base_selection.get_selection();
+        if (!d || d.x == null || d.y == null || !d.width || !d.height) return null;
+        var w = Math.round(d.width), h = Math.round(d.height);
+        if (w < 4 || h < 4) return null;
+        return { x: Math.round(d.x), y: Math.round(d.y), w: w, h: h };
+      } catch (e) { return null; }
     }
-    function isSelTool() { return activeTool() === 'selection'; }
-    function canvasPoint(evt) {
-      var r = canvas.getBoundingClientRect();
-      var sx = canvas.width / r.width, sy = canvas.height / r.height;
-      return { x: (evt.clientX - r.left) * sx, y: (evt.clientY - r.top) * sy };
-    }
-    function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
-
-    canvas.addEventListener('mousedown', function(e){
-      if (e.button !== 0 || !isSelTool()) return;
-      dragStart = canvasPoint(e);
-    }, true);
-    canvas.addEventListener('mouseup', function(e){
-      if (e.button !== 0 || !isSelTool() || !dragStart) return;
-      var p = canvasPoint(e);
-      var x0 = clamp(Math.min(dragStart.x, p.x), 0, canvas.width);
-      var y0 = clamp(Math.min(dragStart.y, p.y), 0, canvas.height);
-      var x1 = clamp(Math.max(dragStart.x, p.x), 0, canvas.width);
-      var y1 = clamp(Math.max(dragStart.y, p.y), 0, canvas.height);
-      dragStart = null;
-      var w = Math.round(x1 - x0), h = Math.round(y1 - y0);
-      lastRect = (w >= 4 && h >= 4) ? { x: Math.round(x0), y: Math.round(y0), w: w, h: h } : null;
-    }, true);
 
     // Capture-phase contextmenu beats miniPaint's own preventDefault
     canvas.addEventListener('contextmenu', function(e){
-      if (!lastRect) return;
       e.preventDefault();
       e.stopPropagation();
       showMenu(e.clientX, e.clientY);
+    }, true);
+    // Also win against the document-level handler miniPaint registers
+    document.addEventListener('contextmenu', function(e){
+      if (e.target === canvas || canvas.contains(e.target)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
     }, true);
 
     var menu = null;
     function killMenu(){ if (menu){ menu.remove(); menu = null; } }
     function showMenu(x, y) {
       killMenu();
+      var rect = getLiveRect();
       menu = document.createElement('div');
-      menu.style.cssText = 'position:fixed;left:'+x+'px;top:'+y+'px;background:#1a1a2a;border:1px solid #2a2a4a;border-radius:8px;padding:6px 0;min-width:220px;z-index:99999;font:13px -apple-system,BlinkMacSystemFont,sans-serif;color:#ddd;box-shadow:0 8px 24px rgba(0,0,0,0.5);user-select:none;';
+      menu.style.cssText = 'position:fixed;left:'+x+'px;top:'+y+'px;background:#1a1a2a;border:1px solid #2a2a4a;border-radius:8px;padding:6px 0;min-width:240px;z-index:99999;font:13px -apple-system,BlinkMacSystemFont,sans-serif;color:#ddd;box-shadow:0 8px 24px rgba(0,0,0,0.5);user-select:none;';
+      var header = document.createElement('div');
+      header.style.cssText = 'padding:4px 14px 6px;font-size:11px;letter-spacing:1px;color:#666;border-bottom:1px solid #2a2a4a;margin-bottom:4px;';
+      header.textContent = rect ? ('SELECTION  ' + rect.w + '×' + rect.h) : 'NO SELECTION';
+      menu.appendChild(header);
       var items = [
-        ['Remove (content-aware)', function(){ runFill(''); }],
+        ['Remove (content-aware)', function(){ runFill('', rect); }],
         ['Generative fill…', function(){
           var p = window.prompt('What do you want to generate?', '');
-          if (p && p.trim()) runFill(p.trim());
+          if (p && p.trim()) runFill(p.trim(), rect);
         }],
       ];
       items.forEach(function(item){
         var b = document.createElement('div');
         b.textContent = item[0];
-        b.style.cssText = 'padding:8px 14px;cursor:pointer;';
-        b.onmouseenter = function(){ b.style.background = '#2a2a4a'; };
-        b.onmouseleave = function(){ b.style.background = ''; };
-        b.onclick = function(){ killMenu(); item[1](); };
+        var disabled = !rect;
+        b.style.cssText = 'padding:8px 14px;cursor:'+(disabled?'not-allowed':'pointer')+';opacity:'+(disabled?'0.4':'1')+';';
+        if (!disabled) {
+          b.onmouseenter = function(){ b.style.background = '#2a2a4a'; };
+          b.onmouseleave = function(){ b.style.background = ''; };
+          b.onclick = function(){ killMenu(); item[1](); };
+        }
         menu.appendChild(b);
       });
       document.body.appendChild(menu);
@@ -190,8 +187,7 @@
       if (autohide) setTimeout(function(){ statusEl.style.display = 'none'; }, 3500);
     }
 
-    function runFill(promptText) {
-      var r = lastRect;
+    function runFill(promptText, r) {
       if (!r) return;
       setStatus(promptText ? 'Generating fill…' : 'Removing…', '#f5b942', false);
 
