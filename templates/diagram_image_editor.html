@@ -23,7 +23,7 @@
     <div class="meta">{{ diagram_name }} &middot; {{ video_title }}</div>
     <span id="status" class="status">Loading miniPaint…</span>
     <button id="saveBtn" class="primary" onclick="saveBack()" disabled>SAVE BACK TO STUDIO</button>
-    <button onclick="window.close()">CLOSE</button>
+    <button onclick="goBackToCard()">CLOSE</button>
   </div>
   <div class="frame-wrap">
     <iframe id="mp" src="/static/minipaint/index.html" allow="camera"></iframe>
@@ -33,6 +33,17 @@
 const DIAGRAM_ID = {{ diagram_id|tojson }};
 const VIDEO_ID = {{ video_id|tojson }};
 const IMAGE_URL = {{ image_url|tojson }};
+
+function goBackToCard() {
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.close();
+      setTimeout(function(){ window.location.href = '/?card=' + VIDEO_ID + '&studio=diagrams'; }, 100);
+      return;
+    }
+  } catch (e) {}
+  window.location.href = '/?card=' + VIDEO_ID + '&studio=diagrams';
+}
 
 function setStatus(msg, color) {
   const el = document.getElementById('status');
