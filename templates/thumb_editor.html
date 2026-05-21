@@ -23,6 +23,7 @@
     <div class="title">THUMB EDITOR</div>
     <div class="meta">slot {{ slot_label }} · {{ video_title }}</div>
     <span id="status" class="status">Loading miniPaint…</span>
+    <button id="changeTextBtn" onclick="changeTextInSelection()" disabled title="Select a region containing text first, then click to replace the text while preserving font/style. ~$0.04 + ~20s." style="background:#1a1410; border-color:#f5b942; color:#f5b942;">CHANGE TEXT…</button>
     <button id="downloadBtn" onclick="saveAsDownload()" disabled title="Download a copy to your Downloads folder (does not touch the card)">SAVE AS…</button>
     <button id="saveBtn" class="primary" onclick="saveToSlot()" disabled>SAVE TO SLOT {{ slot_label }}</button>
     <button onclick="goBackToCard()">CLOSE</button>
@@ -104,6 +105,7 @@ function installScrollZoomDampener() {
 function enableSaveButtons() {
   document.getElementById('saveBtn').disabled = false;
   document.getElementById('downloadBtn').disabled = false;
+  document.getElementById('changeTextBtn').disabled = false;
 }
 
 function loadThumbAsLayer() {
@@ -156,6 +158,95 @@ function _exportCanvas(cb) {
   tmp.height = dim.height;
   W.Layers.convert_layers_to_canvas(tmp.getContext('2d'));
   tmp.toBlob(cb, 'image/png');
+}
+
+// Crop the current full-canvas composite to (x, y, w, h) and hand a PNG Blob to cb.
+function _cropCanvasRegion(x, y, w, h, cb) {
+  const W = frame.contentWindow;
+  if (!W || !W.Layers) { cb(null, 'miniPaint not ready'); return; }
+  const dim = W.Layers.get_dimensions();
+  const full = document.createElement('canvas');
+  full.width = dim.width;
+  full.height = dim.height;
+  W.Layers.convert_layers_to_canvas(full.getContext('2d'));
+  const crop = document.createElement('canvas');
+  crop.width = w;
+  crop.height = h;
+  crop.getContext('2d').drawImage(full, x, y, w, h, 0, 0, w, h);
+  crop.toBlob(function(blob) {
+    if (!blob) { cb(null, 'crop export failed'); return; }
+    cb(blob, null);
+  }, 'image/png');
+}
+
+function changeTextInSelection() {
+  const W = frame.contentWindow;
+  if (!W || !W.Layers || !W.Layers.Base_selection) {
+    setStatus('miniPaint not ready', '#e07070');
+    return;
+  }
+  const sel = W.Layers.Base_selection.get_selection();
+  if (!sel || sel.x == null || sel.y == null || !sel.width || !sel.height) {
+    setStatus('Select a region containing the text first (use the rectangle-select tool).', '#e07070');
+    return;
+  }
+  const newText = window.prompt('Replace the text in the selection with:', '');
+  if (newText == null) return;
+  const trimmed = newText.trim();
+  if (!trimmed) { setStatus('Empty text — nothing to do.', '#e07070'); return; }
+
+  const btn = document.getElementById('changeTextBtn');
+  btn.disabled = true;
+  const x = Math.round(sel.x), y = Math.round(sel.y);
+  const w = Math.round(sel.width), h = Math.round(sel.height);
+  setStatus('Exporting ' + w + '×' + h + ' crop…', '#f5b942');
+
+  _cropCanvasRegion(x, y, w, h, function(cropBlob, err) {
+    if (err) { setStatus(err, '#e07070'); btn.disabled = false; return; }
+    setStatus('Calling Gemini (~20s)…', '#f5b942');
+    const fd = new FormData();
+    fd.append('crop', cropBlob, 'crop.png');
+    fd.append('new_text', trimmed);
+    fetch('/api/thumb/change-text', { method: 'POST', body: fd })
+      .then(function(r) {
+        if (!r.ok) return r.json().then(function(j) { throw new Error(j.error || ('http ' + r.status)); });
+        return r.blob();
+      })
+      .then(function(pngBlob) {
+        // Paste the returned PNG back at the selection's original coords as a new layer
+        const url = URL.createObjectURL(pngBlob);
+        const img = new Image();
+        img.onload = function() {
+          try {
+            W.Layers.insert({
+              name: 'text→ ' + trimmed.slice(0, 20),
+              type: 'image',
+              data: img,
+              x: x,
+              y: y,
+              width: w,
+              height: h,
+              width_original: img.naturalWidth,
+              height_original: img.naturalHeight,
+            });
+            setStatus('Text replaced — pasted as new layer at (' + x + ',' + y + ')', '#4caf50');
+          } catch (e) {
+            setStatus('Paste failed: ' + e.message, '#e07070');
+          }
+          btn.disabled = false;
+          setTimeout(function() { URL.revokeObjectURL(url); }, 60000);
+        };
+        img.onerror = function() {
+          setStatus('Returned PNG could not be loaded', '#e07070');
+          btn.disabled = false;
+        };
+        img.src = url;
+      })
+      .catch(function(e) {
+        setStatus('Change-text failed: ' + e.message, '#e07070');
+        btn.disabled = false;
+      });
+  });
 }
 
 function saveAsDownload() {
