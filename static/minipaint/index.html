@@ -303,13 +303,65 @@
         };
       }
 
-      // Always-visible BG remove button (independent of selection tool)
+      // Always-visible BG remove button + model picker (independent of selection tool)
       var bgActions = document.createElement('div');
       bgActions.id = 'ai_bg_actions';
-      bgActions.style.cssText = 'display:flex;align-items:center;margin-left:18px;';
-      var bgBtn = mkBtn('REMOVE BG', 'cyan', function(){ runRemoveBg(); });
+      bgActions.style.cssText = 'display:flex;align-items:center;margin-left:18px;gap:1px;';
+      var BG_MODELS = [
+        { key: 'bria',          label: 'RMBG (Bria) — premium' },
+        { key: 'birefnet',      label: 'BiRefNet (851-labs)' },
+        { key: 'rembg-enhance', label: 'rembg-enhance' },
+      ];
+      var bgModel = localStorage.getItem('mp_bg_model') || 'bria';
+      var bgBtn = mkBtn('REMOVE BG', 'cyan', function(){ runRemoveBg(bgModel); });
       bgBtn.style.whiteSpace = 'nowrap';
+      bgBtn.style.borderTopRightRadius = '0';
+      bgBtn.style.borderBottomRightRadius = '0';
+      bgBtn.title = 'Remove background (' + bgModel + ')';
+
+      var chevBtn = mkBtn('▾', 'cyan', function(e){
+        e.stopPropagation();
+        openModelMenu();
+      });
+      chevBtn.style.borderTopLeftRadius = '0';
+      chevBtn.style.borderBottomLeftRadius = '0';
+      chevBtn.style.padding = '6px 8px';
+      chevBtn.title = 'Choose bg-remover model';
+
       bgActions.appendChild(bgBtn);
+      bgActions.appendChild(chevBtn);
+
+      var modelMenu = null;
+      function killModelMenu(){ if (modelMenu){ modelMenu.remove(); modelMenu = null; } }
+      function openModelMenu() {
+        killModelMenu();
+        var rect = chevBtn.getBoundingClientRect();
+        modelMenu = document.createElement('div');
+        modelMenu.style.cssText = 'position:fixed;left:'+rect.left+'px;top:'+(rect.bottom+4)+'px;background:#1a1a2a;border:1px solid #2a2a4a;border-radius:8px;padding:6px 0;min-width:240px;z-index:99999;font:13px -apple-system,BlinkMacSystemFont,sans-serif;color:#ddd;box-shadow:0 8px 24px rgba(0,0,0,0.5);user-select:none;';
+        BG_MODELS.forEach(function(m){
+          var row = document.createElement('div');
+          row.style.cssText = 'padding:8px 14px;cursor:pointer;display:flex;align-items:center;gap:8px;';
+          row.innerHTML = '<span style="width:14px;color:#5ab9d6;">' + (m.key === bgModel ? '●' : '') + '</span>' + m.label;
+          row.onmouseenter = function(){ row.style.background = '#2a2a4a'; };
+          row.onmouseleave = function(){ row.style.background = ''; };
+          row.onclick = function(){
+            bgModel = m.key;
+            localStorage.setItem('mp_bg_model', bgModel);
+            bgBtn.title = 'Remove background (' + bgModel + ')';
+            killModelMenu();
+            runRemoveBg(bgModel);
+          };
+          modelMenu.appendChild(row);
+        });
+        document.body.appendChild(modelMenu);
+        setTimeout(function(){ document.addEventListener('mousedown', dismissModelMenu, true); }, 0);
+      }
+      function dismissModelMenu(e){
+        if (modelMenu && !modelMenu.contains(e.target)) {
+          document.removeEventListener('mousedown', dismissModelMenu, true);
+          killModelMenu();
+        }
+      }
 
       var patchBtn = mkBtn('PATCH', 'green', withRect(function(rect){ runPatch(rect); }));
       var fillBtn  = mkBtn('FILL…', true,    withRect(function(rect){
@@ -593,8 +645,8 @@
 
     // Remove background from the flattened canvas via BiRefNet (851-labs on Replicate).
     // Result is added as a new layer "no_bg" on top of existing layers.
-    function runRemoveBg() {
-      setStatus('Removing background…', '#f5b942', false);
+    function runRemoveBg(model) {
+      setStatus('Removing background (' + (model || 'bria') + ')…', '#f5b942', false);
       var dim;
       try { dim = window.Layers.get_dimensions(); }
       catch (e) { return setStatus('Layers unavailable', '#e07070', true); }
@@ -607,6 +659,7 @@
         if (!blob) return setStatus('Export failed', '#e07070', true);
         var fd = new FormData();
         fd.append('image', blob, 'image.png');
+        fd.append('model', model || 'bria');
         fetch('/api/thumb-edit/remove-bg', { method: 'POST', body: fd })
           .then(function(resp){
             if (!resp.ok) {
@@ -620,13 +673,13 @@
             img.onload = function(){
               try {
                 window.Layers.insert({
-                  name: 'no_bg',
+                  name: 'no_bg (' + (model || 'bria') + ')',
                   type: 'image',
                   data: img,
                   width: img.naturalWidth, height: img.naturalHeight,
                   width_original: img.naturalWidth, height_original: img.naturalHeight,
                 });
-                setStatus('Background removed — added as new layer', '#7ad17a', true);
+                setStatus('Background removed via ' + (model || 'bria'), '#7ad17a', true);
               } catch (e) {
                 setStatus('Layer insert failed: ' + e.message, '#e07070', true);
               }
