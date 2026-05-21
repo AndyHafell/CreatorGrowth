@@ -234,6 +234,18 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     try:
+        # Auto-detected background color (#RRGGBB) for the current source image.
+        # Recomputed every time the image is replaced; used as the canvas fill for
+        # slideshow slides and padded letterbox bars.
+        conn.execute("ALTER TABLE diagrams ADD COLUMN bg_color_auto TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        # User override (#RRGGBB) set via the eyedropper / hex input. Wins over auto.
+        conn.execute("ALTER TABLE diagrams ADD COLUMN bg_color_override TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
         conn.execute("ALTER TABLE videos ADD COLUMN editor_state TEXT")
     except sqlite3.OperationalError:
         pass
@@ -3683,6 +3695,15 @@ def diagrams_patch(diagram_id):
         if mode_v not in ("reveal", "slideshow"):
             mode_v = "reveal"
         fields.append("mode=?"); values.append(mode_v)
+    if "bg_color_override" in payload:
+        raw = payload.get("bg_color_override")
+        if raw is None or raw == "":
+            fields.append("bg_color_override=?"); values.append(None)
+        else:
+            s = str(raw).strip()
+            if not (s.startswith("#") and len(s) == 7 and all(c in "0123456789abcdefABCDEF" for c in s[1:])):
+                return jsonify({"error": "bg_color_override must be a #RRGGBB hex string or empty"}), 400
+            fields.append("bg_color_override=?"); values.append(s.lower())
     if not fields:
         return jsonify({"error": "no fields to update"}), 400
     fields.append("updated_at=?")
@@ -3745,11 +3766,28 @@ def diagrams_upload_image(diagram_id):
     target = _diagram_dir(vid, diagram_id) / f"image.{ext}"
     f.save(str(target))
     rel = str(target.relative_to(Path(app.root_path)))
-    conn.execute("UPDATE diagrams SET image_path=?, updated_at=? WHERE id=?",
-                 (rel, datetime.now(timezone.utc).isoformat(), diagram_id))
+    # Auto-detect a default canvas/background color from the saved image. Stored so
+    # render and the studio UI agree on the "auto" pick. User can override via the
+    # eyedropper / hex input (-> bg_color_override).
+    bg_auto_hex = None
+    try:
+        with Image.open(target) as _bg_img:
+            _bg_rgb = _bg_img.convert("RGB")
+            r, g, b = _corner_bg_color(_bg_rgb, patch=40)
+            bg_auto_hex = "#{:02x}{:02x}{:02x}".format(int(r), int(g), int(b))
+    except Exception as e:
+        app.logger.warning("diagrams: bg color auto-detect failed: %s", e)
+    conn.execute(
+        "UPDATE diagrams SET image_path=?, bg_color_auto=?, updated_at=? WHERE id=?",
+        (rel, bg_auto_hex, datetime.now(timezone.utc).isoformat(), diagram_id),
+    )
     conn.commit()
     conn.close()
-    return jsonify({"image_path": rel, "image_path_url": "/" + rel})
+    return jsonify({
+        "image_path": rel,
+        "image_path_url": "/" + rel,
+        "bg_color_auto": bg_auto_hex,
+    })
 
 
 @app.route("/api/diagrams/<diagram_id>/audio", methods=["POST"])
@@ -4041,7 +4079,22 @@ def diagrams_render():
         # Pad the bottom so the HTML5 video player's control gradient sits over empty bg
         bottom_pad = int(min(120, max(60, H * 0.10)))
         bottom_pad -= bottom_pad % 2
-        canvas_bg_color = _corner_bg_color(img, patch=40)
+        # Priority: user override (eyedropper / hex) → stored auto → fresh compute.
+        canvas_bg_color = None
+        if diagram_row is not None:
+            for col in ("bg_color_override", "bg_color_auto"):
+                try:
+                    v = diagram_row[col]
+                except (IndexError, KeyError):
+                    v = None
+                if v and isinstance(v, str) and v.startswith("#") and len(v) == 7:
+                    try:
+                        canvas_bg_color = (int(v[1:3], 16), int(v[3:5], 16), int(v[5:7], 16))
+                        break
+                    except ValueError:
+                        continue
+        if canvas_bg_color is None:
+            canvas_bg_color = _corner_bg_color(img, patch=40)
         bg_path = work_dir / "bg.png"
         if mode == "reveal":
             bg_padded = Image.new("RGB", (W, H + bottom_pad), canvas_bg_color)

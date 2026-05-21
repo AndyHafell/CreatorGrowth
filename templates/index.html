@@ -2044,6 +2044,10 @@
                             <span id="diagramsMultiSelectStatus" style="display:none; color:#7ad17a; font-size:11px; letter-spacing:0.5px; padding:2px 8px; border:1px solid #2a4a2a; border-radius:10px; cursor:pointer;" onclick="clearMultiSelect()" title="Click to clear the group"></span>
                             <span style="color:#444; font-size:11px;">&middot; drag to draw &middot; click to select &middot; + to group &middot; right-click to delete</span>
                             <span style="flex:1;"></span>
+                            <span style="color:#666; font-size:10px; letter-spacing:1px; padding-left:6px;">BG</span>
+                            <div id="diagramsBgSwatch" style="width:20px; height:20px; border:1px solid #2a2a4a; border-radius:4px; background:#0a0a14; cursor:pointer;" onclick="toggleEyedropperMode()" title="Click then click on the image to sample a background color"></div>
+                            <input id="diagramsBgHex" type="text" placeholder="auto" maxlength="7" spellcheck="false" style="width:74px; background:transparent; border:1px solid #2a2a4a; color:#ddd; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; padding:3px 6px; border-radius:4px;" onchange="onBgHexInputChange()" title="Override the background color used for slideshow slides & padded bars">
+                            <button id="diagramsBgReset" onclick="resetBgColor()" title="Clear override — use auto-detected color" style="display:none; background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 9px; font-size:11px; cursor:pointer;">Reset bg</button>
                             <button id="diagramsModeToggle" onclick="toggleSlideshow()" title="Toggle slideshow mode (one slide at a time vs reveals)" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Slideshow mode</button>
                         </div>
                         <div id="diagramsCropToolbar" style="display:none; margin-top:10px; gap:10px; align-items:center; flex-wrap:wrap;">
@@ -5894,7 +5898,9 @@
             scriptStatus: '',
             resultUrl: row.result_url || '',
             resultMeta: row.result_meta || null,
-            mode: row.mode || 'reveal'
+            mode: row.mode || 'reveal',
+            bg_color_auto: row.bg_color_auto || '',
+            bg_color_override: row.bg_color_override || ''
         };
     }
     function toggleSlideshow() {
@@ -6233,6 +6239,13 @@
             multiSelectedIdxs.clear();
             _updateMultiSelectStatus();
         }
+        // Eyedropper is a transient UI mode — don't carry it across diagram switches.
+        if (diagramEyedropperMode) {
+            diagramEyedropperMode = false;
+            var _layer = document.getElementById('diagramsBoxLayer');
+            if (_layer) _layer.style.cursor = 'crosshair';
+        }
+        if (typeof updateBgUI === 'function') updateBgUI();
         renderBoxes();
         renderBoxAnimList();
 
@@ -6306,12 +6319,16 @@
             .then(function(res) {
                 if (!res.ok) { setStudioStatus('Upload failed: ' + (res.body.error||''), '#e07070'); return; }
                 d.imageUrl = res.body.image_path_url;
+                if (res.body.bg_color_auto !== undefined) {
+                    d.bg_color_auto = res.body.bg_color_auto;
+                }
                 // boxes were cleared client-side; persist that too
                 d.boxes = [];
                 _apiPatch(d.id, { boxes: [] }).catch(function(){});
                 // swap to server URL (cache-busted)
                 document.getElementById('diagramsImage').src = res.body.image_path_url + '?t=' + Date.now();
                 setStudioStatus('Saved', '#4caf50');
+                if (typeof updateBgUI === 'function') updateBgUI();
                 renderSidebar();
             })
             .catch(function(err) { setStudioStatus('Upload error: ' + err, '#e07070'); });
@@ -6352,6 +6369,9 @@
         if (idx < 0) return;
         var d = diagramsList[idx];
         d.imageUrl = msg.image_path_url;
+        if (msg.bg_color_auto !== undefined) {
+            d.bg_color_auto = msg.bg_color_auto;
+        }
         // miniPaint may resize/crop the canvas → existing box coords are no longer trustworthy.
         d.boxes = [];
         _apiPatch(d.id, { boxes: [] }).catch(function(){});
@@ -6362,6 +6382,7 @@
             diagramBoxes = [];
             if (typeof renderBoxes === 'function') renderBoxes();
             if (typeof renderBoxAnimList === 'function') renderBoxAnimList();
+            if (typeof updateBgUI === 'function') updateBgUI();
             setStudioStatus('Image updated from Paint — boxes cleared', '#4caf50');
         }
         renderSidebar();
@@ -6506,6 +6527,112 @@
         }, 'image/png');
     }
 
+    // ---- background-color picker (auto-detected default + eyedropper + hex override) ----
+    var diagramEyedropperMode = false;
+
+    function _normalizeHex(s) {
+        if (!s) return '';
+        s = String(s).trim().toLowerCase();
+        if (s[0] !== '#') s = '#' + s;
+        if (!/^#[0-9a-f]{6}$/.test(s)) return '';
+        return s;
+    }
+    function updateBgUI() {
+        var d = diagramsList[activeDiagramIdx];
+        var swatch = document.getElementById('diagramsBgSwatch');
+        var input = document.getElementById('diagramsBgHex');
+        var resetBtn = document.getElementById('diagramsBgReset');
+        if (!swatch || !input) return;
+        var override = d && d.bg_color_override ? _normalizeHex(d.bg_color_override) : '';
+        var auto = d && d.bg_color_auto ? _normalizeHex(d.bg_color_auto) : '';
+        var effective = override || auto;
+        swatch.style.background = effective || '#0a0a14';
+        swatch.style.borderColor = diagramEyedropperMode ? '#f5b942' : '#2a2a4a';
+        swatch.title = diagramEyedropperMode
+            ? 'Eyedropper active — click on the image to sample a color. Click swatch again to cancel.'
+            : (override
+                ? 'Override: ' + override + ' (click to re-sample)'
+                : (auto ? 'Auto: ' + auto + ' (click to override via eyedropper)' : 'Click to sample a bg color from the image'));
+        if (override) {
+            input.value = override;
+            input.style.color = '#f5b942';
+        } else {
+            input.value = auto || '';
+            input.placeholder = 'auto';
+            input.style.color = '#666';
+        }
+        if (resetBtn) resetBtn.style.display = override ? 'inline-block' : 'none';
+    }
+    function toggleEyedropperMode() {
+        var d = diagramsList[activeDiagramIdx];
+        if (!d || !d.imageUrl) {
+            setStudioStatus('Upload an image first', '#e07070');
+            return;
+        }
+        diagramEyedropperMode = !diagramEyedropperMode;
+        var layer = document.getElementById('diagramsBoxLayer');
+        if (layer) layer.style.cursor = diagramEyedropperMode ? 'cell' : 'crosshair';
+        updateBgUI();
+        setStudioStatus(diagramEyedropperMode ? 'Click on the image to sample a bg color (Esc to cancel)' : '', '#f5b942');
+    }
+    function _sampleBgFromEvent(e) {
+        var img = document.getElementById('diagramsImage');
+        var layer = document.getElementById('diagramsBoxLayer');
+        if (!img || !img.naturalWidth) return;
+        var r = layer.getBoundingClientRect();
+        var fx = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+        var fy = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
+        var px = Math.max(0, Math.min(img.naturalWidth - 1, Math.floor(fx * img.naturalWidth)));
+        var py = Math.max(0, Math.min(img.naturalHeight - 1, Math.floor(fy * img.naturalHeight)));
+        try {
+            var c = document.createElement('canvas');
+            c.width = 1; c.height = 1;
+            var ctx = c.getContext('2d');
+            ctx.drawImage(img, px, py, 1, 1, 0, 0, 1, 1);
+            var pd = ctx.getImageData(0, 0, 1, 1).data;
+            var hex = '#' + [pd[0], pd[1], pd[2]].map(function(v) {
+                var h = v.toString(16);
+                return h.length === 1 ? '0' + h : h;
+            }).join('');
+            _setBgOverride(hex);
+            // One-shot sample — exit eyedropper after a successful pick.
+            if (diagramEyedropperMode) toggleEyedropperMode();
+        } catch (err) {
+            setStudioStatus('Could not sample pixel: ' + err.message, '#e07070');
+        }
+    }
+    function onBgHexInputChange() {
+        var input = document.getElementById('diagramsBgHex');
+        if (!input) return;
+        var raw = input.value.trim();
+        if (raw === '') { resetBgColor(); return; }
+        var hex = _normalizeHex(raw);
+        if (!hex) {
+            setStudioStatus('Invalid hex — use #RRGGBB', '#e07070');
+            updateBgUI();
+            return;
+        }
+        _setBgOverride(hex);
+    }
+    function _setBgOverride(hex) {
+        var d = diagramsList[activeDiagramIdx];
+        if (!d) return;
+        d.bg_color_override = hex;
+        updateBgUI();
+        _apiPatch(d.id, { bg_color_override: hex })
+            .then(function() { setStudioStatus('BG color → ' + hex, '#4caf50'); })
+            .catch(function(err) { setStudioStatus('BG save failed: ' + err, '#e07070'); });
+    }
+    function resetBgColor() {
+        var d = diagramsList[activeDiagramIdx];
+        if (!d) return;
+        d.bg_color_override = null;
+        updateBgUI();
+        _apiPatch(d.id, { bg_color_override: '' })
+            .then(function() { setStudioStatus('BG color → auto', '#4caf50'); })
+            .catch(function(err) { setStudioStatus('BG reset failed: ' + err, '#e07070'); });
+    }
+
     // ---- lasso (polygon shape) mode ----
     var diagramLassoMode = false;
     var diagramLassoPoints = []; // [{x,y}] in fractions of layer (0..1)
@@ -6619,6 +6746,11 @@
     }
 
     function boxLayerDown(e) {
+        if (diagramEyedropperMode) {
+            _sampleBgFromEvent(e);
+            e.preventDefault();
+            return;
+        }
         if (diagramLassoMode) {
             // Single click adds a vertex. Double-click handled separately on the layer.
             _lassoAddPointFromEvent(e);
@@ -7075,6 +7207,11 @@
             if (selectedBoxIdx < 0 && multiSelectedIdxs.size === 0) return;
             ev.preventDefault();
             applyAnimToSelected(KEY_TO_ANIM[kLower]);
+            return;
+        }
+        if (diagramEyedropperMode && k === 'Escape') {
+            ev.preventDefault();
+            toggleEyedropperMode();
             return;
         }
         if (diagramLassoMode) {
