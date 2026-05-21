@@ -2840,7 +2840,7 @@
 
         function updateCounts() {
             const counts = { options: 0, best: 0, brief: 0, packaging: 0, script: 0, edited: 0, published: 0, archived: 0 };
-            videos.forEach(v => { counts[v.status] = (counts[v.status] || 0) + 1; });
+            videos.forEach(v => { if (!v.tucked) counts[v.status] = (counts[v.status] || 0) + 1; });
             document.getElementById('countOptions').textContent = counts.options;
             document.getElementById('countBest').textContent = counts.best;
             document.getElementById('countBrief').textContent = counts.brief;
