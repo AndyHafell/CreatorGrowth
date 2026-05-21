@@ -320,12 +320,19 @@
       }
 
       // Show buttons only when the rectangle-selection tool is active.
-      // miniPaint writes the active tool name to the "active_tool" cookie on change.
+      // miniPaint adds the tool name as a CSS class on the active toolbar item:
+      //   <a class="item trn active selection">…</a>
+      function getActiveToolName() {
+        var el = document.querySelector('#tools_container .item.active');
+        if (!el) return null;
+        for (var i = 0; i < el.classList.length; i++) {
+          var c = el.classList[i];
+          if (c !== 'item' && c !== 'trn' && c !== 'active') return c;
+        }
+        return null;
+      }
       function isSelectionToolActive() {
-        try {
-          var m = document.cookie.match(/(?:^|;\s*)active_tool=([^;]+)/);
-          return !!m && decodeURIComponent(m[1]) === 'selection';
-        } catch (e) { return false; }
+        return getActiveToolName() === 'selection';
       }
       function syncVisibility() {
         actions.style.display = isSelectionToolActive() ? 'flex' : 'none';
