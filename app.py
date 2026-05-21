@@ -8239,12 +8239,18 @@ def editor_bootstrap(vid):
     except sqlite3.OperationalError:
         pass
     conn.close()
+    todo_doc = _read_doc_field(custom_fields, "Screen Share To-Do")
     return jsonify({
         "vid": vrow["id"],
         "video_id": vrow["video_id"],
         "title": vrow["title"] or f"Video {vid}",
         "content_doc": _read_doc_field(custom_fields, "Content Doc"),
         "bullet_doc": _read_doc_field(custom_fields, "Bullet Doc"),
+        "screen_share_todo": {
+            "text": todo_doc.get("text", ""),
+            "rel_path": todo_doc.get("rel_path", ""),
+            "scenes": _parse_todo_scenes(todo_doc.get("text", "")),
+        },
         # Back-compat with the first bridge build that read text-only fields.
         "content_doc_text": _read_doc_field(custom_fields, "Content Doc")["text"],
         "bullet_doc_text": _read_doc_field(custom_fields, "Bullet Doc")["text"],
@@ -8507,6 +8513,152 @@ def render_editor_timeline(vid):
                         "trace": traceback.format_exc()[-1500:]}), 500
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+# ── Screen-Share Slicer ─────────────────────────────────────────────────────
+# Raw screen-share mp4 → N segments where N = scene count in the card's
+# Screen Share To-Do. v1: uniform-time boundaries; user nudges in the slicer
+# UI. v2 may add ffmpeg scene-detect snap once we know how far off uniform is.
+
+_SCENE_HEADER_RE = re.compile(r"^###\s+Scene\s+(\d+):\s*(.*?)\s*$", re.MULTILINE)
+
+
+def _parse_todo_scenes(md_text):
+    """Pull scene headers out of a Screen Share To-Do markdown.
+
+    Returns [{"index": int, "title": str}, ...]. Empty list if no headers
+    or only the unfilled template placeholder is present.
+    """
+    if not md_text:
+        return []
+    scenes = []
+    for m in _SCENE_HEADER_RE.finditer(md_text):
+        idx = int(m.group(1))
+        title = (m.group(2) or "").strip()
+        if title.startswith("[") and "tied to a brief field" in title.lower():
+            title = f"Scene {idx}"
+        scenes.append({"index": idx, "title": title or f"Scene {idx}"})
+    return scenes
+
+
+def _ffprobe_duration(src):
+    """Float seconds for an mp4 (local path or https URL), or None on failure."""
+    cmd = ["ffprobe", "-v", "error",
+           "-show_entries", "format=duration",
+           "-of", "default=noprint_wrappers=1:nokey=1",
+           str(src)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        return float(r.stdout.strip())
+    except (subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _uniform_boundaries(duration, n_segments):
+    """For N segments, return N-1 boundary timestamps at equal intervals."""
+    if n_segments < 2 or duration <= 0:
+        return []
+    return [round(duration * (i + 1) / n_segments, 2) for i in range(n_segments - 1)]
+
+
+@app.route("/api/videos/<int:vid>/screen-share/detect", methods=["POST"])
+def screen_share_detect(vid):
+    """Detect cut boundaries for a raw screen-share video.
+
+    Body: {"src_url": "<https url or local path>"}
+    Returns: {src_url, duration, scenes:[{index,title}], boundaries:[float]}
+    Boundaries are uniformly spaced; scene count comes from the card's
+    Screen Share To-Do. The slicer UI lets the user nudge each boundary.
+    """
+    body = request.get_json(silent=True) or {}
+    src = (body.get("src_url") or "").strip()
+    if not src:
+        return jsonify({"error": "src_url required"}), 400
+
+    conn = get_db()
+    det = conn.execute(
+        "SELECT custom_fields FROM video_details WHERE video_id = ?", (vid,)
+    ).fetchone()
+    conn.close()
+    fields = json.loads(det["custom_fields"]) if det and det["custom_fields"] else []
+    todo_doc = _read_doc_field(fields, "Screen Share To-Do")
+    scenes = _parse_todo_scenes(todo_doc.get("text", ""))
+    if not scenes:
+        return jsonify({"error": "no Screen Share To-Do scenes found for this card"}), 400
+
+    duration = _ffprobe_duration(src)
+    if duration is None or duration <= 0:
+        return jsonify({"error": "ffprobe could not read duration from src",
+                        "src_url": src}), 400
+
+    return jsonify({
+        "src_url": src,
+        "duration": round(duration, 2),
+        "scenes": scenes,
+        "boundaries": _uniform_boundaries(duration, len(scenes)),
+    })
+
+
+@app.route("/api/videos/<int:vid>/screen-share/cut", methods=["POST"])
+def screen_share_cut(vid):
+    """Cut the raw screen-share into N segments at user-accepted boundaries.
+
+    Body: {"src_url": "...", "boundaries": [t1, t2, ...], "scenes": [...]}
+    Returns: {job_id, clips: [{url, start, end, duration, scene_index, scene_title}]}
+    Uses -c copy → fast, but cuts snap to nearest keyframe (±2s typical for
+    screen recordings). Re-encode mode can be added if frame-exact cuts matter.
+    """
+    body = request.get_json(silent=True) or {}
+    src = (body.get("src_url") or "").strip()
+    raw_boundaries = body.get("boundaries") or []
+    scenes = body.get("scenes") or []
+    if not src:
+        return jsonify({"error": "src_url required"}), 400
+
+    duration = _ffprobe_duration(src)
+    if duration is None or duration <= 0:
+        return jsonify({"error": "ffprobe could not read duration from src"}), 400
+
+    cuts = sorted({round(float(b), 3) for b in raw_boundaries if 0 < float(b) < duration})
+    edges = [0.0] + cuts + [float(duration)]
+    segments = list(zip(edges[:-1], edges[1:]))
+
+    job_id = uuid.uuid4().hex[:12]
+    out_dir = Path(app.root_path) / "static" / "uploads" / "screen-share" / f"v{vid}" / job_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    clips = []
+    for i, (start, end) in enumerate(segments):
+        dur = end - start
+        if dur <= 0.05:
+            continue
+        out_path = out_dir / f"clip_{i+1:02d}.mp4"
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", f"{start:.3f}",
+            "-i", src,
+            "-t", f"{dur:.3f}",
+            "-c", "copy",
+            "-avoid_negative_ts", "make_zero",
+            "-movflags", "+faststart",
+            str(out_path),
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        if r.returncode != 0:
+            return jsonify({"error": f"ffmpeg cut segment {i+1} failed",
+                            "stderr": r.stderr[-1500:]}), 500
+        rel = str(out_path.relative_to(Path(app.root_path)))
+        scene = scenes[i] if i < len(scenes) else {}
+        clips.append({
+            "url": "/" + rel,
+            "start": round(start, 2),
+            "end": round(end, 2),
+            "duration": round(dur, 2),
+            "scene_index": scene.get("index", i + 1),
+            "scene_title": scene.get("title", f"Scene {i+1}"),
+        })
+
+    return jsonify({"job_id": job_id, "clips": clips})
 
 
 if __name__ == "__main__":
