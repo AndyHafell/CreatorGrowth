@@ -230,6 +230,10 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     try:
+        conn.execute("ALTER TABLE diagrams ADD COLUMN vision_keywords TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
         conn.execute("ALTER TABLE videos ADD COLUMN editor_state TEXT")
     except sqlite3.OperationalError:
         pass
@@ -707,7 +711,7 @@ def add_video():
 def update_status(vid):
     data = request.get_json(force=True)
     new_status = data.get("status", "options")
-    if new_status not in ("options", "best", "packaging", "script", "edited", "archived", "published"):
+    if new_status not in ("options", "best", "brief", "packaging", "script", "edited", "archived", "published"):
         return jsonify({"error": "Invalid status"}), 400
     conn = get_db()
     conn.execute("UPDATE videos SET status = ? WHERE id = ?", (new_status, vid))
@@ -1874,6 +1878,47 @@ USE THIS DATA when evaluating the brief:
 """
 
 
+def _claude_json_call(system_text, user_text, model="claude-sonnet-4-6", max_tokens=4000, timeout=60):
+    """Call Claude Messages API with a JSON-mode contract.
+    Returns the parsed JSON dict on success, or None on failure (caller falls back).
+    Uses ANTHROPIC_API_KEY from env.
+    """
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return None
+    body = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": system_text + "\n\nReturn ONLY a valid JSON object — no preamble, no markdown fences, no commentary outside the JSON.",
+        "messages": [{"role": "user", "content": user_text}],
+    }
+    req = Request(
+        "https://api.anthropic.com/v1/messages",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["content"][0]["text"]
+        # Strip optional ```json fences if model added them despite instruction
+        text = text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        return json.loads(text)
+    except (HTTPError, URLError, KeyError, IndexError, json.JSONDecodeError, TypeError) as e:
+        print(f"[claude] call failed: {type(e).__name__}: {e}", flush=True)
+        return None
+
+
 def _gemini_fill_brief(title, channel, views_fmt, outlier_fmt, video_id, description):
     """Call Gemini to fill a structured brief. Returns a dict with all 11 brief fields, or None on failure."""
     from urllib.request import urlopen, Request
@@ -1890,7 +1935,7 @@ His Q2 framework is ACD: Attraction (subs) / Conversion (free→paid) / Delivery
 
 **The winning content pattern (proven by YTD data):** authority hacking — piggyback on a NAMED external god-mode source (e.g. Karpathy, Anthropic, a specific repo/framework) with the source ON STAGE, then apply it to a working system with measurable proof. The "source's source" rule: don't piggyback on the inspiration creator — go upstream to what THEY were citing. That's the OG authority.
 
-His on-camera workspace invariant: every Claude Code demo runs inside AgentFlow (Docs tab visible, skills/ folder showcased), not Terminal or VS Code.
+His on-camera workspace: AgentFlow is the preferred workspace when it fits, but the editor and most of the audience use other workspaces. Acceptable workspaces (pick whichever fits the topic + audience best): AgentFlow's Docs tab, Visual Studio Code (Cursor counts), Claude Code CLI in iTerm/Terminal, Claude Desktop app. Don't force AgentFlow into every brief — if the video's topic is genuinely a tool that lives outside AgentFlow (Spline, AntiGravity, web tools), the workspace shown should be whatever the audience would actually use to follow along (usually VS Code or Claude Desktop).
 
 Skool gift rule: every video closes with a fork-able artifact (template, skills pack, repo, workflow) — not a demo, a real product the audience can grab.
 
@@ -1900,31 +1945,87 @@ Tool-launch videos produce ~5x bigger paying cohorts than tips videos. Default p
     field_specs = """
 You will return a JSON object with these exact keys. Each value is plain text (no markdown, no quotes inside unless needed for natural prose). Be specific, opinionated, and concise — these are decisions Andy will review, not menus of options.
 
-1. "inspiration_plot" — 3-5 sentence summary of what the inspiration video ACTUALLY covers (the plot/narrative). Andy should be able to absorb the source video's gist in 15 seconds without watching it. Include the central thesis, the main framework/rules/steps the creator introduces (NAME them explicitly — "Rule #1: X, Rule #2: Y…"), the tools or examples they show, and the closing payoff. Use the YouTube description's timestamps/chapter list as your structural guide if present. Be concrete, not vague. NEVER say "discusses prompt engineering best practices" — say "extracts 4 rules: (1) Prompt Skills not Claude, (2) Skills are more than prompts, (3) Build composable skills, (4) Skills get smarter every session."
+**VOICE — applies to every field:** Write in **second-person imperative**, addressing Andy directly. "First, open Anthropic's Skills docs. Then switch to AgentFlow…" NEVER write "Andy will open…" / "Andy opens…" / "Anders integrates…" — that third-person reporter voice reads cold. The brief is Andy talking to Andy. Where it adds finesse, use **but/so storytelling** to give a narrative beat (e.g. "You could just transcribe the source, but that's a re-upload — so instead you apply it to your skills/ folder where 37 SOPs already exist"). Tight, direct, conversational. Cut anything that sounds like a press release.
 
-2. "sources_source" — The ORIGINAL tool / blog post / video / tweet the inspiration creator was citing. If the inspiration video's description has a direct link, use it. If not, NAME the most likely upstream source explicitly (e.g. "Anthropic's official Skills documentation + Oct 2025 launch blog"). Never say "unknown."
+1. "inspiration_plot" — 3-5 sentence summary of what the inspiration video ACTUALLY covers (the plot/narrative). You should absorb the source video's gist in 15 seconds without watching it. Include the central thesis, the main framework/rules/steps the creator introduces (NAME them explicitly — "Rule #1: X, Rule #2: Y…"), the tools or examples they show, and the closing payoff. Use the YouTube description's timestamps/chapter list as a structural guide if present. Be concrete, not vague. NEVER say "discusses prompt engineering best practices" — say "extracts 4 rules: (1) Prompt Skills not Claude, (2) Skills are more than prompts, (3) Build composable skills, (4) Skills get smarter every session." (Voice exception: this field describes the source video, so it can be in third-person referring to the inspiration creator — but don't refer to Andy as "Andy.")
+
+2. "screen_share_todo" — **A JSON array of 3-7 step strings** (sweet spot is 5). Each item is a **high-level milestone** that fits in 1-3 minutes of screen-share time, written in second-person imperative, that chains its concrete micro-actions inline. Total filming time across all steps: 10-15 minutes max.
+
+### HARD RULES — VIOLATING ANY OF THESE FAILS THE BRIEF
+
+**Rule 1 — Use existing tools' shipped features, NOT custom code Andy has to write on camera.** If the video is about Tool X, the steps use Tool X's actual UI, prompts, buttons, and outputs. Andy is NOT writing a new Python/Claude-Code skill on camera unless the entire video is explicitly about writing that skill (build-a-skill tutorials are the only exception).
+
+   - GOOD: "In AntiGravity, prompt the website build using your Spline asset; let it generate."
+   - BAD: "Write a Claude Code skill that takes a Spline export path and integrates it into a placeholder in an AntiGravity-generated website structure." (This is a 4-hour engineering task, not a screen-share step.)
+
+**Rule 2 — No step that requires Andy to write working code mid-take.** Writing code IS allowed only if (a) the code is ≤5 lines AND visibly trivial, OR (b) the code is pre-written and Andy is showing a pre-existing file. Never "write a simple skill that does X" as a single step — that's not a step, that's a multi-hour task.
+
+**Rule 3 — Each step must be doable in ~1-3 minutes of screen time.** If a step's success depends on a creative/engineering output ("write a skill that does Y", "design a 3D scene that looks great", "remix a simple object"), it FAILS this rule. Those need to either (a) be pre-baked before filming and the step is "show the pre-built thing," or (b) be split into "open the tool → click button → tool generates it."
+
+**Rule 4 — Don't force Claude Code skills into every video.** If the video's topic is Tool X (Spline, AntiGravity, etc.), the proof is using Tool X's actual features, NOT building a Claude-Code wrapper around it. The skills/ folder showcase is fine when the brief's topic IS skills; otherwise, AgentFlow appears as the workspace/file-viewer, not as the framework being demoed.
+
+**Rule 5 — Skool gift = packaging EXISTING artifacts, not creating new ones.** The gift is your existing skills/, an existing template, an existing repo — zipped and dropped into Skool. NOT "write a brand new skill pack on camera."
+
+### Step shape
+   - **Clear milestone, not a creative leap.** GOOD: "Open Chrome, go to spline.design, sign in, create a new project, and pick the 3D website template." BAD: "Remix a simple 3D object" — that leaves Andy lost on what to remix.
+   - **Doable from the prior step's state.** If step 4 needs a file, step 2 created it (or it pre-exists on Andy's machine — assume the skills/ folder, ~/Documents/Claude Folder/, AgentFlow, Chrome, Spline account already exist).
+   - **Anchored to real apps, URLs, file paths, button names.**
+   - **Sequential.** Step N+1 builds on step N's state. Zero to end-result.
+
+3-7 milestones total. Sweet spot is 5. Don't pad with sub-actions — those belong in the Screen Share To-Do doc.
+
+### GOOD example (AntiGravity + Spline video):
+```
+[
+  "Open Chrome, go to spline.design, sign in, and create a new project from the 3D website template.",
+  "In a second tab, open antigravity.ai, sign in, and connect the Spline asset from step 1.",
+  "In AntiGravity, type the website prompt and click Generate; let it build the site with your Spline asset embedded.",
+  "Switch to AgentFlow's Docs tab, open ~/Documents/Claude Folder/skills/, zip 3 site-building SOPs as the Skool gift, and drop the zip into a new Skool classroom post draft.",
+  "Open the deployed AntiGravity URL in Chrome and show the 3D site running live with the Spline asset rotating."
+]
+```
+
+### BAD example — this is what to AVOID:
+```
+[
+  "Showcase a few stunning 3D website examples from Spline's gallery.",  // vague — what does showcase mean?
+  "Create a new Claude Code skill file named spline_asset_generator.py.", // unjustified — why are we writing code for a Spline video?
+  "Write a simple Claude Code skill that takes a text prompt and outputs a JSON object describing a 3D asset.", // multi-hour task pretending to be a step
+  "Run the skill in AgentFlow's terminal, showing the successful execution."  // depends on the unrealistic prior step
+]
+```
+
+Pick the workspace that fits the audience for this video (AgentFlow / VS Code / Claude Code CLI / Claude Desktop). Don't force AgentFlow if VS Code or Claude Desktop is what the audience would actually use. MUST include the Skool gift reveal moment.
+
+**CRITICAL — proof-segment rule (locked 2026-05-19):** The FINAL step MUST be a **demonstrable end-result** voiceover can point to and say "look, it works." Acceptable: built thing running on real input / item installed + tested working in real environment / test outcome on real input / side-by-side comparison rendered / finished tutorial workflow on a real artifact. If you cannot name a demonstrable end-result step, include "PROOF SEGMENT MISSING" as the final step — the brief fails the gate. React-only setups DO NOT QUALIFY — they need a build/test tail.
+
+This array is the glanceable brief outline only, NOT the deep scene plan (that lives in the separate Screen Share To-Do doc, where each milestone here becomes its own multi-action scene).
+
+2b. "end_result" — ONE sentence (or 2 max) describing the **literal proof shot** the final step produces. This is the "look at this" moment Andy points to in the intro to hook the viewer + the credibility shot he references mid-video + the evidence drop in the Skool post. Sometimes it's simple (a live website scrolling), sometimes complex (a test passing on real input). Be concrete and visual — describe what's actually on screen, framed as the payoff. Example: "The deployed AntiGravity site running live in Chrome, with the Spline 3D asset rotating in the hero section as you scroll." NOT a re-summary of the last step — the SHOT itself, written as a single moment of proof.
+
+3. "sources_source" — The ORIGINAL tool / blog post / video / tweet the inspiration creator was citing. If the inspiration video's description has a direct link, use it. If not, NAME the most likely upstream source explicitly (e.g. "Anthropic's official Skills documentation + Oct 2025 launch blog"). Never say "unknown."
 
 3. "why_god_mode" — One sentence on why the source's source carries authority. Reference views/stars/credibility/scarcity.
 
 4. "frame" — One of: "react" / "breakdown" / "apply" / "contradict". Default to "breakdown" with source-on-stage YES unless the topic clearly demands a different frame. Include "source-on-stage: yes" or "source-on-stage: no" at the end.
 
-5. "differentiator" — ONE LINE on how Andy' angle is meaningfully different from the inspiration video. Must reference a concrete asset Andy has that the inspiration creator doesn't — his production skills/ folder (37 SOPs), AgentFlow workspace, the AI Mate community, his content pipeline. NEVER say "I'll do it better" — name the structural gap.
+5. "differentiator" — ONE LINE in **second-person**: how YOUR angle is meaningfully different from the inspiration video. Must reference a concrete asset you have that the inspiration creator doesn't — your production skills/ folder (37 SOPs), AgentFlow workspace, the AI Mate community, your content pipeline. NEVER say "I'll do it better" or "Andy will…" — name the structural gap directly. Example shape: "You have 37 production SOPs running your actual business; they have a slide deck."
 
-6. "my_angle" — One sentence on what Andy adds to the source's source (his application, his workspace, his lens).
+6. "my_angle" — One sentence in **second-person**: what YOU add to the source's source (your application, your workspace, your lens). E.g. "You run Anthropic's Skills rules against your actual production folder, not toy examples."
 
-7. "skool_gift" — A concrete fork-able artifact tied to the topic. Examples: "Skills Starter Pack — 5 of Andy' production SOPs packaged for fork" / "Eval Criteria Template (12 binary)" / "Thumbnail Generator skill pack." Be specific; this is the Skool CTA.
+7. "skool_gift" — A concrete fork-able artifact tied to the topic. Phrase in **second-person**: "Drop your Skills Starter Pack — 5 production SOPs members can fork" / "Hand them the Eval Criteria Template (12 binary checks)" / "Ship your Thumbnail Generator skill pack." Be specific; this is the Skool CTA.
 
 8. "acd_lever" — "Attraction" / "Conversion" / "Delivery". Authority-anchored videos lean Attraction.
 
-9. "tool_tie_in" — Which Andy tool naturally showcases here. Default "AgentFlow" if any Claude Code workflow is shown (his workspace invariant). Otherwise CreatorGrowth / Content Mate / etc., or "none — pure tips video" (flag as a risk).
+9. "tool_tie_in" — Which of YOUR tools naturally showcases here. Default "AgentFlow" if any Claude Code workflow is shown (your workspace invariant). Otherwise CreatorGrowth / Content Mate / etc., or "none — pure tips video" (flag as a risk).
 
 10. "demand_check" — Cite the inspiration video itself as the demand proof (title + view count + days since publish if known). If you know of a sibling video that also crossed 10K, name it.
 
-11. "one_liner" — Single plain-English sentence that passes the cab test: "what is this video about?" Should name the source's source + Andy' angle.
+11. "one_liner" — Single plain-English sentence in **second-person** that passes the cab test: "what is this video about?" Names the source's source + your angle. E.g. "You take Anthropic's official Skills rules and run them against your real production folder so the audience can fork it."
 
-12. "filming_notes" — 2-4 short bullets for the content-doc stage: opening shot (which source is on screen), what NOT to do (don't name the inspiration creator), how each source-rule maps to a real skill in Andy's folder, where the Skool CTA lands.
+12. "filming_notes" — 2-4 short bullets for the content-doc stage, in **second-person imperative**: "Open with the Anthropic Skills doc, not the inspiration video." / "Don't name the inspiration creator on camera." / "Map each rule to a real skill in your skills/ folder." / "Drop the Skool CTA at the 50% mark and again at the end."
 
-13. "final_thoughts" — 3-5 sentence honest editorial verdict on this brief. NOT a re-summary of the fields above. Answer: Is this idea genuinely worth Andy's time, or is it a "looks good on paper" idea? What's the biggest risk (e.g. inspiration video might be peaking, source's source might be too obscure, audience overlap concerns, redundancy with Andy's recent uploads)? What's the strongest reason to ship it? End with a one-line confidence call: "Ship it" / "Ship with caveat: …" / "Pause and rework: …" — be direct, not diplomatic.
+13. "final_thoughts" — 3-5 sentence honest editorial verdict in **second-person**, like a sharp friend reading the brief over your shoulder. NOT a re-summary of the fields above. Weigh: (a) authority hacking strength — is the source's source a real god-mode anchor? (b) audience overlap — does this duplicate a recent upload? (c) **PROOF-SEGMENT QUALITY** — does the screen_share_todo end with a real demonstrable end-result, or is it react-only / vague? Per the May 19 footage rule, react-only without a build/test tail is an automatic "Pause and rework." (d) channel format fit — does this match the winning vein in your top performers? Use but/so beats where useful ("The Anthropic anchor is strong, but your last upload was already a Claude Code skill demo — so the angle has to lean hard on production-scale vs Austin's slides"). End with a one-line confidence call: "Ship it" / "Ship with caveat: …" / "Pause and rework: …" — direct, not diplomatic.
 """
 
     user_prompt = f"""Inspiration video:
@@ -1943,6 +2044,12 @@ Video description (verbatim from YouTube):
 
 Return ONLY the JSON object. No preamble, no markdown fences, no commentary."""
 
+    # Primary: Claude Sonnet 4.6 (better at following negative rules like "no engineering tasks disguised as steps")
+    claude_result = _claude_json_call(project_context, user_prompt, model="claude-sonnet-4-6", max_tokens=4000)
+    if claude_result is not None:
+        return claude_result
+
+    # Fallback: Gemini 2.5 Flash
     body = {
         "contents": [{
             "parts": [
@@ -2028,12 +2135,260 @@ def link_card_to_youtube(vid):
     })
 
 
+def _read_brief_for_card(conn, card_id):
+    """Read the Brief Doc markdown attached to a card, if any. Returns '' on miss."""
+    row = conn.execute(
+        "SELECT custom_fields FROM video_details WHERE video_id = ?", (card_id,)
+    ).fetchone()
+    if not row or not row["custom_fields"]:
+        return ""
+    try:
+        fields = json.loads(row["custom_fields"])
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    brief_path = None
+    for f in fields:
+        if f.get("key") == "Brief Doc" and f.get("value"):
+            brief_path = f["value"]
+            break
+    if not brief_path:
+        return ""
+    filepath = CONTENT_DIR / brief_path
+    try:
+        return filepath.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def _gemini_fill_screen_share_todo(title, brief_md):
+    """Call Gemini to produce a structured screen-share to-do from the brief.
+    Returns a dict with pre_production_checklist, scenes, open_questions — or None on failure.
+    """
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return None
+
+    project_context = """
+You are filling a SCREEN-SHARE TO-DO for AI Andy — a tactical pre-production document that maps every on-screen moment of an upcoming YouTube video to a concrete app/URL/cursor action. The to-do is read by Andy right before filming. The content doc (separate artifact) wraps narration around what this to-do says will be on screen.
+
+Andy's on-camera workspace: AgentFlow is preferred when it fits, but the audience + editor mostly use other workspaces. Acceptable workspaces — pick whichever fits the topic best: AgentFlow's Docs tab, Visual Studio Code (Cursor counts), Claude Code CLI in iTerm/Terminal, Claude Desktop app. Don't force AgentFlow if the video's topic is a tool that lives outside it (Spline, AntiGravity, web tools) — use the workspace the audience would actually use to follow along (usually VS Code or Claude Desktop). His skills/ folder lives at ~/Documents/Claude Folder/skills/ with 37 production SOPs (CONTENT_DOC_PROCESS, PACKAGING_EXPERT, THUMBNAIL_SYSTEM, BRIEF_DOC_PROCESS, etc.).
+
+Rules you MUST encode:
+- The brief's "Source's source" gets at least one dedicated scene with that source visible on screen.
+- Each scene = ONE screen state. App switches = new scenes.
+- "Pre-work" is hard-required — if a scene needs a file/tab/account, list it in the pre-production checklist.
+- One-line voice-over notes max per scene (the content doc handles the real script).
+- Be LITERAL — "scroll to line 42 of skills/PACKAGING_EXPERT_SOP.md" not "show the skills file."
+
+**VOICE — second-person imperative throughout.** Address Andy directly. "Open Chrome. Switch to AgentFlow. Click on the Skills tab." NEVER "Andy opens…" or "Anders switches…" — the to-do is Andy talking to Andy from the future.
+"""
+
+    field_specs = """
+Return JSON with these exact keys.
+
+**TIGHTNESS RULE — most important rule in this prompt:**
+Every string field must be a SHORT, BLUNT imperative — ideally 3-8 words, max ~12 words. NO explanatory clauses, NO "confirm that…", NO "verify that…", NO commentary, NO "this allows you to…". Just the action.
+
+GOOD examples:
+- "Go to spline.design"
+- "Click 'New Project'"
+- "Sign in with Google"
+- "Copy the public share URL"
+- "Switch to AntiGravity tab"
+- "Paste the Spline URL into the prompt box"
+- "Click Generate"
+
+BAD examples (NEVER do this):
+- "Create a Spline account at spline.design and log in — confirm you can access the Community/Templates section and the 3D Website template category."  (way too long, tail commentary)
+- "Verify the Spline public share URL actually renders the 3D object in a plain Chrome tab (no login wall) so the AntiGravity integration shot works cleanly."  (verification clauses, no)
+- "Open two Chrome windows pre-logged-in: Window 1 = spline.design/community, Window 2 = antigravity.ai dashboard — arrange on desktop so switching is instant."  (compound setup, split it)
+
+1. "pre_production_checklist" — list of 5-10 short strings. Each item is ONE concrete pre-flight task, 3-8 words. "Sign in to spline.design." / "Sign in to antigravity.ai." / "Pick a Spline asset to use." / "Silence notifications." / "Close unrelated tabs." NEVER include "verify that…" / "confirm that…" — just the prep action.
+
+2. "scenes" — list of 4-8 scene objects (one per major on-screen moment). Each scene's strings follow the tightness rule:
+   - "name": 2-5 words, the scene's purpose. e.g. "Open Spline."
+   - "app": just the app name. "Chrome." / "AgentFlow." / "Finder."
+   - "url_or_path": just the URL or path. "spline.design" / "~/Documents/Claude Folder/skills/"
+   - "on_screen": one short sentence describing what's visible. ≤12 words.
+   - "cursor_action": one short imperative. ≤10 words. "Click the 3D Website template."
+   - "voice_over_note": one short hook line. ≤12 words. (Detail belongs in the content doc.)
+   - "why": 2-6 words. "Authority anchor." / "Skool gift reveal." / "Proof segment."
+   - "pre_work": one short sentence. ≤12 words. "Spline account logged in."
+
+3. "open_questions" — list of 0-4 short strings, ≤12 words each. Risk or decision per item. "Spline asset may not load in AntiGravity preview." / "Need final pricing for the Skool gift post."
+"""
+
+    user_prompt = f"""Video title: {title}
+
+BRIEF (already validated, score ≥7/10):
+---
+{brief_md[:5000] if brief_md else "(no brief found — generate a sensible default to-do based on the title)"}
+---
+
+{field_specs}
+
+Return ONLY the JSON object. No preamble, no markdown fences."""
+
+    # Primary: Claude Sonnet 4.6
+    claude_result = _claude_json_call(project_context, user_prompt, model="claude-sonnet-4-6", max_tokens=3000)
+    if claude_result is not None:
+        return claude_result
+
+    # Fallback: Gemini 2.5 Flash
+    body = {
+        "contents": [{
+            "parts": [
+                {"text": project_context},
+                {"text": user_prompt},
+            ]
+        }],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.4,
+        }
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(url, data=json.dumps(body).encode("utf-8"),
+                  headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        return json.loads(text)
+    except (HTTPError, URLError, KeyError, IndexError, json.JSONDecodeError, TypeError):
+        return None
+
+
+@app.route("/api/videos/<int:vid>/create-screen-share-todo", methods=["POST"])
+def create_screen_share_todo(vid):
+    """Create a screen-share to-do for a card. Auto-fills via Gemini using the
+    card's Brief Doc as primary input. Falls back to empty template if Gemini
+    or the brief is unavailable.
+
+    Pass ?force=1 (or JSON {"force": true}) to overwrite an existing to-do.
+    """
+    force = (request.args.get("force") == "1") or bool((request.get_json(silent=True) or {}).get("force"))
+    conn = get_db()
+    video = conn.execute("SELECT * FROM videos WHERE id = ?", (vid,)).fetchone()
+    if not video:
+        conn.close()
+        return jsonify({"error": "Video not found"}), 404
+
+    title = video["title"]
+    slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")[:80]
+    filename = f"{slug}.md"
+
+    brief_md = _read_brief_for_card(conn, vid)
+    filled = _gemini_fill_screen_share_todo(title, brief_md) if brief_md else None
+    auto_filled = bool(filled)
+
+    # Build pre-production checklist
+    if filled and isinstance(filled.get("pre_production_checklist"), list):
+        checklist = "\n".join(f"- [ ] {item}" for item in filled["pre_production_checklist"])
+    else:
+        checklist = "\n".join([
+            "- [ ] Software installed: [fill in]",
+            "- [ ] Accounts logged in: [fill in]",
+            "- [ ] Files prepared: [fill in]",
+            "- [ ] Browser tabs queued: [fill in]",
+            "- [ ] Source materials downloaded: [fill in]",
+            "- [ ] AgentFlow workspace clean: [yes/no]",
+            "- [ ] skills/ folder organized for showcase: [yes/no]",
+            "- [ ] Notifications silenced: [iMessage, Slack, etc.]",
+        ])
+
+    # Build scenes
+    scenes_md = ""
+    if filled and isinstance(filled.get("scenes"), list):
+        for i, s in enumerate(filled["scenes"], start=1):
+            if not isinstance(s, dict):
+                continue
+            scenes_md += f"""
+### Scene {i}: {s.get('name', '[unnamed scene]')}
+- **App / tab:** {s.get('app', '[fill in]')}
+- **URL or file path:** {s.get('url_or_path', '[fill in]')}
+- **On screen:** {s.get('on_screen', '[fill in]')}
+- **Cursor action:** {s.get('cursor_action', '[fill in]')}
+- **Voice-over note:** {s.get('voice_over_note', '[fill in]')}
+- **Why this scene:** {s.get('why', '[tie to a brief field]')}
+- **Pre-work:** {s.get('pre_work', '[fill in]')}
+"""
+    else:
+        scenes_md = """
+### Scene 1: [Scene name — tied to a brief field]
+- **App / tab:** [fill in]
+- **URL or file path:** [fill in]
+- **On screen:** [fill in]
+- **Cursor action:** [fill in]
+- **Voice-over note:** [fill in — one line max]
+- **Why this scene:** [tie to a brief field]
+- **Pre-work:** [fill in]
+"""
+
+    # Open questions
+    open_q_md = ""
+    if filled and isinstance(filled.get("open_questions"), list) and filled["open_questions"]:
+        open_q_md = "\n".join(f"- {q}" for q in filled["open_questions"])
+    else:
+        open_q_md = "- [decisions Andy will make at film time, risks that could break the shoot]"
+
+    doc = f"""# SCREEN SHARE TO-DO — {title.upper()}
+
+> Tactical filming prep. {"Auto-filled from the current brief on disk (re-read every regenerate, so updating the brief and regenerating this picks up the new content)." if auto_filled else "Fill every field before sitting down to film."}
+> Pre-production checklist must be 100% done before scene 1.
+
+---
+
+## PRE-PRODUCTION CHECKLIST
+{checklist}
+
+## SCENE-BY-SCENE PLAN
+Each scene = one screen state / one camera setup. App switches = new scenes.
+{scenes_md}
+
+## OPEN QUESTIONS / RISKS
+{open_q_md}
+"""
+
+    todos_subdir = CONTENT_DIR / "todos"
+    todos_subdir.mkdir(parents=True, exist_ok=True)
+    filepath = todos_subdir / filename
+
+    if filepath.exists() and not force:
+        rel = str(filepath.relative_to(CONTENT_DIR))
+        conn.close()
+        return jsonify({"ok": True, "path": rel, "filename": filename, "exists": True, "auto_filled": False})
+
+    filepath.write_text(doc, encoding="utf-8")
+    rel = str(filepath.relative_to(CONTENT_DIR))
+
+    # Set the Screen Share To-Do custom field
+    details = conn.execute("SELECT custom_fields FROM video_details WHERE video_id = ?", (vid,)).fetchone()
+    fields = json.loads(details["custom_fields"]) if details and details["custom_fields"] else []
+    fields = [f for f in fields if f.get("key") != "Screen Share To-Do"]
+    fields.append({"key": "Screen Share To-Do", "value": rel})
+    if details:
+        conn.execute("UPDATE video_details SET custom_fields = ? WHERE video_id = ?",
+                     (json.dumps(fields), vid))
+    else:
+        conn.execute("INSERT INTO video_details (video_id, custom_fields) VALUES (?, ?)",
+                     (vid, json.dumps(fields)))
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "path": rel, "filename": filename, "exists": False, "auto_filled": auto_filled, "had_brief": bool(brief_md)})
+
+
 @app.route("/api/videos/<int:vid>/create-brief", methods=["POST"])
 def create_brief(vid):
     """Create a starter brief for idea-validation BEFORE a content doc.
     Auto-fills via Gemini using the inspiration video's YouTube description + project context.
     Falls back to an empty template if Gemini is unavailable or fails.
+
+    Pass ?force=1 (or JSON {"force": true}) to overwrite an existing brief.
     """
+    force = (request.args.get("force") == "1") or bool((request.get_json(silent=True) or {}).get("force"))
     conn = get_db()
     video = conn.execute("SELECT * FROM videos WHERE id = ?", (vid,)).fetchone()
     if not video:
@@ -2063,6 +2418,20 @@ def create_brief(vid):
         return v if v else (default if default is not None else f"[fill in — {k.replace('_', ' ')}]")
 
     inspiration_plot   = _get("inspiration_plot")
+
+    # screen_share_todo is expected as a 3-7 milestone list (brief outline).
+    # Render as a numbered list. Fall back gracefully if Gemini returns a string.
+    sst_raw = (filled or {}).get("screen_share_todo") if filled else None
+    if isinstance(sst_raw, list) and sst_raw:
+        screen_share_todo = "\n" + "\n".join(f"{i}. {step}" for i, step in enumerate((s for s in sst_raw if str(s).strip()), start=1))
+    elif isinstance(sst_raw, str) and sst_raw.strip():
+        # Legacy paragraph fallback — preserve as-is
+        screen_share_todo = sst_raw
+    else:
+        screen_share_todo = "[fill in — screen share to-do]"
+
+    end_result = _get("end_result")
+
     sources_source     = _get("sources_source")
     why_god_mode       = _get("why_god_mode")
     frame              = _get("frame", "breakdown — source-on-stage: yes")
@@ -2077,7 +2446,7 @@ def create_brief(vid):
     final_thoughts     = (filled or {}).get("final_thoughts") if filled else None
 
     checkmark = "x" if auto_filled else " "
-    score_line = "**10/10** → review the fills; correct anything off before promoting to content-doc-process." if auto_filled else "X/10"
+    score_line = "**11/11** → review the fills; correct anything off (especially Proof segment) before promoting to content-doc-process." if auto_filled else "X/11"
 
     notes_section = ""
     if filming_notes:
@@ -2092,7 +2461,7 @@ def create_brief(vid):
 
     doc = f"""# BRIEF — {title.upper()}
 
-> Idea-validation gate. {"Auto-filled by Gemini from the inspiration video's description + project context — review and correct anything off." if auto_filled else "Fill every field. Score the checklist honestly."}
+> Idea-validation gate. {"Auto-filled by Claude Sonnet 4.6 from the inspiration video's description + your channel data — review and correct anything off." if auto_filled else "Fill every field. Score the checklist honestly."}
 > If <7/10, kill or rewrite the idea — don't promote to a content doc.
 
 ---
@@ -2101,6 +2470,10 @@ def create_brief(vid):
 Link: https://youtube.com/watch?v={video_id}
 
 **Inspiration plot:** {inspiration_plot}
+
+**Screen share to-do:** {screen_share_todo}
+
+**End result:** {end_result}
 
 **Source's source:** {sources_source}
 
@@ -2127,6 +2500,7 @@ Link: https://youtube.com/watch?v={video_id}
 ## BRIEF CHECKLIST
 
 - [{checkmark}] **Authority hacking — yes/no.** Named external god-mode source identified.
+- [{checkmark}] **Proof segment — yes/no.** Screen share to-do ends with a demonstrable end-result (built thing running / test outcome / side-by-side / finished workflow). React-only fails the gate. [Locked 2026-05-19 footage rule.]
 - [{checkmark}] **Source's source pulled.** Inspiration creator's description checked for the ORIGINAL tool/video.
 - [{checkmark}] **Differentiator named — one line.** Our angle is meaningfully different from the inspiration video.
 - [{checkmark}] **Frame chosen.** React / breakdown / apply / contradict — source-on-stage decided.
@@ -2144,10 +2518,17 @@ BRIEF CHECKLIST SCORE: {score_line}{notes_section}{final_thoughts_section}
     briefs_subdir.mkdir(parents=True, exist_ok=True)
     filepath = briefs_subdir / filename
 
-    if filepath.exists():
+    if filepath.exists() and not force:
         rel = str(filepath.relative_to(CONTENT_DIR))
+        # Even if brief file exists, make sure the card has been promoted to the Brief tab.
+        # Earlier briefs may have been created before auto-promote was wired.
+        conn.execute(
+            "UPDATE videos SET status = 'brief' WHERE id = ? AND status IN ('options', 'best')",
+            (vid,),
+        )
+        conn.commit()
         conn.close()
-        return jsonify({"ok": True, "path": rel, "filename": filename, "exists": True})
+        return jsonify({"ok": True, "path": rel, "filename": filename, "exists": True, "auto_filled": False})
 
     filepath.write_text(doc, encoding="utf-8")
     rel = str(filepath.relative_to(CONTENT_DIR))
@@ -2171,8 +2552,139 @@ BRIEF CHECKLIST SCORE: {score_line}{notes_section}{final_thoughts_section}
         )
         conn.commit()
 
+    # Auto-promote the card into the Brief tab if it's still upstream of brief stage
+    conn.execute(
+        "UPDATE videos SET status = 'brief' WHERE id = ? AND status IN ('options', 'best')",
+        (vid,),
+    )
+    conn.commit()
+
     conn.close()
     return jsonify({"ok": True, "path": rel, "filename": filename, "exists": False, "auto_filled": auto_filled})
+
+
+@app.route("/api/videos/<int:vid>/bundle", methods=["GET"])
+def get_card_bundle(vid):
+    """Return a single JSON bundle for a card: metadata + Brief Doc markdown +
+    Screen Share To-Do markdown + Andy's last 5 / top 5 channel videos.
+    Designed for local Claude Code to fetch one URL and have everything needed
+    to generate a content doc via the CONTENT_DOC_PROCESS_SOP.
+    """
+    conn = get_db()
+    v = conn.execute("SELECT * FROM videos WHERE id = ?", (vid,)).fetchone()
+    if not v:
+        conn.close()
+        return jsonify({"error": "Video not found"}), 404
+
+    # Custom fields → paths to brief + todo
+    det = conn.execute(
+        "SELECT custom_fields FROM video_details WHERE video_id = ?", (vid,)
+    ).fetchone()
+    fields = json.loads(det["custom_fields"]) if det and det["custom_fields"] else []
+
+    def _field_path(key):
+        for f in fields:
+            if f.get("key") == key and f.get("value"):
+                return f["value"]
+        return None
+
+    def _read(rel):
+        if not rel:
+            return None
+        p = CONTENT_DIR / rel
+        try:
+            return p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    brief_path = _field_path("Brief Doc")
+    todo_path = _field_path("Screen Share To-Do")
+    brief_md = _read(brief_path)
+    todo_md = _read(todo_path)
+
+    # Channel context — last 5 + top 5 (for "what's been working" awareness)
+    try:
+        recent = [dict(r) for r in conn.execute(
+            "SELECT title, view_count, published_at FROM my_channel_videos "
+            "WHERE published_at != '' ORDER BY published_at DESC LIMIT 5"
+        ).fetchall()]
+        top = [dict(r) for r in conn.execute(
+            "SELECT title, view_count, published_at FROM my_channel_videos "
+            "WHERE published_at != '' ORDER BY view_count DESC LIMIT 5"
+        ).fetchall()]
+    except sqlite3.OperationalError:
+        recent, top = [], []
+    conn.close()
+
+    return jsonify({
+        "card": {
+            "id": v["id"],
+            "video_id": v["video_id"],
+            "title": v["title"],
+            "channel_title": v["channel_title"],
+            "view_count": v["view_count"],
+            "outlier_score": v["outlier_score"],
+            "published_at": v["published_at"],
+            "status": v["status"],
+            "youtube_url": f"https://youtube.com/watch?v={v['video_id']}" if v["video_id"] and not str(v["video_id"]).startswith("custom_") else None,
+        },
+        "brief": {
+            "path": brief_path,
+            "markdown": brief_md,
+            "exists": bool(brief_md),
+        },
+        "screen_share_todo": {
+            "path": todo_path,
+            "markdown": todo_md,
+            "exists": bool(todo_md),
+        },
+        "channel": {
+            "recent": recent,
+            "top": top,
+        },
+    })
+
+
+@app.route("/api/cards/batch-create-brief", methods=["POST"])
+def batch_create_brief():
+    """Sequentially create briefs for a list of card IDs. Server-side serialization
+    avoids the race condition in the modal UI when multiple in-flight requests
+    land on stale state. Pass {"video_ids": [...], "force": bool}.
+    Returns {"results": [{"vid": int, "ok": bool, "path": str, "error": str|null}, ...]}.
+    """
+    data = request.get_json(silent=True) or {}
+    vids = data.get("video_ids") or []
+    force = bool(data.get("force"))
+    if not isinstance(vids, list) or not vids:
+        return jsonify({"error": "missing or empty video_ids list"}), 400
+    if len(vids) > 200:
+        return jsonify({"error": "too many video_ids; max 200 per batch"}), 400
+
+    # Forward the caller's session cookie so internal calls pass auth.
+    cookie_header = request.headers.get("Cookie", "")
+    results = []
+    with app.test_client() as client:
+        # Copy cookies onto the test client so login_required passes
+        for k, v in request.cookies.items():
+            client.set_cookie(k, v, domain="localhost")
+        for vid in vids:
+            try:
+                vid_int = int(vid)
+                url = f"/api/videos/{vid_int}/create-brief" + ("?force=1" if force else "")
+                resp = client.post(url, headers={"Cookie": cookie_header} if cookie_header else None)
+                payload = resp.get_json(silent=True) or {}
+                results.append({
+                    "vid": vid_int,
+                    "ok": resp.status_code == 200,
+                    "status": resp.status_code,
+                    "path": payload.get("path"),
+                    "exists": payload.get("exists"),
+                    "auto_filled": payload.get("auto_filled"),
+                    "error": payload.get("error"),
+                })
+            except Exception as e:
+                results.append({"vid": vid, "ok": False, "error": f"{type(e).__name__}: {e}"})
+    return jsonify({"results": results, "total": len(results), "succeeded": sum(1 for r in results if r["ok"])})
 
 
 current_image_url = {"url": None}
@@ -4722,7 +5234,9 @@ def compute_visuals_blocks(vid):
 # Each tag stores: {id, char_start, char_end, type, asset_id?, label?, color?}.
 # ---------------------------------------------------------------------------
 
-_VISUAL_TAG_TYPES = {"diagram", "avatar", "text_anim", "screen", "chapters"}
+_VISUAL_TAG_TYPES = {
+    "diagram", "avatar", "text_anim", "screen", "chapter",
+}
 
 
 def _sanitize_visual_tags(raw):
@@ -4784,6 +5298,62 @@ def save_visual_tags(vid):
     conn.commit()
     conn.close()
     return jsonify({"ok": True, "tags": tags})
+
+
+def _gemini_diagram_keywords(image_bytes, api_key):
+    """Ask Gemini 2.5 Flash to look at a diagram image and return a list of
+    concept keywords (1-3 words each) describing what's visible. Used to
+    score where in the script a diagram should be placed.
+
+    Returns list[str] or None on error. Cheap call (~$0.0001 per diagram).
+    """
+    import base64
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    img_b64 = base64.b64encode(image_bytes).decode("ascii")
+    prompt = (
+        "Look at this diagram. Return 5-12 short keywords (1-3 words each) "
+        "describing what concepts, named tools, processes, or text elements "
+        "are visible in it. Focus on things a viewer would say out loud when "
+        "explaining the diagram. Skip generic words like 'diagram', 'image', "
+        "'box'. Return ONLY a JSON array of lowercase strings — no commentary, "
+        "no code fence. Example: "
+        '["thumbnail generation", "midjourney", "canva", "workflow", "slash thumb"]'
+    )
+    body = {
+        "contents": [{"parts": [
+            {"text": prompt},
+            {"inline_data": {"mime_type": "image/png", "data": img_b64}},
+        ]}],
+        "generationConfig": {
+            "response_mime_type": "application/json",
+            "temperature": 0.1,
+            "maxOutputTokens": 256,
+        },
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
+    req = Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=45) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        parsed = json.loads(text)
+    except (HTTPError, URLError, KeyError, IndexError, ValueError, TypeError):
+        return None
+    if not isinstance(parsed, list):
+        return None
+    out = []
+    for k in parsed:
+        if isinstance(k, str):
+            kw = k.strip().lower()
+            if kw and len(kw) <= 40:
+                out.append(kw)
+    return out[:12] if out else None
 
 
 _SCREEN_PHRASE_RE = re.compile(
@@ -4862,7 +5432,7 @@ def auto_suggest_visual_tags(vid):
         "SELECT vocal_doc, visual_tags FROM videos WHERE id=?", (vid,)
     ).fetchone()
     drows = conn.execute(
-        "SELECT id, name, position, script, image_path, result_url FROM diagrams "
+        "SELECT id, name, position, script, image_path, result_url, vision_keywords FROM diagrams "
         "WHERE video_id=? ORDER BY position, created_at",
         (vid,)
     ).fetchall()
@@ -4920,11 +5490,51 @@ def auto_suggest_visual_tags(vid):
     suggested = []
     skipped = []
     used_steps_for_diagram = {}  # step_num → count of diagrams placed in this step
+    chapter_sentence_by_seg = {}  # id(seg) → index of the step-intro sentence
 
-    # 1) Diagrams: include anything with EITHER a rendered MP4 (result_url) or
-    #    a still image (image_path). Apply-to-timeline will use whichever is
-    #    available. One diagram per step preferred; extras land at the next
-    #    sentence within the same step.
+    def _is_step_intro(text: str) -> bool:
+        t = text.lstrip().lower()
+        if re.search(r"\b(?:step|chapter)\s*\d+\b", t):
+            return True
+        if t.startswith(("and now", "now let", "first up", "first,", "next up", "next,")):
+            return True
+        return False
+
+    # 1) CHAPTER intros — the literal "And now let's get into Step N — TITLE"
+    #    sentence at the start of each non-HOOK segment. This is the chapter
+    #    card moment. Runs FIRST so diagrams know to skip past it.
+    for seg, sents in seg_sentences:
+        if not sents:
+            continue
+        if _META_NAME_RE.match(seg.get("name") or ""):
+            # HOOK / INTRO doesn't get a chapter card.
+            continue
+        # Find the first intro-shaped sentence within the first ~3 sentences.
+        intro_idx = None
+        for i, (cs, ce) in enumerate(sents[:3]):
+            if _is_step_intro(cleaned[cs:ce]):
+                intro_idx = i
+                break
+        if intro_idx is None:
+            # No explicit intro — use the first sentence by default.
+            intro_idx = 0
+        cs, ce = sents[intro_idx]
+        if overlaps_claimed(cs, ce):
+            continue
+        claim(cs, ce)
+        chapter_sentence_by_seg[id(seg)] = intro_idx
+        suggested.append({
+            "id": "vt" + uuid.uuid4().hex[:12],
+            "char_start": cs,
+            "char_end": ce,
+            "type": "chapter",
+            "label": seg.get("name") or None,
+        })
+
+    # 2) Diagrams — span a 3-5 sentence PARAGRAPH inside the step body. Pick
+    #    the window by keyword-matching the diagram's name + vision keywords
+    #    (extracted from the actual image via Gemini Flash, cached on the row)
+    #    against the script.
     rendered_diagrams = [r for r in drows if _diagram_available(r)]
     for r in drows:
         if not _diagram_available(r):
@@ -4934,66 +5544,160 @@ def auto_suggest_visual_tags(vid):
                 "reason": "no image_path or result_url — skipped",
             })
 
+    # --- Gemini vision keyword extraction (cached on diagrams.vision_keywords).
+    # For diagrams with image_path but no cached keywords, call Gemini in
+    # parallel and persist. ~$0.0001 per diagram, ~2-4s for 7 diagrams.
+    vkw_by_id = {}
+    for r in rendered_diagrams:
+        cached = r["vision_keywords"]
+        if cached:
+            try:
+                parsed = json.loads(cached)
+                if isinstance(parsed, list):
+                    vkw_by_id[r["id"]] = [str(k).lower() for k in parsed if k]
+            except (TypeError, ValueError):
+                pass
+    need_vision = [
+        r for r in rendered_diagrams
+        if r["id"] not in vkw_by_id and r["image_path"]
+    ]
+    vision_api_key = os.environ.get("GEMINI_API_KEY", "")
+    if need_vision and vision_api_key:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _fetch_and_describe(row):
+            try:
+                img_full = Path(app.root_path) / row["image_path"]
+                if not img_full.exists():
+                    return row["id"], None
+                with open(img_full, "rb") as f:
+                    img_bytes = f.read()
+                kws = _gemini_diagram_keywords(img_bytes, vision_api_key)
+                return row["id"], kws
+            except Exception as e:
+                app.logger.warning(f"diagram-vision: {row['id']} failed: {e}")
+                return row["id"], None
+
+        with ThreadPoolExecutor(max_workers=min(8, len(need_vision))) as ex:
+            futs = {ex.submit(_fetch_and_describe, r): r for r in need_vision}
+            for fut in as_completed(futs):
+                did, kws = fut.result()
+                if kws:
+                    vkw_by_id[did] = kws
+
+        # Persist newly-computed keywords so the next click is instant.
+        if vkw_by_id:
+            conn2 = get_db()
+            for did in [r["id"] for r in need_vision if r["id"] in vkw_by_id]:
+                conn2.execute(
+                    "UPDATE diagrams SET vision_keywords=? WHERE id=?",
+                    (json.dumps(vkw_by_id[did]), did),
+                )
+            conn2.commit()
+            conn2.close()
+
+    # Global window pool: every 3-sentence window across the WHOLE doc,
+    # excluding any that overlap a chapter-intro sentence already claimed.
+    _STOP_WORDS = {
+        "step", "diagram", "chapter", "with", "from", "into", "this",
+        "that", "the", "and", "for", "your", "you", "have", "what",
+        "when", "where", "will", "just", "like", "more",
+    }
+    all_windows = []  # list of (cs, ce, seg_id, start_idx_in_seg)
+    for seg, sents in seg_sentences:
+        # Skip past chapter intro and trailing-most sentence.
+        body_start_idx = chapter_sentence_by_seg.get(id(seg), -1) + 1
+        body = sents[body_start_idx:]
+        if len(body) > 3:
+            body = body[:-1]
+        for s in range(max(1, len(body) - 2)):
+            window = body[s:s + 3]
+            if not window:
+                continue
+            if any(overlaps_claimed(c, e) for (c, e) in window):
+                continue
+            all_windows.append((window[0][0], window[-1][1], id(seg), s, seg))
+
+    def _kws_for_diagram(r):
+        name = r["name"] or ""
+        kw_source = re.sub(r"[^a-zA-Z\s]", " ", name)
+        name_kws = [
+            w.lower()
+            for w in kw_source.split()
+            if len(w) >= 4 and w.lower() not in _STOP_WORDS
+        ]
+        vision_kws = vkw_by_id.get(r["id"]) or []
+        vision_kws = [
+            v for v in vision_kws
+            if v and not all(w in _STOP_WORDS for w in v.split())
+        ]
+        return name_kws, vision_kws
+
+    # For each diagram, find its top scoring window in the WHOLE doc. Then
+    # greedy-assign: sort by best-score desc, place each at its best
+    # unclaimed window.
+    diagram_candidates = []
     for r in rendered_diagrams:
         name = r["name"] or ""
-        step_n = _ord(name)
-        if step_n is None:
-            step_n = (r["position"] or 0) + 1
-        seg = step_segs_by_num.get(step_n)
-        # Fall back to step_segs_in_order which SKIPS HOOK/INTRO/etc, so
-        # `Diagram 1` lands at the first real step body even when segments
-        # are named "THE PROBLEM" / "THE SETUP" without an explicit "Step N:"
-        # prefix.
-        if seg is None:
-            idx = step_n - 1
-            if 0 <= idx < len(step_segs_in_order):
-                seg = step_segs_in_order[idx]
-        if seg is None:
-            skipped.append({
-                "diagram_id": r["id"],
-                "name": name,
-                "reason": "no segment to place it in",
-            })
-            continue
-        sents = _sentence_spans(cleaned, seg)
-        if not sents:
-            skipped.append({
-                "diagram_id": r["id"],
-                "name": name,
-                "reason": "step has no body text",
-            })
-            continue
-        # Pick first available sentence within this step.
-        target_idx = used_steps_for_diagram.get(id(seg), 0)
-        if target_idx >= len(sents):
-            # No more sentences in this step — put it back at the last sentence.
-            target_idx = len(sents) - 1
-        cs, ce = sents[target_idx]
-        if overlaps_claimed(cs, ce):
-            # Find next free sentence.
-            placed = False
-            for s2 in sents[target_idx + 1:]:
-                if not overlaps_claimed(*s2):
-                    cs, ce = s2
-                    placed = True
-                    break
-            if not placed:
-                skipped.append({
-                    "diagram_id": r["id"],
-                    "name": name,
-                    "reason": "step's sentences all claimed",
-                })
-                continue
-        used_steps_for_diagram[id(seg)] = target_idx + 1
-        claim(cs, ce)
-        suggested.append({
-            "id": "vt" + uuid.uuid4().hex[:12],
-            "char_start": cs,
-            "char_end": ce,
-            "type": "diagram",
-            "asset_id": r["id"],
-            "label": name,
+        name_kws, vision_kws = _kws_for_diagram(r)
+        step_n = _ord(name) or ((r["position"] or 0) + 1)
+        # Compute "named step" segment id for soft tiebreaker.
+        named_seg = step_segs_by_num.get(step_n)
+        if named_seg is None and 0 <= (step_n - 1) < len(step_segs_in_order):
+            named_seg = step_segs_in_order[step_n - 1]
+        named_seg_id = id(named_seg) if named_seg else None
+        # Score every window for this diagram.
+        scored = []
+        for (wcs, wce, seg_id, _s, _seg) in all_windows:
+            window_text = cleaned[wcs:wce].lower()
+            score = 0
+            for kw in name_kws:
+                hits = window_text.count(kw)
+                if hits:
+                    score += 15 + min(hits, 3) * 5
+            for vkw in vision_kws:
+                hits = window_text.count(vkw)
+                if hits:
+                    score += 30 + min(hits, 3) * 10
+            # Soft bonus if the window is inside the diagram's named step.
+            if seg_id == named_seg_id:
+                score += 8
+            scored.append((score, wcs, wce, seg_id))
+        scored.sort(key=lambda x: -x[0])
+        diagram_candidates.append({
+            "row": r,
+            "ranked": scored,  # list of (score, cs, ce, seg_id) desc
         })
+
+    # Greedy assignment by top-score across diagrams. The diagram with the
+    # strongest signal places first; later diagrams skip claimed windows.
+    diagram_candidates.sort(
+        key=lambda d: -(d["ranked"][0][0] if d["ranked"] else 0)
+    )
+    for cand in diagram_candidates:
+        r = cand["row"]
+        ranked = cand["ranked"]
+        placed = False
+        for (_score, cs, ce, _seg_id) in ranked:
+            if overlaps_claimed(cs, ce):
+                continue
+            claim(cs, ce)
+            suggested.append({
+                "id": "vt" + uuid.uuid4().hex[:12],
+                "char_start": cs,
+                "char_end": ce,
+                "type": "diagram",
+                "asset_id": r["id"],
+                "label": r["name"] or None,
+            })
+            placed = True
+            break
+        if not placed:
+            skipped.append({
+                "diagram_id": r["id"],
+                "name": r["name"],
+                "reason": "no free paragraph anywhere in script",
+            })
 
     # 2) Screen tags from trigger phrases — any sentence containing one.
     for seg, sents in seg_sentences:
@@ -5011,44 +5715,74 @@ def auto_suggest_visual_tags(vid):
                     "label": None,
                 })
 
-    # 3) Avatar sprinkle — at most ONE per step. Picks a mid-step sentence
-    #    that isn't already claimed.
+    # 3) Avatar sprinkle — at most ONE per step. Avatar is "salt"; we want a
+    #    short, punchy one-liner (≤ 100 chars) ending in a strong terminator.
+    #    Score candidates and pick the best.
+    # Sweet spot for avatar: ~4-7s spoken = 50-100 chars at typical pace.
+    # Up to 130 chars (~10s) is acceptable. Avoid very short (<35) and very
+    # long (>130) sentences.
+    _AVATAR_OPENER_RE = re.compile(
+        r"^\s*(but|that's|that is|here's|here is|the truth|the trick|"
+        r"the reality|the result|the difference|the point|the thing|"
+        r"the magic|the moment|the way|what (?:happens|matters)|"
+        r"think about|imagine|now think|now imagine)\b",
+        re.IGNORECASE,
+    )
+    _AVATAR_EMPHATIC_RE = re.compile(
+        r"\b(?:never|always|literally|every|nobody|nothing|fast|free|"
+        r"forever|exactly|actually|really|truly|finally|magic|"
+        r"changes everything|game[- ]?changer|here'?s why)\b",
+        re.IGNORECASE,
+    )
     for seg, sents in seg_sentences:
         if not sents:
             continue
-        # Try mid-step first, then walk outwards.
-        mid = len(sents) // 2
-        order = [mid]
-        for off in range(1, len(sents)):
-            if mid + off < len(sents):
-                order.append(mid + off)
-            if mid - off >= 0:
-                order.append(mid - off)
-        placed = False
-        for idx in order:
-            cs, ce = sents[idx]
-            # Skip very short sentences (probably "And.", "Yes.", etc).
-            if (ce - cs) < 18:
-                continue
+        best = None  # (score, idx, cs, ce)
+        for idx, (cs, ce) in enumerate(sents):
             if overlaps_claimed(cs, ce):
                 continue
-            claim(cs, ce)
-            suggested.append({
-                "id": "vt" + uuid.uuid4().hex[:12],
-                "char_start": cs,
-                "char_end": ce,
-                "type": "avatar",
-                "label": None,
-            })
-            placed = True
-            break
-        if not placed:
+            length = ce - cs
+            if length < 35 or length > 130:
+                continue
+            text = cleaned[cs:ce].strip()
+            score = 0
+            # Reward sentences near the 70-char sweet spot.
+            score += 100 - abs(length - 75)
+            # Reward strong terminators.
+            if text.endswith("!"):
+                score += 40
+            elif text.endswith("."):
+                score += 15
+            # Big reward for emphatic openers.
+            if _AVATAR_OPENER_RE.search(text):
+                score += 50
+            # Reward emphatic content words.
+            if _AVATAR_EMPHATIC_RE.search(text):
+                score += 30
+            # Penalize first sentence of a step (likely chapter intro).
+            if idx == 0:
+                score -= 60
+            # Penalize last sentence (might be chapter lead).
+            if idx == len(sents) - 1:
+                score -= 30
+            if best is None or score > best[0]:
+                best = (score, idx, cs, ce)
+        if best is None:
             continue
+        _score, _idx, cs, ce = best
+        claim(cs, ce)
+        suggested.append({
+            "id": "vt" + uuid.uuid4().hex[:12],
+            "char_start": cs,
+            "char_end": ce,
+            "type": "avatar",
+            "label": None,
+        })
 
     # 4) Text-anim sprinkle: punctuation/emphasis ONLY — a handful of
     #    sentences with a strong feel ("...", em-dashes, exclamation, all-caps
-    #    words) get tagged for an animated text overlay. Cap at 8.
-    text_anim_cap = 8
+    #    words) get tagged for an animated text overlay. Cap at 20.
+    text_anim_cap = 20
     text_anim_count = 0
     _TEXT_ANIM_HINT_RE = re.compile(
         r"(?:\.{3}|!|\b(?:never|always|literally|every single|nobody|nothing)\b|"
@@ -5077,13 +5811,13 @@ def auto_suggest_visual_tags(vid):
             text_anim_count += 1
 
     # 5) Screen as default — every remaining unclaimed sentence becomes a
-    #    screen tag. Screen is the baseline visual; talking head shows
-    #    underneath when no other tag is layered on top.
+    #    screen tag. Andy wants the full script colored end-to-end; untagged
+    #    space looks empty in the Visuals tab even though it'd render fine.
     for (_seg, sents) in seg_sentences:
         for (cs, ce) in sents:
             if overlaps_claimed(cs, ce):
                 continue
-            if (ce - cs) < 12:
+            if (ce - cs) < 6:
                 continue
             claim(cs, ce)
             suggested.append({
@@ -5102,7 +5836,7 @@ def auto_suggest_visual_tags(vid):
         existing = []
     if not isinstance(existing, list):
         existing = []
-    auto_types = {"diagram", "avatar", "screen", "text_anim"}
+    auto_types = {"diagram", "avatar", "screen", "text_anim", "chapter"}
     if replace:
         existing = [t for t in existing if t.get("type") not in auto_types]
 
@@ -7373,6 +8107,78 @@ def gemini_pixel_face(vid):
         prompt_builder=_build_pixel_face_prompt,
         slug="gemini_pixel_face",
     )
+
+
+@app.route("/videos/<int:vid>/thumb-edit/<int:slot>", methods=["GET"])
+@login_required
+def thumb_editor_page(vid, slot):
+    """Serve the miniPaint-wrapped thumbnail editor for a single slot.
+    Opens in a new tab from the studio. Pre-loads the slot's current PNG
+    (if any) as layer 1, and writes back on Save."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    vrow = conn.execute("SELECT title FROM videos WHERE id=?", (vid,)).fetchone()
+    if not vrow:
+        conn.close()
+        return "video not found", 404
+    title = (vrow["title"] or "").strip() or "(untitled)"
+    drow = conn.execute(
+        "SELECT original_thumbs FROM video_details WHERE video_id=?", (vid,)
+    ).fetchone()
+    thumb_url = ""
+    if drow and drow["original_thumbs"]:
+        try:
+            thumbs = json.loads(drow["original_thumbs"])
+            if isinstance(thumbs, list) and 0 <= slot < len(thumbs):
+                thumb_url = thumbs[slot] or ""
+        except Exception:
+            pass
+    conn.close()
+    return render_template(
+        "thumb_editor.html",
+        vid=vid,
+        slot=slot,
+        slot_label=slot + 1,
+        video_title=title,
+        thumb_url=thumb_url,
+    )
+
+
+@app.route("/api/videos/<int:vid>/thumb-slot/<int:slot>", methods=["POST"])
+@login_required
+def thumb_slot_save(vid, slot):
+    """Receive an edited PNG from the miniPaint wrapper, save it to disk, and
+    write the URL into original_thumbs[slot] (overwriting that slot only)."""
+    f = request.files.get("file")
+    if not f:
+        return jsonify({"error": "no file in multipart upload"}), 400
+    conn = get_db()
+    state = _read_video_thumb_state(conn, vid)
+    if state is None:
+        conn.close()
+        return jsonify({"error": "video not found"}), 404
+    _title, thumbs, titles, drow_exists = state
+    while len(thumbs) <= slot:
+        thumbs.append("")
+    while len(titles) < len(thumbs):
+        titles.append("")
+
+    out_root = UPLOAD_DIR / "thumbs" / str(vid)
+    out_root.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time())
+    out_path = out_root / f"edited_slot{slot + 1}_{ts}.png"
+    f.save(str(out_path))
+    rel_url = "/" + str(out_path.relative_to(Path(app.root_path))).replace(os.sep, "/")
+    thumbs[slot] = rel_url
+    _persist_thumb_state(conn, vid, thumbs, titles, drow_exists)
+    conn.close()
+    return jsonify({
+        "ok": True,
+        "slot_index": slot,
+        "slot_label": slot + 1,
+        "url": rel_url,
+        "original_thumbs": thumbs,
+    })
 
 
 @app.route("/api/videos/<int:vid>/editor-bootstrap", methods=["GET"])
