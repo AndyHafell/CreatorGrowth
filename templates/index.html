@@ -2126,7 +2126,8 @@
                     <span style="color:#666;">Q/E</span> &nbsp;zoom in / out<br>
                     <span style="color:#666;">C</span> &nbsp;crossfade &middot; <span style="color:#666;">H</span> &nbsp;hide<br>
                     <span style="color:#666;">1-9</span> &nbsp;move selected to that slot<br>
-                    <span style="color:#666;">↑↓</span> &nbsp;nav between boxes
+                    <span style="color:#666;">↑↓</span> &nbsp;nav between boxes<br>
+                    <span style="color:#666;">B</span> &nbsp;pick bg color → auto-advances
                 </div>
             </div>
         </div>
@@ -6763,8 +6764,19 @@
                 return h.length === 1 ? '0' + h : h;
             }).join('');
             _setBgOverride(hex);
-            // One-shot sample — exit eyedropper after a successful pick.
-            if (diagramEyedropperMode) toggleEyedropperMode();
+            // Auto-advance: if a row is selected and there's a next box, jump to it
+            // and KEEP eyedropper active so the user can sample slide-after-slide.
+            // No next box → exit eyedropper as before.
+            var nextIdx = selectedBoxIdx + 1;
+            if (selectedBoxIdx >= 0 && nextIdx < diagramBoxes.length) {
+                setSelectedBox(nextIdx);
+                // setSelectedBox does not toggle eyedropper; keep current cell cursor.
+                var layer = document.getElementById('diagramsBoxLayer');
+                if (layer) layer.style.cursor = 'cell';
+                setStudioStatus('Slide ' + (nextIdx + 1) + ' — sample next pixel (Esc to stop)', '#f5b942');
+            } else {
+                if (diagramEyedropperMode) toggleEyedropperMode();
+            }
         } catch (err) {
             setStudioStatus('Could not sample pixel: ' + err.message, '#e07070');
         }
@@ -7657,6 +7669,12 @@
             if (selectedBoxIdx < 0) return;
             ev.preventDefault();
             applyAnimToSelected(KEY_TO_ANIM[kLower]);
+            return;
+        }
+        // B = toggle bg-pick eyedropper (per-slide when a row is selected).
+        if (kLower === 'b') {
+            ev.preventDefault();
+            toggleEyedropperMode();
             return;
         }
         if (diagramEyedropperMode && k === 'Escape') {
