@@ -190,6 +190,46 @@
       }
     }
 
+    // ---- Top-bar AI buttons (in the empty submenu space, left of the undo button) ----
+    var submenu = document.querySelector('.submenu');
+    if (submenu) {
+      var actions = document.createElement('div');
+      actions.id = 'ai_fill_actions';
+      actions.style.cssText = 'display:flex;gap:8px;margin-left:18px;align-items:center;';
+
+      function mkBtn(label, accent, onClick) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = label;
+        var base = accent
+          ? 'background:#e8a800;border:1px solid #e8a800;color:#000;'
+          : 'background:#2a2a4a;border:1px solid #3a3a5a;color:#ddd;';
+        b.style.cssText = base + 'padding:6px 14px;border-radius:6px;font-size:11px;letter-spacing:1px;font-weight:700;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,sans-serif;';
+        b.onmouseenter = function(){ b.style.filter = 'brightness(1.15)'; };
+        b.onmouseleave = function(){ b.style.filter = ''; };
+        b.onclick = onClick;
+        return b;
+      }
+
+      var removeBtn = mkBtn('REMOVE', false, function(){
+        var rect = getLiveRect();
+        if (!rect) return setStatus('No selection — drag a rectangle with the selection tool first', '#f5b942', true);
+        runFill('', rect);
+      });
+      var fillBtn = mkBtn('FILL…', true, function(){
+        var rect = getLiveRect();
+        if (!rect) return setStatus('No selection — drag a rectangle with the selection tool first', '#f5b942', true);
+        var p = window.prompt('What do you want to generate?', '');
+        if (p && p.trim()) runFill(p.trim(), rect);
+      });
+      actions.appendChild(removeBtn);
+      actions.appendChild(fillBtn);
+
+      var undoBtn = document.getElementById('undo_button');
+      if (undoBtn && undoBtn.parentNode === submenu) submenu.insertBefore(actions, undoBtn);
+      else submenu.appendChild(actions);
+    }
+
     var statusEl = document.createElement('div');
     statusEl.style.cssText = 'position:fixed;left:50%;top:64px;transform:translateX(-50%);background:#1a1a2a;border:1px solid #2a2a4a;color:#ddd;padding:10px 18px;border-radius:8px;font:13px -apple-system,BlinkMacSystemFont,sans-serif;z-index:99998;display:none;box-shadow:0 4px 16px rgba(0,0,0,0.4);';
     document.body.appendChild(statusEl);
