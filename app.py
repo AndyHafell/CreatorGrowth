@@ -4055,14 +4055,14 @@ def diagrams_render():
 
         # Pre-sample bg-fill color per box rect — used for reveal-mode masking.
         fill_for_rect = {}
-        for (x, y, w, h, _anim, _bd) in all_box_records:
+        for (x, y, w, h, _anim, _bd, _poly) in all_box_records:
             fill_for_rect[(x, y, w, h)] = _ring_median_color(img, x, y, w, h, pad=8, ring=24)
 
         if mode == "reveal":
             # Reveal mode: bg = image with every box filled with its local bg color.
             bg = img.copy()
             draw = ImageDraw.Draw(bg)
-            for (x, y, w, h, _anim, _bd) in all_box_records:
+            for (x, y, w, h, _anim, _bd, _poly) in all_box_records:
                 fill = fill_for_rect[(x, y, w, h)]
                 draw.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
         else:
