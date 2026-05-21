@@ -9008,13 +9008,16 @@ def _replicate_remove_bg(image_bytes):
         app.logger.warning("remove-bg: REPLICATE_API_TOKEN not set")
         return None
     image_uri = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
-    body = {"input": {"image": image_uri}}
+    body = {
+        "version": "a029dff38972b5fda4ec5d75d7d1cd25aeff621d2cf4946a41055d7db66b80bc",
+        "input": {"image": image_uri, "format": "png", "background_type": "rgba"},
+    }
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}",
         "Prefer": "wait=60",
     }
-    url = "https://api.replicate.com/v1/models/851-labs/background-remover/predictions"
+    url = "https://api.replicate.com/v1/predictions"
     req = Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
     try:
         with urlopen(req, timeout=120) as resp:
