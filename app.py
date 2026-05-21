@@ -8997,9 +8997,25 @@ def _replicate_flux_fill(image_bytes, mask_bytes, prompt):
         return None
 
 
-def _replicate_remove_bg(image_bytes):
-    """Remove background via 851-labs/background-remover (BiRefNet) on Replicate.
-    Returns PNG bytes (with alpha) or None on failure."""
+REMOVE_BG_MODELS = {
+    # name -> {version_hash, input_fn(image_uri) -> dict}
+    "bria": {
+        "version": "5ecc270b34e9d8e1f007d9dbd3c724f0badf638f05ffaa0c5e0634ed64d3d378",
+        "input": lambda uri: {"image": uri, "preserve_partial_alpha": True},
+    },
+    "birefnet": {
+        "version": "a029dff38972b5fda4ec5d75d7d1cd25aeff621d2cf4946a41055d7db66b80bc",
+        "input": lambda uri: {"image": uri, "format": "png", "background_type": "rgba"},
+    },
+    "rembg-enhance": {
+        "version": "4067ee2a58f6c161d434a9c077cfa012820b8e076efa2772aa171e26557da919",
+        "input": lambda uri: {"image": uri},
+    },
+}
+
+
+def _replicate_remove_bg(image_bytes, model="bria"):
+    """Remove background via a Replicate bg-remover model. Returns PNG with alpha or None."""
     import base64, time
     from urllib.request import urlopen, Request
     from urllib.error import HTTPError, URLError
@@ -9007,11 +9023,9 @@ def _replicate_remove_bg(image_bytes):
     if not token:
         app.logger.warning("remove-bg: REPLICATE_API_TOKEN not set")
         return None
+    spec = REMOVE_BG_MODELS.get(model) or REMOVE_BG_MODELS["bria"]
     image_uri = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
-    body = {
-        "version": "a029dff38972b5fda4ec5d75d7d1cd25aeff621d2cf4946a41055d7db66b80bc",
-        "input": {"image": image_uri, "format": "png", "background_type": "rgba"},
-    }
+    body = {"version": spec["version"], "input": spec["input"](image_uri)}
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {token}",
@@ -9056,12 +9070,13 @@ def _replicate_remove_bg(image_bytes):
 
 @app.route("/api/thumb-edit/remove-bg", methods=["POST"])
 def thumb_edit_remove_bg():
-    """Remove background from a flattened canvas image. Multipart: image (PNG).
-    Returns PNG with alpha."""
+    """Remove background from a flattened canvas image.
+    Multipart: image (PNG), model (str, optional: bria|birefnet|rembg-enhance). Returns PNG with alpha."""
     img_f = request.files.get("image")
     if not img_f:
         return jsonify({"error": "missing image"}), 400
-    out = _replicate_remove_bg(img_f.read())
+    model = (request.form.get("model") or "bria").strip().lower()
+    out = _replicate_remove_bg(img_f.read(), model=model)
     if not out:
         return jsonify({"error": "remove-bg failed (check server logs)"}), 502
     from flask import send_file
