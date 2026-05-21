@@ -4179,10 +4179,22 @@ def diagrams_render():
             if mode not in ("reveal", "slideshow"):
                 mode = "reveal"
 
-        # Pre-sample bg-fill color per box rect — used for reveal-mode masking.
+        # Pre-sample bg-fill color per box rect — used for reveal-mode masking +
+        # slideshow per-slide bg. Per-box override (set in the studio) wins over the
+        # ring sample.
+        def _hex_to_rgb(s):
+            if not isinstance(s, str): return None
+            s = s.strip().lower()
+            if not s.startswith("#"): s = "#" + s
+            if len(s) != 7: return None
+            try:
+                return (int(s[1:3], 16), int(s[3:5], 16), int(s[5:7], 16))
+            except ValueError:
+                return None
         fill_for_rect = {}
         for (x, y, w, h, _anim, _bd, _poly) in all_box_records:
-            fill_for_rect[(x, y, w, h)] = _ring_median_color(img, x, y, w, h, pad=8, ring=24)
+            box_override_rgb = _hex_to_rgb(_bd.get("bg_color_override")) if isinstance(_bd, dict) else None
+            fill_for_rect[(x, y, w, h)] = box_override_rgb or _ring_median_color(img, x, y, w, h, pad=8, ring=24)
 
         if mode == "reveal":
             # Reveal mode: bg = image with every box filled with its local bg color.
@@ -4226,7 +4238,6 @@ def diagrams_render():
                         continue
         if canvas_bg_color is None:
             canvas_bg_color = _corner_bg_color(img, patch=40)
-        use_per_slide_bg = (mode == "slideshow") and (not has_bg_override)
         bg_path = work_dir / "bg.png"
         if mode == "reveal":
             bg_padded = Image.new("RGB", (W, H + bottom_pad), canvas_bg_color)
@@ -4453,9 +4464,17 @@ def diagrams_render():
                     zoom_frame_counts[i] = nf
             else:
                 # SLIDESHOW: the box content becomes a full 16:9 slide.
-                # Per-slide bg = ring sample around this box (matches the locale of the
-                # cropped region). Override, when set, wins globally.
-                slide_bg = fill_for_rect.get((x, y, w, h), canvas_bg_color) if use_per_slide_bg else canvas_bg_color
+                # Priority: per-box override > diagram-global override > ring sample.
+                # fill_for_rect already encodes (per-box override OR ring sample); we
+                # only fall back to the diagram-global override when neither is set.
+                ridx = reveal_indices[i]
+                bd_slide = all_box_records[ridx][5]
+                has_box_override = (isinstance(bd_slide, dict) and
+                                    _hex_to_rgb(bd_slide.get("bg_color_override")) is not None)
+                if has_bg_override and not has_box_override:
+                    slide_bg = canvas_bg_color
+                else:
+                    slide_bg = fill_for_rect.get((x, y, w, h), canvas_bg_color)
                 box_crop = img.crop((x, y, x + w, y + h))
                 # Remove isolated bright pixels (stars) before upscaling — otherwise
                 # a 1-2px star becomes a 5-10px dot in the slide.
