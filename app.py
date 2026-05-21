@@ -1333,6 +1333,60 @@ def backfill_views():
     return jsonify({"backfilled": updated, "remaining": remaining})
 
 
+@app.route("/api/videos/sync-published", methods=["POST"])
+def sync_published():
+    """Refresh view_count + published_at for every video with status='published'
+    by batching YouTube Data API v3 videos.list calls (50 IDs per call)."""
+    if not YOUTUBE_API_KEY:
+        return jsonify({"error": "YOUTUBE_API_KEY not configured"}), 500
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, video_id FROM videos WHERE status = 'published' AND video_id IS NOT NULL AND video_id != ''"
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return jsonify({"updated": 0, "total": 0})
+
+    id_to_row = {r["video_id"]: r["id"] for r in rows}
+    ids = list(id_to_row.keys())
+    updated = 0
+    channel_avg_cache: dict[str, int] = {}
+    for i in range(0, len(ids), 50):
+        chunk = ids[i:i + 50]
+        try:
+            api_url = (
+                "https://www.googleapis.com/youtube/v3/videos"
+                f"?part=snippet,statistics&id={','.join(chunk)}&key={YOUTUBE_API_KEY}"
+            )
+            with urlopen(api_url, timeout=20) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            continue
+        for item in payload.get("items", []):
+            vid = item.get("id")
+            if not vid or vid not in id_to_row:
+                continue
+            stats = item.get("statistics", {})
+            view_count = int(stats.get("viewCount", 0) or 0)
+            snippet = item.get("snippet", {})
+            channel_id = snippet.get("channelId", "")
+            published_at = snippet.get("publishedAt", "")
+            if channel_id and channel_id not in channel_avg_cache:
+                channel_url = f"https://www.youtube.com/channel/{channel_id}"
+                channel_avg_cache[channel_id] = fetch_channel_avg_views(channel_url)
+            channel_avg = channel_avg_cache.get(channel_id, 0)
+            outlier = round(view_count / channel_avg, 1) if channel_avg > 0 else 0.0
+            conn.execute(
+                "UPDATE videos SET view_count = ?, outlier_score = ?, channel_avg_views = ?, "
+                "published_at = COALESCE(NULLIF(?, ''), published_at) WHERE id = ?",
+                (view_count, outlier, channel_avg, published_at, id_to_row[vid]),
+            )
+            updated += 1
+    conn.commit()
+    conn.close()
+    return jsonify({"updated": updated, "total": len(ids)})
+
+
 # ── Video Details (modal data) ────────────────────────────
 
 @app.route("/api/videos/<int:vid>/details", methods=["GET"])
@@ -8941,6 +8995,93 @@ def _replicate_flux_fill(image_bytes, mask_bytes, prompt):
     except (HTTPError, URLError) as e:
         app.logger.warning(f"flux-fill: download failed: {e}")
         return None
+
+
+REMOVE_BG_MODELS = {
+    # name -> {version_hash, input_fn(image_uri) -> dict}
+    "bria": {
+        "version": "5ecc270b34e9d8e1f007d9dbd3c724f0badf638f05ffaa0c5e0634ed64d3d378",
+        "input": lambda uri: {"image": uri, "preserve_partial_alpha": True},
+    },
+    "birefnet": {
+        "version": "a029dff38972b5fda4ec5d75d7d1cd25aeff621d2cf4946a41055d7db66b80bc",
+        "input": lambda uri: {"image": uri, "format": "png", "background_type": "rgba"},
+    },
+    "rembg-enhance": {
+        "version": "4067ee2a58f6c161d434a9c077cfa012820b8e076efa2772aa171e26557da919",
+        "input": lambda uri: {"image": uri},
+    },
+}
+
+
+def _replicate_remove_bg(image_bytes, model="bria"):
+    """Remove background via a Replicate bg-remover model. Returns PNG with alpha or None."""
+    import base64, time
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    token = os.environ.get("REPLICATE_API_TOKEN", "")
+    if not token:
+        app.logger.warning("remove-bg: REPLICATE_API_TOKEN not set")
+        return None
+    spec = REMOVE_BG_MODELS.get(model) or REMOVE_BG_MODELS["bria"]
+    image_uri = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+    body = {"version": spec["version"], "input": spec["input"](image_uri)}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Prefer": "wait=60",
+    }
+    url = "https://api.replicate.com/v1/predictions"
+    req = Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        app.logger.warning(f"remove-bg: replicate http {e.code}: {e.read().decode('utf-8','ignore')[:300]}")
+        return None
+    except URLError as e:
+        app.logger.warning(f"remove-bg: replicate network: {e.reason}")
+        return None
+
+    poll_url = (data.get("urls") or {}).get("get")
+    deadline = time.time() + 120
+    while data.get("status") not in ("succeeded", "failed", "canceled") and poll_url and time.time() < deadline:
+        time.sleep(1.0)
+        try:
+            r2 = Request(poll_url, headers={"Authorization": f"Bearer {token}"})
+            with urlopen(r2, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (HTTPError, URLError):
+            return None
+    if data.get("status") != "succeeded":
+        app.logger.warning(f"remove-bg: final status {data.get('status')}: {str(data.get('error'))[:200]}")
+        return None
+    out = data.get("output")
+    img_url = out if isinstance(out, str) else (out[0] if isinstance(out, list) and out else None)
+    if not img_url:
+        return None
+    try:
+        with urlopen(img_url, timeout=60) as resp:
+            return resp.read()
+    except (HTTPError, URLError) as e:
+        app.logger.warning(f"remove-bg: download failed: {e}")
+        return None
+
+
+@app.route("/api/thumb-edit/remove-bg", methods=["POST"])
+def thumb_edit_remove_bg():
+    """Remove background from a flattened canvas image.
+    Multipart: image (PNG), model (str, optional: bria|birefnet|rembg-enhance). Returns PNG with alpha."""
+    img_f = request.files.get("image")
+    if not img_f:
+        return jsonify({"error": "missing image"}), 400
+    model = (request.form.get("model") or "bria").strip().lower()
+    out = _replicate_remove_bg(img_f.read(), model=model)
+    if not out:
+        return jsonify({"error": "remove-bg failed (check server logs)"}), 502
+    from flask import send_file
+    import io
+    return send_file(io.BytesIO(out), mimetype="image/png", download_name="no_bg.png")
 
 
 @app.route("/api/thumb-edit/inpaint", methods=["POST"])
