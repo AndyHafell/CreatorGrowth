@@ -6956,39 +6956,96 @@
             d.style.width = (bbox.w * 100) + '%';
             d.style.height = (bbox.h * 100) + '%';
 
-            // Inner SVG renders every sub-shape outline in this box. Coordinates are
-            // local to the bbox (0..1). preserveAspectRatio='none' stretches the
-            // viewBox to the wrapper, so positions match exactly.
+            // Inner SVG renders every sub-shape. Coordinates are local to the bbox
+            // (0..1). preserveAspectRatio='none' stretches the viewBox to the wrapper.
             var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
             svg.style.cssText = 'position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible;';
             svg.setAttribute('viewBox', '0 0 1 1');
             svg.setAttribute('preserveAspectRatio', 'none');
-            shapes.forEach(function(s) {
-                var el;
-                var sClr = (s.type === 'poly') ? '#c08af0' : borderClr;
-                var sBg  = (s.type === 'poly') ? 'rgba(192,138,240,0.10)' : bgClr;
+
+            // Helper: create an SVG element for one shape in local bbox coords.
+            function _mkShapeEl(s) {
                 if (s.type === 'poly') {
                     var pts = (s.points || []).map(function(p) {
                         var lx = bbox.w > 0 ? (p.x - bbox.x) / bbox.w : 0;
                         var ly = bbox.h > 0 ? (p.y - bbox.y) / bbox.h : 0;
                         return lx + ',' + ly;
                     }).join(' ');
-                    el = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                    var el = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
                     el.setAttribute('points', pts);
-                } else {
-                    el = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-                    el.setAttribute('x', bbox.w > 0 ? (s.x - bbox.x) / bbox.w : 0);
-                    el.setAttribute('y', bbox.h > 0 ? (s.y - bbox.y) / bbox.h : 0);
-                    el.setAttribute('width',  bbox.w > 0 ? s.w / bbox.w : 0);
-                    el.setAttribute('height', bbox.h > 0 ? s.h / bbox.h : 0);
+                    return el;
                 }
-                el.setAttribute('fill', isHide ? bgClr : sBg);
-                el.setAttribute('stroke', isHide ? '#e07070' : sClr);
-                el.setAttribute('stroke-width', String(borderWidth));
-                if (isHide) el.setAttribute('stroke-dasharray', '6 4');
-                el.setAttribute('vector-effect', 'non-scaling-stroke');
-                svg.appendChild(el);
-            });
+                var r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                r.setAttribute('x', bbox.w > 0 ? (s.x - bbox.x) / bbox.w : 0);
+                r.setAttribute('y', bbox.h > 0 ? (s.y - bbox.y) / bbox.h : 0);
+                r.setAttribute('width',  bbox.w > 0 ? s.w / bbox.w : 0);
+                r.setAttribute('height', bbox.h > 0 ? s.h / bbox.h : 0);
+                return r;
+            }
+
+            if (isCompound) {
+                // Unified silhouette: every shape uses the SAME yellow fill, so where
+                // they overlap or touch they read as one merged shape. To hide stroke
+                // seams where shapes share interior space, each shape's stroke is
+                // masked by the OTHER shapes' fills — only the outer perimeter shows.
+                var unionClr = isHide ? '#e07070' : '#f5b942';
+                var unionBg  = isHide ? bgClr : 'rgba(245,185,66,0.10)';
+
+                // 1) Fill pass — all shapes, no stroke.
+                shapes.forEach(function(s) {
+                    var fillEl = _mkShapeEl(s);
+                    fillEl.setAttribute('fill', unionBg);
+                    fillEl.setAttribute('stroke', 'none');
+                    svg.appendChild(fillEl);
+                });
+
+                // 2) Outline pass — one mask per shape, where mask = white minus the
+                //    other shapes' fills. The stroke shows only outside the union seam.
+                var maskKey = 'cgms_' + i + '_' + Math.random().toString(36).slice(2, 8);
+                var defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+                shapes.forEach(function(_s, sIdx) {
+                    var mask = document.createElementNS('http://www.w3.org/2000/svg', 'mask');
+                    mask.setAttribute('id', maskKey + '_' + sIdx);
+                    mask.setAttribute('maskContentUnits', 'objectBoundingBox');
+                    var wbg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                    wbg.setAttribute('x', '0'); wbg.setAttribute('y', '0');
+                    wbg.setAttribute('width', '1'); wbg.setAttribute('height', '1');
+                    wbg.setAttribute('fill', 'white');
+                    mask.appendChild(wbg);
+                    shapes.forEach(function(other, oIdx) {
+                        if (oIdx === sIdx) return;
+                        var blk = _mkShapeEl(other);
+                        blk.setAttribute('fill', 'black');
+                        blk.setAttribute('stroke', 'none');
+                        mask.appendChild(blk);
+                    });
+                    defs.appendChild(mask);
+                });
+                svg.appendChild(defs);
+                shapes.forEach(function(s, sIdx) {
+                    var strokeEl = _mkShapeEl(s);
+                    strokeEl.setAttribute('fill', 'none');
+                    strokeEl.setAttribute('stroke', unionClr);
+                    strokeEl.setAttribute('stroke-width', String(borderWidth));
+                    if (isHide) strokeEl.setAttribute('stroke-dasharray', '6 4');
+                    strokeEl.setAttribute('vector-effect', 'non-scaling-stroke');
+                    strokeEl.setAttribute('mask', 'url(#' + maskKey + '_' + sIdx + ')');
+                    svg.appendChild(strokeEl);
+                });
+            } else {
+                // Single-shape box — straightforward fill + stroke.
+                shapes.forEach(function(s) {
+                    var el = _mkShapeEl(s);
+                    var sClr = (s.type === 'poly') ? '#c08af0' : borderClr;
+                    var sBg  = (s.type === 'poly') ? 'rgba(192,138,240,0.10)' : bgClr;
+                    el.setAttribute('fill', isHide ? bgClr : sBg);
+                    el.setAttribute('stroke', isHide ? '#e07070' : sClr);
+                    el.setAttribute('stroke-width', String(borderWidth));
+                    if (isHide) el.setAttribute('stroke-dasharray', '6 4');
+                    el.setAttribute('vector-effect', 'non-scaling-stroke');
+                    svg.appendChild(el);
+                });
+            }
             d.appendChild(svg);
             d.oncontextmenu = function(ev) { ev.preventDefault(); ev.stopPropagation(); deleteBox(parseInt(d.dataset.idx, 10)); };
             // Allow left-click+drag to fall through to the layer so users can draw a NEW
