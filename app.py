@@ -8486,6 +8486,68 @@ def thumb_slot_save(vid, slot):
     })
 
 
+@app.route("/api/thumb/change-text", methods=["POST"])
+@login_required
+def thumb_change_text():
+    """Take a PNG crop of a thumbnail region + a new text string, ask Nano Banana
+    Pro to re-render the same crop with the text replaced — preserving font,
+    color/gradient, outline, shadow, pixel-art treatment, and exact dimensions.
+    Returns the edited PNG bytes so the caller can paste it back at the same
+    coordinates."""
+    import base64
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+    f = request.files.get("crop")
+    new_text = (request.form.get("new_text") or "").strip()
+    if not f:
+        return jsonify({"error": "no crop in multipart upload"}), 400
+    if not new_text:
+        return jsonify({"error": "missing new_text"}), 400
+    crop_bytes = f.read()
+    if not crop_bytes:
+        return jsonify({"error": "empty crop"}), 400
+
+    prompt = (
+        f"This image is a cropped region from a YouTube thumbnail. Replace the "
+        f"text currently shown with the new text: \"{new_text}\"\n\n"
+        f"CRITICAL — preserve EVERYTHING else exactly:\n"
+        f"- EXACT same font family, weight, letter spacing, and line breaks "
+        f"(re-break the new text across the same number of lines if it's long).\n"
+        f"- EXACT same color, vertical gradient, outline, drop shadow, glow.\n"
+        f"- EXACT same pixel-art / 16-bit chunky treatment (or whatever style "
+        f"the original uses — match it pixel for pixel).\n"
+        f"- EXACT same background behind the text (do not change the background).\n"
+        f"- EXACT same image dimensions as the input (width × height unchanged).\n"
+        f"- EXACT same positioning of the text block within the crop.\n\n"
+        f"Only the text CHARACTERS change to read: \"{new_text}\". Everything "
+        f"else is identical. Output the crop with the swapped text."
+    )
+
+    parts_payload = [
+        {"inline_data": {
+            "mime_type": "image/png",
+            "data": base64.b64encode(crop_bytes).decode("ascii"),
+        }},
+        {"text": prompt},
+    ]
+
+    # Single attempt + 1 retry on failure (Nano Banana Pro occasionally
+    # returns IMAGE_OTHER on weird crops; one retry resolves most of those).
+    png, err = _gemini_image_call_detail(
+        parts_payload, api_key, "gemini-3-pro-image-preview", "thumb.change-text.a1"
+    )
+    if not png:
+        png, err2 = _gemini_image_call_detail(
+            parts_payload, api_key, "gemini-3-pro-image-preview", "thumb.change-text.a2"
+        )
+        if not png:
+            return jsonify({"error": f"gemini failed: {err2 or err}"}), 502
+
+    from flask import Response
+    return Response(png, mimetype="image/png")
+
+
 @app.route("/api/videos/<int:vid>/editor-bootstrap", methods=["GET"])
 def editor_bootstrap(vid):
     """Single payload the OpenCut bridge page needs to seed a new project:
