@@ -8128,7 +8128,20 @@ _DEFAULT_BRAND = {
 }
 
 
-def _build_pixel_face_prompt(video_title, brand=None):
+def _wrap_with_nudge(prompt, nudge):
+    """Prepend a high-priority directive that overrides defaults, and echo at end."""
+    if not nudge:
+        return prompt
+    return (
+        f"PRIORITY DIRECTION FROM ANDY (apply to this variant; "
+        f"override defaults in the SOP where they conflict): {nudge}\n\n"
+        + prompt
+        + f"\n\nFinal reminder: Andy's priority direction was: {nudge}. "
+          f"The output MUST reflect it."
+    )
+
+
+def _build_pixel_face_prompt(video_title, brand=None, nudge=""):
     """Return (prompt_text, [(mime,bytes), ...]) for the pixel-face direct call.
     Substitutes the locked SOP template with brand info + tells Gemini to
     pick its own 2-4 word [TITLE TEXT] from the full video title."""
@@ -8149,7 +8162,7 @@ def _build_pixel_face_prompt(video_title, brand=None):
     logo = _load_logo(brand["logo_name"])
     if logo:
         image_refs.append(logo)
-    return template, image_refs
+    return _wrap_with_nudge(template, nudge), image_refs
 
 
 def _allocate_thumb_slots(thumbs, titles, n):
@@ -8227,6 +8240,7 @@ def _gemini_thumb_direct(vid, *, kind, prompt_builder, slug):
     except (TypeError, ValueError):
         n = 3
     n = max(1, min(n, 6))
+    nudge = (body.get("nudge") or "").strip()
 
     conn = get_db()
     state = _read_video_thumb_state(conn, vid)
@@ -8240,7 +8254,7 @@ def _gemini_thumb_direct(vid, *, kind, prompt_builder, slug):
 
     empty_slots = _allocate_thumb_slots(thumbs, titles, n)
 
-    prompt, image_refs = prompt_builder(title)
+    prompt, image_refs = prompt_builder(title, nudge=nudge)
 
     image_parts = [
         {"inline_data": {
@@ -8324,7 +8338,7 @@ def _gemini_thumb_direct(vid, *, kind, prompt_builder, slug):
     })
 
 
-def _faceless_prompt_builder(video_title):
+def _faceless_prompt_builder(video_title, nudge=""):
     """Build the faceless prompt — embeds the full faceless SOP since it's
     layout-pattern-driven (Gemini picks one of the 6)."""
     sop_text = _FACELESS_SOP_PATH.read_text() if _FACELESS_SOP_PATH.exists() else ""
@@ -8335,7 +8349,7 @@ def _faceless_prompt_builder(video_title):
         f"that best fits the title. Output 16:9, 1920x1080.\n\n"
         f"=== SOP START ===\n{sop_text}\n=== SOP END ==="
     )
-    return prompt, []
+    return _wrap_with_nudge(prompt, nudge), []
 
 
 @app.route("/api/videos/<int:vid>/gemini-faceless", methods=["POST"])

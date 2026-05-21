@@ -6030,11 +6030,14 @@
             tsSetStatus('Unknown variant: ' + variant, '#e07070');
             return;
         }
-        tsSetStatus('Gemini direct (' + variant + ') — generating 3 in parallel (~30s)…', '#f5b942');
+        var nudge = (document.getElementById('tsNudge').value || '').trim();
+        var statusMsg = 'Gemini direct (' + variant + ') — generating 3 in parallel (~30s)…';
+        if (nudge) statusMsg += ' [nudge: ' + nudge.slice(0, 60) + (nudge.length > 60 ? '…' : '') + ']';
+        tsSetStatus(statusMsg, '#f5b942');
         fetch('/api/videos/' + vid + '/gemini-' + variant, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({count: 3})
+            body: JSON.stringify({count: 3, nudge: nudge})
         }).then(function(r) { return r.json(); })
           .then(function(j) {
               if (j.error) {
