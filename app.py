@@ -234,6 +234,18 @@ def init_db():
     except sqlite3.OperationalError:
         pass
     try:
+        # Auto-detected background color (#RRGGBB) for the current source image.
+        # Recomputed every time the image is replaced; used as the canvas fill for
+        # slideshow slides and padded letterbox bars.
+        conn.execute("ALTER TABLE diagrams ADD COLUMN bg_color_auto TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        # User override (#RRGGBB) set via the eyedropper / hex input. Wins over auto.
+        conn.execute("ALTER TABLE diagrams ADD COLUMN bg_color_override TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
         conn.execute("ALTER TABLE videos ADD COLUMN editor_state TEXT")
     except sqlite3.OperationalError:
         pass
@@ -3354,6 +3366,47 @@ def _despeckle_stars(crop, bg_color, luma_threshold=110, radius=3, dark_ratio=0.
     return out
 
 
+def _apply_alpha_mask(crop_rgba, mask_l):
+    """Multiply the crop's alpha by an L-mode mask of the same size. Anything black
+    in the mask becomes transparent in the crop."""
+    from PIL import ImageChops as _IC
+    if mask_l is None:
+        return crop_rgba
+    if crop_rgba.mode != "RGBA":
+        crop_rgba = crop_rgba.convert("RGBA")
+    if mask_l.size != crop_rgba.size:
+        return crop_rgba
+    existing_alpha = crop_rgba.split()[3]
+    new_alpha = _IC.multiply(existing_alpha, mask_l)
+    crop_rgba.putalpha(new_alpha)
+    return crop_rgba
+
+
+def _build_shape_mask(W, H, x, y, shapes_px):
+    """Build an L-mode mask of size (W, H) for a compound shape. Each shape is a
+    dict in absolute pixel coords. Draw order is the input order — ADD shapes paint
+    255, SUBTRACT shapes paint 0 — so painter's algorithm applies the lasso
+    operations sequentially (matching the UI's stack)."""
+    from PIL import Image as _Image, ImageDraw as _ID
+    mask = _Image.new("L", (W, H), 0)
+    draw = _ID.Draw(mask)
+    for s in shapes_px:
+        op = s.get("op", "add")
+        fill = 0 if op == "subtract" else 255
+        t = s.get("type")
+        if t == "poly":
+            pts = s.get("points") or []
+            if len(pts) >= 3:
+                local = [(px - x, py - y) for (px, py) in pts]
+                draw.polygon(local, fill=fill)
+        else:  # rect
+            sx = s.get("x", 0); sy = s.get("y", 0)
+            sw = s.get("w", 0); sh = s.get("h", 0)
+            lx = sx - x; ly = sy - y
+            draw.rectangle([lx, ly, lx + sw - 1, ly + sh - 1], fill=fill)
+    return mask
+
+
 def _corner_bg_color(img, patch=40):
     """Median RGB sampled from the 4 corner patches — global background guess."""
     px = img.load()
@@ -3665,6 +3718,15 @@ def diagrams_patch(diagram_id):
         if mode_v not in ("reveal", "slideshow"):
             mode_v = "reveal"
         fields.append("mode=?"); values.append(mode_v)
+    if "bg_color_override" in payload:
+        raw = payload.get("bg_color_override")
+        if raw is None or raw == "":
+            fields.append("bg_color_override=?"); values.append(None)
+        else:
+            s = str(raw).strip()
+            if not (s.startswith("#") and len(s) == 7 and all(c in "0123456789abcdefABCDEF" for c in s[1:])):
+                return jsonify({"error": "bg_color_override must be a #RRGGBB hex string or empty"}), 400
+            fields.append("bg_color_override=?"); values.append(s.lower())
     if not fields:
         return jsonify({"error": "no fields to update"}), 400
     fields.append("updated_at=?")
@@ -3727,11 +3789,29 @@ def diagrams_upload_image(diagram_id):
     target = _diagram_dir(vid, diagram_id) / f"image.{ext}"
     f.save(str(target))
     rel = str(target.relative_to(Path(app.root_path)))
-    conn.execute("UPDATE diagrams SET image_path=?, updated_at=? WHERE id=?",
-                 (rel, datetime.now(timezone.utc).isoformat(), diagram_id))
+    # Auto-detect a default canvas/background color from the saved image. Stored so
+    # render and the studio UI agree on the "auto" pick. User can override via the
+    # eyedropper / hex input (-> bg_color_override).
+    bg_auto_hex = None
+    try:
+        from PIL import Image as _PIL_Image
+        with _PIL_Image.open(target) as _bg_img:
+            _bg_rgb = _bg_img.convert("RGB")
+            r, g, b = _corner_bg_color(_bg_rgb, patch=40)
+            bg_auto_hex = "#{:02x}{:02x}{:02x}".format(int(r), int(g), int(b))
+    except Exception as e:
+        app.logger.warning("diagrams: bg color auto-detect failed: %s", e)
+    conn.execute(
+        "UPDATE diagrams SET image_path=?, bg_color_auto=?, updated_at=? WHERE id=?",
+        (rel, bg_auto_hex, datetime.now(timezone.utc).isoformat(), diagram_id),
+    )
     conn.commit()
     conn.close()
-    return jsonify({"image_path": rel, "image_path_url": "/" + rel})
+    return jsonify({
+        "image_path": rel,
+        "image_path_url": "/" + rel,
+        "bg_color_auto": bg_auto_hex,
+    })
 
 
 @app.route("/api/diagrams/<diagram_id>/audio", methods=["POST"])
@@ -3923,24 +4003,92 @@ def diagrams_render():
         if duration <= 0.1 or duration > 600:
             return jsonify({"error": f"audio duration out of range ({duration:.1f}s, max 600s)"}), 400
 
-        # Compute box rects + kind (reveal vs hide) + anim style + time_override
-        all_box_records = []   # each: (x, y, w, h, anim, original_box_dict)
+        # Compute box rects + kind (reveal vs hide) + anim style + time_override.
+        # Each record: (x, y, w, h, anim, original_box_dict, mask_L_or_None).
+        # Box variants supported:
+        #   - legacy rect:  {x, y, w, h, anim}
+        #   - legacy poly:  {type: 'poly', points, anim}
+        #   - compound:     {type: 'compound', shapes: [...], anim}  (lasso-added shapes)
+        # For poly + compound, a per-box L-mode mask is built so the crop animates
+        # only inside the union of its shapes.
+        all_box_records = []
         reveal_indices = []
         for b in boxes:
-            try:
-                bx = float(b["x"]); by = float(b["y"]); bw = float(b["w"]); bh = float(b["h"])
-            except (KeyError, TypeError, ValueError):
-                return jsonify({"error": "box missing x/y/w/h"}), 400
-            x = int(bx * W); y = int(by * H)
-            w = int(bw * W); h = int(bh * H)
+            shapes_px = []  # list of {type:'rect',x,y,w,h} or {type:'poly',points:[(px,py),...]}
+            is_poly_legacy = isinstance(b, dict) and b.get("type") == "poly" and isinstance(b.get("points"), list)
+            is_compound    = isinstance(b, dict) and b.get("type") == "compound" and isinstance(b.get("shapes"), list)
+            if is_compound:
+                for s in b["shapes"]:
+                    if not isinstance(s, dict):
+                        continue
+                    s_op = "subtract" if s.get("op") == "subtract" else "add"
+                    st = s.get("type")
+                    if st == "poly":
+                        pts = s.get("points") or []
+                        if len(pts) < 3:
+                            continue
+                        try:
+                            pts_px = [(float(p["x"]) * W, float(p["y"]) * H) for p in pts]
+                        except (KeyError, TypeError, ValueError):
+                            return jsonify({"error": "compound poly shape has invalid points"}), 400
+                        shapes_px.append({"type": "poly", "points": pts_px, "op": s_op})
+                    else:
+                        try:
+                            sx = float(s["x"]) * W; sy = float(s["y"]) * H
+                            sw = float(s["w"]) * W; sh = float(s["h"]) * H
+                        except (KeyError, TypeError, ValueError):
+                            return jsonify({"error": "compound rect shape missing x/y/w/h"}), 400
+                        shapes_px.append({"type": "rect", "x": sx, "y": sy, "w": sw, "h": sh, "op": s_op})
+                if not shapes_px:
+                    continue
+            elif is_poly_legacy:
+                pts_frac = b.get("points") or []
+                if len(pts_frac) < 3:
+                    continue
+                try:
+                    pts_px = [(float(p["x"]) * W, float(p["y"]) * H) for p in pts_frac]
+                except (KeyError, TypeError, ValueError):
+                    return jsonify({"error": "poly box has invalid points"}), 400
+                shapes_px.append({"type": "poly", "points": pts_px})
+            else:
+                try:
+                    bx = float(b["x"]); by = float(b["y"]); bw = float(b["w"]); bh = float(b["h"])
+                except (KeyError, TypeError, ValueError):
+                    return jsonify({"error": "box missing x/y/w/h"}), 400
+                shapes_px.append({"type": "rect", "x": bx * W, "y": by * H, "w": bw * W, "h": bh * H})
+            # Bbox is computed over ADDITIVE shapes only — subtract shapes carve
+            # holes inside the union, they never extend it.
+            xs_lo = []; ys_lo = []; xs_hi = []; ys_hi = []
+            for s in shapes_px:
+                if s.get("op") == "subtract":
+                    continue
+                if s["type"] == "poly":
+                    pts = s["points"]
+                    xs_lo.append(min(p[0] for p in pts))
+                    ys_lo.append(min(p[1] for p in pts))
+                    xs_hi.append(max(p[0] for p in pts))
+                    ys_hi.append(max(p[1] for p in pts))
+                else:
+                    xs_lo.append(s["x"]);             ys_lo.append(s["y"])
+                    xs_hi.append(s["x"] + s["w"]);    ys_hi.append(s["y"] + s["h"])
+            if not xs_lo:
+                # Edge case: only subtract shapes (no adds). Skip the box.
+                continue
+            bx_px = min(xs_lo); by_px = min(ys_lo)
+            bw_px = max(xs_hi) - bx_px; bh_px = max(ys_hi) - by_px
+            x = int(bx_px); y = int(by_px)
+            w = int(bw_px); h = int(bh_px)
             x = max(0, min(W - 4, x)); y = max(0, min(H - 4, y))
             w = max(4, min(W - x, w)); h = max(4, min(H - y, h))
             x -= (x % 2); y -= (y % 2)
             w -= (w % 2); h -= (h % 2)
             if w < 2 or h < 2:
                 continue
+            # Single plain rect → no mask needed (the bbox IS the shape).
+            needs_mask = is_poly_legacy or is_compound
+            mask_l = _build_shape_mask(w, h, x, y, shapes_px) if needs_mask else None
             anim_val = (b.get("anim") or "fade").lower() if isinstance(b, dict) else "fade"
-            all_box_records.append((x, y, w, h, anim_val, b if isinstance(b, dict) else {}))
+            all_box_records.append((x, y, w, h, anim_val, b if isinstance(b, dict) else {}, mask_l))
             if anim_val != "hide":
                 reveal_indices.append(len(all_box_records) - 1)
         if not all_box_records:
@@ -3949,6 +4097,8 @@ def diagrams_render():
         # Reveal boxes are the ones that animate in. Hide boxes only mask the bg permanently.
         box_rects = [(r[0], r[1], r[2], r[3]) for i, r in enumerate(all_box_records) if i in reveal_indices]
         box_anims = [all_box_records[i][4] for i in reveal_indices]
+        # Parallel to box_rects: poly_local_pts (or None) for masking the crop. None = plain rect box.
+        box_masks = [all_box_records[i][6] for i in reveal_indices]
         hide_rects = [(r[0], r[1], r[2], r[3]) for i, r in enumerate(all_box_records) if i not in reveal_indices]
         # Manual time overrides per reveal box (None if not set)
         box_overrides = []
@@ -3977,14 +4127,14 @@ def diagrams_render():
 
         # Pre-sample bg-fill color per box rect — used for reveal-mode masking.
         fill_for_rect = {}
-        for (x, y, w, h, _anim, _bd) in all_box_records:
+        for (x, y, w, h, _anim, _bd, _poly) in all_box_records:
             fill_for_rect[(x, y, w, h)] = _ring_median_color(img, x, y, w, h, pad=8, ring=24)
 
         if mode == "reveal":
             # Reveal mode: bg = image with every box filled with its local bg color.
             bg = img.copy()
             draw = ImageDraw.Draw(bg)
-            for (x, y, w, h, _anim, _bd) in all_box_records:
+            for (x, y, w, h, _anim, _bd, _poly) in all_box_records:
                 fill = fill_for_rect[(x, y, w, h)]
                 draw.rectangle([x, y, x + w - 1, y + h - 1], fill=fill)
         else:
@@ -4001,7 +4151,22 @@ def diagrams_render():
         # Pad the bottom so the HTML5 video player's control gradient sits over empty bg
         bottom_pad = int(min(120, max(60, H * 0.10)))
         bottom_pad -= bottom_pad % 2
-        canvas_bg_color = _corner_bg_color(img, patch=40)
+        # Priority: user override (eyedropper / hex) → stored auto → fresh compute.
+        canvas_bg_color = None
+        if diagram_row is not None:
+            for col in ("bg_color_override", "bg_color_auto"):
+                try:
+                    v = diagram_row[col]
+                except (IndexError, KeyError):
+                    v = None
+                if v and isinstance(v, str) and v.startswith("#") and len(v) == 7:
+                    try:
+                        canvas_bg_color = (int(v[1:3], 16), int(v[3:5], 16), int(v[5:7], 16))
+                        break
+                    except ValueError:
+                        continue
+        if canvas_bg_color is None:
+            canvas_bg_color = _corner_bg_color(img, patch=40)
         bg_path = work_dir / "bg.png"
         if mode == "reveal":
             bg_padded = Image.new("RGB", (W, H + bottom_pad), canvas_bg_color)
@@ -4188,6 +4353,7 @@ def diagrams_render():
         canvas_w = W
         canvas_h = H + bottom_pad
         for i, ((x, y, w, h), anim_for_box) in enumerate(zip(box_rects, box_anims)):
+            mask_l = box_masks[i] if i < len(box_masks) else None
             if mode == "reveal":
                 crop = img.crop((x, y, x + w, y + h))
                 dc = ImageDraw.Draw(crop)
@@ -4203,6 +4369,11 @@ def diagrams_render():
                         lx, ly = hx - x, hy - y
                         fill = fill_for_rect.get(hr, (8, 8, 18))
                         dc.rectangle([lx, ly, lx + hw - 1, ly + hh - 1], fill=fill)
+                # Polygon / compound shapes: mask out everything outside the
+                # union of shapes. Applied AFTER nested-rect fills so they also
+                # get clipped to the shape outline.
+                if mask_l is not None:
+                    crop = _apply_alpha_mask(crop.convert("RGBA"), mask_l)
                 cp = work_dir / f"crop_{i:02d}.png"
                 crop.save(cp)
                 crop_paths[i] = cp
@@ -4226,6 +4397,9 @@ def diagrams_render():
                 # Remove isolated bright pixels (stars) before upscaling — otherwise
                 # a 1-2px star becomes a 5-10px dot in the slide.
                 box_crop = _despeckle_stars(box_crop, canvas_bg_color)
+                # Mask is applied AFTER despeckle (despeckle needs RGB).
+                if mask_l is not None:
+                    box_crop = _apply_alpha_mask(box_crop.convert("RGBA"), mask_l)
                 margin = 0.85   # leave 15% breathing room
                 sx_ = (canvas_w * margin) / w
                 sy_ = (H * margin) / h   # vertical center within the content area (top H of canvas)
@@ -4236,7 +4410,12 @@ def diagrams_render():
                 slide = Image.new("RGB", (canvas_w, canvas_h), canvas_bg_color)
                 ox = (canvas_w - nw) // 2
                 oy = (H - nh) // 2   # vertical center within top H, leaves bottom_pad clear
-                slide.paste(scaled, (ox, oy))
+                # Use the scaled image as its own mask so polygon-transparent pixels
+                # fall through to the slide's bg color instead of showing as black.
+                if scaled.mode == "RGBA":
+                    slide.paste(scaled, (ox, oy), scaled)
+                else:
+                    slide.paste(scaled, (ox, oy))
                 sp = work_dir / f"slide_{i:02d}.png"
                 slide.save(sp)
                 crop_paths[i] = sp
@@ -8144,6 +8323,36 @@ def thumb_editor_page(vid, slot):
     )
 
 
+@app.route("/diagrams/<diagram_id>/image-edit", methods=["GET"])
+@login_required
+def diagram_image_editor_page(diagram_id):
+    """miniPaint-wrapped editor for a single diagram's source image. Opens in a
+    new tab from Diagram Studio. Pre-loads the diagram's current image as layer 1
+    and writes back to /api/diagrams/<id>/image on save (existing endpoint)."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    drow = conn.execute(
+        "SELECT id, video_id, name, image_path FROM diagrams WHERE id=?",
+        (diagram_id,),
+    ).fetchone()
+    if not drow:
+        conn.close()
+        return "diagram not found", 404
+    vrow = conn.execute("SELECT title FROM videos WHERE id=?", (drow["video_id"],)).fetchone()
+    conn.close()
+    video_title = ((vrow["title"] if vrow else "") or "").strip() or "(untitled)"
+    diagram_name = (drow["name"] or "").strip() or "untitled diagram"
+    image_url = ("/" + drow["image_path"]) if drow["image_path"] else ""
+    return render_template(
+        "diagram_image_editor.html",
+        diagram_id=diagram_id,
+        video_id=drow["video_id"],
+        diagram_name=diagram_name,
+        video_title=video_title,
+        image_url=image_url,
+    )
+
+
 @app.route("/api/videos/<int:vid>/thumb-slot/<int:slot>", methods=["POST"])
 @login_required
 def thumb_slot_save(vid, slot):
@@ -8239,12 +8448,18 @@ def editor_bootstrap(vid):
     except sqlite3.OperationalError:
         pass
     conn.close()
+    todo_doc = _read_doc_field(custom_fields, "Screen Share To-Do")
     return jsonify({
         "vid": vrow["id"],
         "video_id": vrow["video_id"],
         "title": vrow["title"] or f"Video {vid}",
         "content_doc": _read_doc_field(custom_fields, "Content Doc"),
         "bullet_doc": _read_doc_field(custom_fields, "Bullet Doc"),
+        "screen_share_todo": {
+            "text": todo_doc.get("text", ""),
+            "rel_path": todo_doc.get("rel_path", ""),
+            "scenes": _parse_todo_scenes(todo_doc.get("text", "")),
+        },
         # Back-compat with the first bridge build that read text-only fields.
         "content_doc_text": _read_doc_field(custom_fields, "Content Doc")["text"],
         "bullet_doc_text": _read_doc_field(custom_fields, "Bullet Doc")["text"],
@@ -8507,6 +8722,245 @@ def render_editor_timeline(vid):
                         "trace": traceback.format_exc()[-1500:]}), 500
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+# ── Screen-Share Slicer ─────────────────────────────────────────────────────
+# Raw screen-share mp4 → N segments where N = scene count in the card's
+# Screen Share To-Do. v1: uniform-time boundaries; user nudges in the slicer
+# UI. v2 may add ffmpeg scene-detect snap once we know how far off uniform is.
+
+_SCENE_HEADER_RE = re.compile(r"^###\s+Scene\s+(\d+):\s*(.*?)\s*$", re.MULTILINE)
+
+
+def _parse_todo_scenes(md_text):
+    """Pull scene headers out of a Screen Share To-Do markdown.
+
+    Returns [{"index": int, "title": str}, ...]. Empty list if no headers
+    or only the unfilled template placeholder is present.
+    """
+    if not md_text:
+        return []
+    scenes = []
+    for m in _SCENE_HEADER_RE.finditer(md_text):
+        idx = int(m.group(1))
+        title = (m.group(2) or "").strip()
+        if title.startswith("[") and "tied to a brief field" in title.lower():
+            title = f"Scene {idx}"
+        scenes.append({"index": idx, "title": title or f"Scene {idx}"})
+    return scenes
+
+
+def _ffprobe_duration(src):
+    """Float seconds for an mp4 (local path or https URL), or None on failure."""
+    cmd = ["ffprobe", "-v", "error",
+           "-show_entries", "format=duration",
+           "-of", "default=noprint_wrappers=1:nokey=1",
+           str(src)]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        return float(r.stdout.strip())
+    except (subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _uniform_boundaries(duration, n_segments):
+    """For N segments, return N-1 boundary timestamps at equal intervals."""
+    if n_segments < 2 or duration <= 0:
+        return []
+    return [round(duration * (i + 1) / n_segments, 2) for i in range(n_segments - 1)]
+
+
+@app.route("/api/videos/<int:vid>/screen-share/detect", methods=["POST"])
+def screen_share_detect(vid):
+    """Detect cut boundaries for a raw screen-share video.
+
+    Body: {"src_url": "<https url or local path>"}
+    Returns: {src_url, duration, scenes:[{index,title}], boundaries:[float]}
+    Boundaries are uniformly spaced; scene count comes from the card's
+    Screen Share To-Do. The slicer UI lets the user nudge each boundary.
+    """
+    body = request.get_json(silent=True) or {}
+    src = (body.get("src_url") or "").strip()
+    if not src:
+        return jsonify({"error": "src_url required"}), 400
+
+    conn = get_db()
+    det = conn.execute(
+        "SELECT custom_fields FROM video_details WHERE video_id = ?", (vid,)
+    ).fetchone()
+    conn.close()
+    fields = json.loads(det["custom_fields"]) if det and det["custom_fields"] else []
+    todo_doc = _read_doc_field(fields, "Screen Share To-Do")
+    scenes = _parse_todo_scenes(todo_doc.get("text", ""))
+    if not scenes:
+        return jsonify({"error": "no Screen Share To-Do scenes found for this card"}), 400
+
+    duration = _ffprobe_duration(src)
+    if duration is None or duration <= 0:
+        return jsonify({"error": "ffprobe could not read duration from src",
+                        "src_url": src}), 400
+
+    return jsonify({
+        "src_url": src,
+        "duration": round(duration, 2),
+        "scenes": scenes,
+        "boundaries": _uniform_boundaries(duration, len(scenes)),
+    })
+
+
+@app.route("/api/videos/<int:vid>/screen-share/cut", methods=["POST"])
+def screen_share_cut(vid):
+    """Cut the raw screen-share into N segments at user-accepted boundaries.
+
+    Body: {"src_url": "...", "boundaries": [t1, t2, ...], "scenes": [...]}
+    Returns: {job_id, clips: [{url, start, end, duration, scene_index, scene_title}]}
+    Uses -c copy → fast, but cuts snap to nearest keyframe (±2s typical for
+    screen recordings). Re-encode mode can be added if frame-exact cuts matter.
+    """
+    body = request.get_json(silent=True) or {}
+    src = (body.get("src_url") or "").strip()
+    raw_boundaries = body.get("boundaries") or []
+    scenes = body.get("scenes") or []
+    if not src:
+        return jsonify({"error": "src_url required"}), 400
+
+    duration = _ffprobe_duration(src)
+    if duration is None or duration <= 0:
+        return jsonify({"error": "ffprobe could not read duration from src"}), 400
+
+    cuts = sorted({round(float(b), 3) for b in raw_boundaries if 0 < float(b) < duration})
+    edges = [0.0] + cuts + [float(duration)]
+    segments = list(zip(edges[:-1], edges[1:]))
+
+    job_id = uuid.uuid4().hex[:12]
+    out_dir = Path(app.root_path) / "static" / "uploads" / "screen-share" / f"v{vid}" / job_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    clips = []
+    for i, (start, end) in enumerate(segments):
+        dur = end - start
+        if dur <= 0.05:
+            continue
+        out_path = out_dir / f"clip_{i+1:02d}.mp4"
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", f"{start:.3f}",
+            "-i", src,
+            "-t", f"{dur:.3f}",
+            "-c", "copy",
+            "-avoid_negative_ts", "make_zero",
+            "-movflags", "+faststart",
+            str(out_path),
+        ]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        if r.returncode != 0:
+            return jsonify({"error": f"ffmpeg cut segment {i+1} failed",
+                            "stderr": r.stderr[-1500:]}), 500
+        rel = str(out_path.relative_to(Path(app.root_path)))
+        scene = scenes[i] if i < len(scenes) else {}
+        clips.append({
+            "url": "/" + rel,
+            "start": round(start, 2),
+            "end": round(end, 2),
+            "duration": round(dur, 2),
+            "scene_index": scene.get("index", i + 1),
+            "scene_title": scene.get("title", f"Scene {i+1}"),
+        })
+
+    return jsonify({"job_id": job_id, "clips": clips})
+
+
+# ---- miniPaint inpaint (Remove / Generative fill) via Replicate Flux Fill Pro ----
+
+def _replicate_flux_fill(image_bytes, mask_bytes, prompt):
+    """Inpaint via black-forest-labs/flux-fill-pro.
+    image_bytes: full-canvas PNG. mask_bytes: PNG where WHITE = fill, BLACK = keep.
+    prompt: text (empty/None = content-aware remove). Returns PNG bytes or None."""
+    import base64, time
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    token = os.environ.get("REPLICATE_API_TOKEN", "")
+    if not token:
+        app.logger.warning("flux-fill: REPLICATE_API_TOKEN not set")
+        return None
+
+    image_uri = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+    mask_uri = "data:image/png;base64," + base64.b64encode(mask_bytes).decode("ascii")
+
+    body = {
+        "input": {
+            "image": image_uri,
+            "mask": mask_uri,
+            "prompt": prompt or "",
+            "steps": 50,
+            "guidance": 60,
+            "output_format": "png",
+            "safety_tolerance": 6,
+            "prompt_upsampling": False,
+        },
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Prefer": "wait=60",
+    }
+    url = "https://api.replicate.com/v1/models/black-forest-labs/flux-fill-pro/predictions"
+    req = Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        app.logger.warning(f"flux-fill: replicate http {e.code}: {e.read().decode('utf-8','ignore')[:300]}")
+        return None
+    except URLError as e:
+        app.logger.warning(f"flux-fill: replicate network: {e.reason}")
+        return None
+
+    poll_url = (data.get("urls") or {}).get("get")
+    deadline = time.time() + 120
+    while data.get("status") not in ("succeeded", "failed", "canceled") and poll_url and time.time() < deadline:
+        time.sleep(1.0)
+        try:
+            r2 = Request(poll_url, headers={"Authorization": f"Bearer {token}"})
+            with urlopen(r2, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (HTTPError, URLError):
+            return None
+
+    if data.get("status") != "succeeded":
+        app.logger.warning(f"flux-fill: final status {data.get('status')}: {str(data.get('error'))[:200]}")
+        return None
+
+    out = data.get("output")
+    img_url = out if isinstance(out, str) else (out[0] if isinstance(out, list) and out else None)
+    if not img_url:
+        return None
+    try:
+        with urlopen(img_url, timeout=60) as resp:
+            return resp.read()
+    except (HTTPError, URLError) as e:
+        app.logger.warning(f"flux-fill: download failed: {e}")
+        return None
+
+
+@app.route("/api/thumb-edit/inpaint", methods=["POST"])
+def thumb_edit_inpaint():
+    """Right-click inpaint from miniPaint.
+    Multipart: image (PNG), mask (PNG, white=fill), prompt (str, optional).
+    Returns PNG bytes."""
+    img_f = request.files.get("image")
+    mask_f = request.files.get("mask")
+    if not img_f or not mask_f:
+        return jsonify({"error": "missing image or mask"}), 400
+    prompt = (request.form.get("prompt") or "").strip()
+    image_bytes = img_f.read()
+    mask_bytes = mask_f.read()
+    out = _replicate_flux_fill(image_bytes, mask_bytes, prompt)
+    if not out:
+        return jsonify({"error": "inpaint failed (check server logs)"}), 502
+    from flask import send_file
+    import io
+    return send_file(io.BytesIO(out), mimetype="image/png", download_name="inpaint.png")
 
 
 if __name__ == "__main__":
