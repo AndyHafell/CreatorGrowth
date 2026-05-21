@@ -110,30 +110,60 @@
       return setTimeout(boot, 100);
     }
 
-    // Read miniPaint's live selection rect. Returns {x,y,w,h} or null.
-    function findSelectionTool() {
-      try {
-        var mods = window.AppConfig.GUI.GUI_tools.tools_modules;
-        if (mods.selection && mods.selection.object) return mods.selection.object;
-        for (var k in mods) {
-          var m = mods[k];
-          if (m && m.object && m.object.Base_selection && m.name === 'selection') return m.object;
-        }
-      } catch (e) {}
-      return null;
-    }
-    function getLiveRect() {
-      var tool = findSelectionTool();
-      if (!tool || !tool.Base_selection) return null;
-      try {
-        var d = tool.Base_selection.get_selection();
-        if (!d || d.x == null || d.y == null || !d.width || !d.height) return null;
+    // Try every known path miniPaint may expose its selection rect from.
+    // Returns {x,y,w,h, _via} on hit, or {_diag: [...]} on miss for debugging.
+    function probeSelection() {
+      var diag = [];
+      function asRect(d, via) {
+        if (!d) return null;
+        diag.push(via + ' → ' + JSON.stringify({x:d.x, y:d.y, w:d.width, h:d.height, status:d.status, type:d.type}));
+        if (d.x == null || d.y == null || !d.width || !d.height) return null;
         var w = Math.round(d.width), h = Math.round(d.height);
         if (w < 4 || h < 4) return null;
-        return { x: Math.round(d.x), y: Math.round(d.y), w: w, h: h };
-      } catch (e) { return null; }
+        return { x: Math.round(d.x), y: Math.round(d.y), w: w, h: h, _via: via };
+      }
+      try {
+        var mods = window.AppConfig && window.AppConfig.GUI && window.AppConfig.GUI.GUI_tools
+                   && window.AppConfig.GUI.GUI_tools.tools_modules;
+        if (!mods) { diag.push('AppConfig.GUI.GUI_tools.tools_modules missing'); return { _diag: diag }; }
+        diag.push('tools_modules keys: ' + Object.keys(mods).join(','));
+        diag.push('active_tool: ' + (window.AppConfig.GUI.GUI_tools.active_tool || '?'));
+
+        // Try every module that has Base_selection
+        for (var k in mods) {
+          var obj = mods[k] && mods[k].object;
+          if (!obj || !obj.Base_selection) continue;
+          var bs = obj.Base_selection;
+          // 1. get_selection()
+          if (typeof bs.get_selection === 'function') {
+            try {
+              var r = asRect(bs.get_selection(), k + '.get_selection');
+              if (r) return r;
+            } catch (e) { diag.push(k + '.get_selection threw: ' + e.message); }
+          }
+          // 2. find_settings().data
+          if (typeof bs.find_settings === 'function') {
+            try {
+              var fs = bs.find_settings();
+              var r2 = asRect(fs && fs.data, k + '.find_settings.data');
+              if (r2) return r2;
+            } catch (e) { diag.push(k + '.find_settings threw: ' + e.message); }
+          }
+          // 3. direct .selection
+          try {
+            var r3 = asRect(bs.selection, k + '.Base_selection.selection');
+            if (r3) return r3;
+          } catch (e) {}
+        }
+      } catch (e) { diag.push('outer threw: ' + e.message); }
+      return { _diag: diag };
     }
-    // Expose for console debugging: in DevTools, run window.__miniPaintGetRect()
+    function getLiveRect() {
+      var p = probeSelection();
+      return p && p.x != null ? p : null;
+    }
+    // Expose for DevTools: document.getElementById('mp').contentWindow.__miniPaintProbe()
+    window.__miniPaintProbe = probeSelection;
     window.__miniPaintGetRect = getLiveRect;
 
     // miniPaint binds pointerdown on document and preventDefaults right-clicks,
@@ -226,12 +256,22 @@
 
       var removeBtn = mkBtn('REMOVE', false, function(){
         var rect = getLiveRect();
-        if (!rect) return setStatus('No selection — drag a rectangle with the selection tool first', '#f5b942', true);
+        if (!rect) {
+          var p = probeSelection();
+          var msg = 'No selection detected. Diag: ' + ((p && p._diag) ? p._diag.join(' | ') : 'unknown');
+          console.log('[miniPaint-AI] probe:', p);
+          return setStatus(msg, '#f5b942', false);
+        }
         runFill('', rect);
       });
       var fillBtn = mkBtn('FILL…', true, function(){
         var rect = getLiveRect();
-        if (!rect) return setStatus('No selection — drag a rectangle with the selection tool first', '#f5b942', true);
+        if (!rect) {
+          var p = probeSelection();
+          var msg = 'No selection detected. Diag: ' + ((p && p._diag) ? p._diag.join(' | ') : 'unknown');
+          console.log('[miniPaint-AI] probe:', p);
+          return setStatus(msg, '#f5b942', false);
+        }
         var p = window.prompt('What do you want to generate?', '');
         if (p && p.trim()) runFill(p.trim(), rect);
       });
@@ -255,7 +295,12 @@
       statusEl.textContent = msg;
       statusEl.style.color = color || '#ddd';
       statusEl.style.display = 'block';
-      if (autohide) setTimeout(function(){ statusEl.style.display = 'none'; }, 3500);
+      statusEl.style.maxWidth = '70vw';
+      statusEl.style.whiteSpace = 'normal';
+      statusEl.style.fontSize = '12px';
+      statusEl.onclick = function(){ statusEl.style.display = 'none'; };
+      statusEl.style.cursor = 'pointer';
+      if (autohide) setTimeout(function(){ if (statusEl) statusEl.style.display = 'none'; }, 3500);
     }
 
     function runFill(promptText, r) {
