@@ -2051,6 +2051,7 @@
                             <input id="diagramsBgHex" type="text" placeholder="auto" maxlength="7" spellcheck="false" style="width:88px; background:transparent; border:1px solid #2a2a4a; color:#ddd; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; padding:4px 8px; border-radius:4px;" onchange="onBgHexInputChange()" title="Override the background color used for slideshow slides & padded bars">
                             <button onclick="toggleEyedropperMode()" id="diagramsBgEyeBtn" title="Eyedropper — click then sample a pixel" style="background:none; border:1px solid #2a2a4a; color:#aaa; border-radius:4px; padding:5px 10px; font-size:11px; cursor:pointer;">Pick from image</button>
                             <button id="diagramsBgReset" onclick="resetBgColor()" title="Clear override — use auto-detected color" style="display:none; background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 10px; font-size:11px; cursor:pointer;">Reset to auto</button>
+                            <span id="diagramsBgOverrideBadge" style="display:none; color:#f5b942; font-size:10px; letter-spacing:0.8px; font-family:ui-monospace,Menlo,Consolas,monospace; padding:3px 7px; border:1px solid #3a2d10; border-radius:3px; background:rgba(245,185,66,0.06);"></span>
                             <span style="color:#444; font-size:11px;">&middot; sets the fill behind slideshow slides &amp; padded bars</span>
                         </div>
                         <div id="diagramsCropToolbar" style="display:none; margin-top:10px; gap:10px; align-items:center; flex-wrap:wrap;">
@@ -6676,37 +6677,56 @@
         var swatch = document.getElementById('diagramsBgSwatch');
         var input = document.getElementById('diagramsBgHex');
         var resetBtn = document.getElementById('diagramsBgReset');
+        var badge = document.getElementById('diagramsBgOverrideBadge');
         if (!swatch || !input) return;
         var override = d && d.bg_color_override ? _normalizeHex(d.bg_color_override) : '';
         // Per-slide auto: when a box row is selected, sample the ring around that box.
-        // Falls back to the diagram-level corner-sampled auto when nothing is selected.
         var perSlideAuto = '';
-        if (typeof selectedBoxIdx !== 'undefined' && selectedBoxIdx >= 0 &&
-            typeof diagramBoxes !== 'undefined' && diagramBoxes[selectedBoxIdx]) {
+        var slideSelected = (typeof selectedBoxIdx !== 'undefined' && selectedBoxIdx >= 0 &&
+                             typeof diagramBoxes !== 'undefined' && diagramBoxes[selectedBoxIdx]);
+        if (slideSelected) {
             perSlideAuto = _normalizeHex(_sampleBgForBox(diagramBoxes[selectedBoxIdx]));
         }
         var diagramAuto = d && d.bg_color_auto ? _normalizeHex(d.bg_color_auto) : '';
-        var auto = perSlideAuto || diagramAuto;
-        var effective = override || auto;
-        swatch.style.background = effective || '#0a0a14';
+        // Display priority:
+        //   row selected → ALWAYS show that slide's auto (so clicking different rows
+        //     gives visual feedback even when a global override is set)
+        //   nothing selected → override (gold) wins, then diagram auto
+        var displayValue, displayIsOverride;
+        if (slideSelected && perSlideAuto) {
+            displayValue = perSlideAuto;
+            displayIsOverride = false;
+        } else if (override) {
+            displayValue = override;
+            displayIsOverride = true;
+        } else {
+            displayValue = diagramAuto;
+            displayIsOverride = false;
+        }
+        swatch.style.background = displayValue || '#0a0a14';
         swatch.style.borderColor = diagramEyedropperMode ? '#f5b942' : '#2a2a4a';
-        var autoLabel = perSlideAuto
+        var hoverLabel = slideSelected && perSlideAuto
             ? 'Auto (slide ' + (selectedBoxIdx + 1) + '): ' + perSlideAuto
-            : (auto ? 'Auto: ' + auto : '');
+            : (displayIsOverride ? 'Override: ' + displayValue : (displayValue ? 'Auto: ' + displayValue : ''));
         swatch.title = diagramEyedropperMode
             ? 'Eyedropper active — click on the image to sample a color. Click swatch again to cancel.'
-            : (override
-                ? 'Override: ' + override + ' (click to re-sample)'
-                : (autoLabel ? autoLabel + ' (click to override via eyedropper)' : 'Click to sample a bg color from the image'));
-        if (override) {
-            input.value = override;
-            input.style.color = '#f5b942';
-        } else {
-            input.value = auto || '';
-            input.placeholder = 'auto';
-            input.style.color = '#666';
-        }
+            : (hoverLabel ? hoverLabel + ' (click to override via eyedropper)' : 'Click to sample a bg color from the image');
+        input.value = displayValue || '';
+        input.placeholder = 'auto';
+        input.style.color = displayIsOverride ? '#f5b942' : '#666';
         if (resetBtn) resetBtn.style.display = override ? 'inline-block' : 'none';
+        // Override badge appears when an override is set AND a row is selected (i.e. when
+        // the field is showing the per-slide auto, not the override) — so the user can
+        // still see the override exists and reset it.
+        if (badge) {
+            if (override && slideSelected) {
+                badge.textContent = 'override ' + override;
+                badge.title = 'Global override is set. The field is showing this slide\'s auto color. Click "Reset to auto" to drop the override.';
+                badge.style.display = 'inline-block';
+            } else {
+                badge.style.display = 'none';
+            }
+        }
     }
     function toggleEyedropperMode() {
         var d = diagramsList[activeDiagramIdx];
@@ -6763,7 +6783,13 @@
         var d = diagramsList[activeDiagramIdx];
         if (!d) return;
         d.bg_color_override = hex;
-        updateBgUI();
+        // Setting a global override deselects the per-slide preview so the displayed
+        // value reflects the override the user just committed.
+        if (typeof setSelectedBox === 'function' && typeof selectedBoxIdx !== 'undefined' && selectedBoxIdx >= 0) {
+            setSelectedBox(-1);
+        } else {
+            updateBgUI();
+        }
         _apiPatch(d.id, { bg_color_override: hex })
             .then(function() { setStudioStatus('BG color → ' + hex, '#4caf50'); })
             .catch(function(err) { setStudioStatus('BG save failed: ' + err, '#e07070'); });
