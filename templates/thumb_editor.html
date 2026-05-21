@@ -24,7 +24,7 @@
     <div class="meta">slot {{ slot_label }} · {{ video_title }}</div>
     <span id="status" class="status">Loading miniPaint…</span>
     <button id="saveBtn" class="primary" onclick="saveToSlot()" disabled>SAVE TO SLOT {{ slot_label }}</button>
-    <button onclick="window.close()">CLOSE</button>
+    <button onclick="goBackToCard()">CLOSE</button>
   </div>
   <div class="frame-wrap">
     <iframe id="mp" src="/static/minipaint/index.html" allow="camera"></iframe>
@@ -34,6 +34,20 @@
 const VID = {{ vid }};
 const SLOT = {{ slot }};
 const THUMB_URL = {{ thumb_url|tojson }};
+
+function goBackToCard() {
+  // If this tab was script-opened (window.opener exists), close it — the
+  // opener still has the card open. Otherwise navigate to the card deep-link.
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.close();
+      // Some browsers refuse to close even script-opened tabs; fall through.
+      setTimeout(function(){ window.location.href = '/?card=' + VID; }, 100);
+      return;
+    }
+  } catch (e) {}
+  window.location.href = '/?card=' + VID;
+}
 
 function setStatus(msg, color) {
   const el = document.getElementById('status');
