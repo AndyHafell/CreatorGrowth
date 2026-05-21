@@ -6947,19 +6947,26 @@
             var glow = isSelected
                 ? 'box-shadow:0 0 12px ' + glowColor + ';'
                 : '';
-            // The wrapper holds the bbox. Borders/fills are drawn per-shape inside (SVG
-            // for polys, a positioned div per rect) so a compound box doesn't draw an
-            // outer rectangle around its union.
+            // Wrapper anchors to shape[0]'s bbox (where × delete, badge, and glow live)
+            // — for compound boxes this keeps the chrome locked to the original shape
+            // even after lasso-shapes extend the union. The SVG that paints the union
+            // sits outside the wrapper via negative offsets so it covers the full bbox.
+            var anchor = _shapeBbox(shapes[0]);
             d.style.cssText = 'position:absolute; border:0; background:transparent; pointer-events:auto;' + glow + ' cursor:context-menu;';
-            d.style.left = (bbox.x * 100) + '%';
-            d.style.top = (bbox.y * 100) + '%';
-            d.style.width = (bbox.w * 100) + '%';
-            d.style.height = (bbox.h * 100) + '%';
+            d.style.left = (anchor.x * 100) + '%';
+            d.style.top = (anchor.y * 100) + '%';
+            d.style.width = (anchor.w * 100) + '%';
+            d.style.height = (anchor.h * 100) + '%';
 
-            // Inner SVG renders every sub-shape. Coordinates are local to the bbox
-            // (0..1). preserveAspectRatio='none' stretches the viewBox to the wrapper.
+            // SVG covers the FULL union bbox. We compute its offset+size relative to
+            // the wrapper (which is shape[0] sized) so it can extend outside in any
+            // direction. Coordinates inside the SVG are 0..1 of the union bbox.
+            var svgLeftPct = anchor.w > 0 ? ((bbox.x - anchor.x) / anchor.w) * 100 : 0;
+            var svgTopPct  = anchor.h > 0 ? ((bbox.y - anchor.y) / anchor.h) * 100 : 0;
+            var svgWidPct  = anchor.w > 0 ? (bbox.w / anchor.w) * 100 : 100;
+            var svgHeiPct  = anchor.h > 0 ? (bbox.h / anchor.h) * 100 : 100;
             var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-            svg.style.cssText = 'position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible;';
+            svg.style.cssText = 'position:absolute; left:' + svgLeftPct + '%; top:' + svgTopPct + '%; width:' + svgWidPct + '%; height:' + svgHeiPct + '%; pointer-events:none; overflow:visible;';
             svg.setAttribute('viewBox', '0 0 1 1');
             svg.setAttribute('preserveAspectRatio', 'none');
 
@@ -7006,7 +7013,14 @@
                 shapes.forEach(function(_s, sIdx) {
                     var mask = document.createElementNS('http://www.w3.org/2000/svg', 'mask');
                     mask.setAttribute('id', maskKey + '_' + sIdx);
-                    mask.setAttribute('maskContentUnits', 'objectBoundingBox');
+                    // The mask covers the entire SVG viewBox (0..1) and its contents
+                    // use the same coordinate system as the shapes themselves. This is
+                    // what makes subtracting "other shapes" from "this shape's stroke"
+                    // actually align spatially.
+                    mask.setAttribute('maskUnits', 'userSpaceOnUse');
+                    mask.setAttribute('maskContentUnits', 'userSpaceOnUse');
+                    mask.setAttribute('x', '0'); mask.setAttribute('y', '0');
+                    mask.setAttribute('width', '1'); mask.setAttribute('height', '1');
                     var wbg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
                     wbg.setAttribute('x', '0'); wbg.setAttribute('y', '0');
                     wbg.setAttribute('width', '1'); wbg.setAttribute('height', '1');
@@ -7171,11 +7185,13 @@
         if (selectedBoxIdx < 0 || selectedBoxIdx >= diagramBoxes.length) return;
         var b = diagramBoxes[selectedBoxIdx];
         if (!b || b.anim === 'hide') return;
-        var bbox = _boxBbox(b);
+        // Anchor under shape[0] so compound expansion doesn't shift the action bar.
+        var shapesArr = _boxShapes(b);
+        var anchorBox = shapesArr.length ? _shapeBbox(shapesArr[0]) : _boxBbox(b);
         var bar = document.createElement('div');
         bar.id = 'diagramSelectedBoxActions';
-        var anchorTopPct = (bbox.y + bbox.h) * 100;
-        var anchorLeftPct = (bbox.x + bbox.w / 2) * 100;
+        var anchorTopPct = (anchorBox.y + anchorBox.h) * 100;
+        var anchorLeftPct = (anchorBox.x + anchorBox.w / 2) * 100;
         bar.style.cssText = 'position:absolute; left:' + anchorLeftPct + '%; top:calc(' + anchorTopPct + '% + 8px); transform:translateX(-50%); display:flex; gap:6px; padding:5px 6px; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px; box-shadow:0 6px 18px rgba(0,0,0,0.55); pointer-events:auto; z-index:20; white-space:nowrap;';
         var lassoBtn = document.createElement('button');
         var isCompoundOrPoly = (b.type === 'poly' || b.type === 'compound');
