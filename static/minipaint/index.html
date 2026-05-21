@@ -111,17 +111,30 @@
     }
 
     // Read miniPaint's live selection rect. Returns {x,y,w,h} or null.
-    function getLiveRect() {
+    function findSelectionTool() {
       try {
-        var mod = window.AppConfig.GUI.GUI_tools.tools_modules.selection;
-        if (!mod || !mod.object || !mod.object.Base_selection) return null;
-        var d = mod.object.Base_selection.get_selection();
+        var mods = window.AppConfig.GUI.GUI_tools.tools_modules;
+        if (mods.selection && mods.selection.object) return mods.selection.object;
+        for (var k in mods) {
+          var m = mods[k];
+          if (m && m.object && m.object.Base_selection && m.name === 'selection') return m.object;
+        }
+      } catch (e) {}
+      return null;
+    }
+    function getLiveRect() {
+      var tool = findSelectionTool();
+      if (!tool || !tool.Base_selection) return null;
+      try {
+        var d = tool.Base_selection.get_selection();
         if (!d || d.x == null || d.y == null || !d.width || !d.height) return null;
         var w = Math.round(d.width), h = Math.round(d.height);
         if (w < 4 || h < 4) return null;
         return { x: Math.round(d.x), y: Math.round(d.y), w: w, h: h };
       } catch (e) { return null; }
     }
+    // Expose for console debugging: in DevTools, run window.__miniPaintGetRect()
+    window.__miniPaintGetRect = getLiveRect;
 
     // miniPaint binds pointerdown on document and preventDefaults right-clicks,
     // which kills the browser's contextmenu event. Block right-button events from
@@ -225,9 +238,14 @@
       actions.appendChild(removeBtn);
       actions.appendChild(fillBtn);
 
-      var undoBtn = document.getElementById('undo_button');
-      if (undoBtn && undoBtn.parentNode === submenu) submenu.insertBefore(actions, undoBtn);
-      else submenu.appendChild(actions);
+      // Place buttons right after the miniPaint logo (left side of the submenu)
+      var attrBlock = submenu.querySelector('#action_attributes');
+      if (attrBlock) submenu.insertBefore(actions, attrBlock);
+      else {
+        var logo = submenu.querySelector('.logo');
+        if (logo && logo.nextSibling) submenu.insertBefore(actions, logo.nextSibling);
+        else submenu.appendChild(actions);
+      }
     }
 
     var statusEl = document.createElement('div');
