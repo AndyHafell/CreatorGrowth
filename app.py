@@ -3366,22 +3366,42 @@ def _despeckle_stars(crop, bg_color, luma_threshold=110, radius=3, dark_ratio=0.
     return out
 
 
-def _apply_poly_mask(crop_rgba, points_local):
-    """Set alpha to 0 outside the polygon. points_local are (x,y) tuples in the
-    cropped image's local coords (i.e. already relative to the crop's top-left)."""
-    from PIL import ImageDraw as _ID, ImageChops as _IC
-    if not points_local or len(points_local) < 3:
+def _apply_alpha_mask(crop_rgba, mask_l):
+    """Multiply the crop's alpha by an L-mode mask of the same size. Anything black
+    in the mask becomes transparent in the crop."""
+    from PIL import ImageChops as _IC
+    if mask_l is None:
         return crop_rgba
     if crop_rgba.mode != "RGBA":
         crop_rgba = crop_rgba.convert("RGBA")
-    W, H = crop_rgba.size
-    mask = Image.new("L", (W, H), 0)
-    _ID.Draw(mask).polygon(points_local, fill=255)
-    # Multiply existing alpha by the polygon mask so anything outside becomes transparent.
+    if mask_l.size != crop_rgba.size:
+        return crop_rgba
     existing_alpha = crop_rgba.split()[3]
-    new_alpha = _IC.multiply(existing_alpha, mask)
+    new_alpha = _IC.multiply(existing_alpha, mask_l)
     crop_rgba.putalpha(new_alpha)
     return crop_rgba
+
+
+def _build_shape_mask(W, H, x, y, shapes_px):
+    """Build an L-mode mask of size (W, H) representing the union of shapes_px.
+    Each shape is a dict in pixel coords (relative to image origin, NOT bbox).
+    The mask is drawn in bbox-local coords (subtract x, y)."""
+    from PIL import ImageDraw as _ID
+    mask = Image.new("L", (W, H), 0)
+    draw = _ID.Draw(mask)
+    for s in shapes_px:
+        t = s.get("type")
+        if t == "poly":
+            pts = s.get("points") or []
+            if len(pts) >= 3:
+                local = [(px - x, py - y) for (px, py) in pts]
+                draw.polygon(local, fill=255)
+        else:  # rect
+            sx = s.get("x", 0); sy = s.get("y", 0)
+            sw = s.get("w", 0); sh = s.get("h", 0)
+            lx = sx - x; ly = sy - y
+            draw.rectangle([lx, ly, lx + sw - 1, ly + sh - 1], fill=255)
+    return mask
 
 
 def _corner_bg_color(img, patch=40):
@@ -3979,15 +3999,44 @@ def diagrams_render():
         if duration <= 0.1 or duration > 600:
             return jsonify({"error": f"audio duration out of range ({duration:.1f}s, max 600s)"}), 400
 
-        # Compute box rects + kind (reveal vs hide) + anim style + time_override
-        # Each record: (x, y, w, h, anim, original_box_dict, poly_local_pts_or_None)
-        # Polygon boxes are stored as their bbox + an alpha-mask of local points.
+        # Compute box rects + kind (reveal vs hide) + anim style + time_override.
+        # Each record: (x, y, w, h, anim, original_box_dict, mask_L_or_None).
+        # Box variants supported:
+        #   - legacy rect:  {x, y, w, h, anim}
+        #   - legacy poly:  {type: 'poly', points, anim}
+        #   - compound:     {type: 'compound', shapes: [...], anim}  (lasso-added shapes)
+        # For poly + compound, a per-box L-mode mask is built so the crop animates
+        # only inside the union of its shapes.
         all_box_records = []
         reveal_indices = []
         for b in boxes:
-            poly_local_pts = None
-            is_poly = isinstance(b, dict) and b.get("type") == "poly" and isinstance(b.get("points"), list)
-            if is_poly:
+            shapes_px = []  # list of {type:'rect',x,y,w,h} or {type:'poly',points:[(px,py),...]}
+            is_poly_legacy = isinstance(b, dict) and b.get("type") == "poly" and isinstance(b.get("points"), list)
+            is_compound    = isinstance(b, dict) and b.get("type") == "compound" and isinstance(b.get("shapes"), list)
+            if is_compound:
+                for s in b["shapes"]:
+                    if not isinstance(s, dict):
+                        continue
+                    st = s.get("type")
+                    if st == "poly":
+                        pts = s.get("points") or []
+                        if len(pts) < 3:
+                            continue
+                        try:
+                            pts_px = [(float(p["x"]) * W, float(p["y"]) * H) for p in pts]
+                        except (KeyError, TypeError, ValueError):
+                            return jsonify({"error": "compound poly shape has invalid points"}), 400
+                        shapes_px.append({"type": "poly", "points": pts_px})
+                    else:
+                        try:
+                            sx = float(s["x"]) * W; sy = float(s["y"]) * H
+                            sw = float(s["w"]) * W; sh = float(s["h"]) * H
+                        except (KeyError, TypeError, ValueError):
+                            return jsonify({"error": "compound rect shape missing x/y/w/h"}), 400
+                        shapes_px.append({"type": "rect", "x": sx, "y": sy, "w": sw, "h": sh})
+                if not shapes_px:
+                    continue
+            elif is_poly_legacy:
                 pts_frac = b.get("points") or []
                 if len(pts_frac) < 3:
                     continue
@@ -3995,28 +4044,40 @@ def diagrams_render():
                     pts_px = [(float(p["x"]) * W, float(p["y"]) * H) for p in pts_frac]
                 except (KeyError, TypeError, ValueError):
                     return jsonify({"error": "poly box has invalid points"}), 400
-                xs = [p[0] for p in pts_px]; ys = [p[1] for p in pts_px]
-                bx_px = min(xs); by_px = min(ys)
-                bw_px = max(xs) - bx_px; bh_px = max(ys) - by_px
-                x = int(bx_px); y = int(by_px)
-                w = int(bw_px); h = int(bh_px)
-                # store local pixel-space poly points (relative to bbox top-left)
-                poly_local_pts = [(p[0] - bx_px, p[1] - by_px) for p in pts_px]
+                shapes_px.append({"type": "poly", "points": pts_px})
             else:
                 try:
                     bx = float(b["x"]); by = float(b["y"]); bw = float(b["w"]); bh = float(b["h"])
                 except (KeyError, TypeError, ValueError):
                     return jsonify({"error": "box missing x/y/w/h"}), 400
-                x = int(bx * W); y = int(by * H)
-                w = int(bw * W); h = int(bh * H)
+                shapes_px.append({"type": "rect", "x": bx * W, "y": by * H, "w": bw * W, "h": bh * H})
+            # Union bbox over every sub-shape.
+            xs_lo = []; ys_lo = []; xs_hi = []; ys_hi = []
+            for s in shapes_px:
+                if s["type"] == "poly":
+                    pts = s["points"]
+                    xs_lo.append(min(p[0] for p in pts))
+                    ys_lo.append(min(p[1] for p in pts))
+                    xs_hi.append(max(p[0] for p in pts))
+                    ys_hi.append(max(p[1] for p in pts))
+                else:
+                    xs_lo.append(s["x"]);             ys_lo.append(s["y"])
+                    xs_hi.append(s["x"] + s["w"]);    ys_hi.append(s["y"] + s["h"])
+            bx_px = min(xs_lo); by_px = min(ys_lo)
+            bw_px = max(xs_hi) - bx_px; bh_px = max(ys_hi) - by_px
+            x = int(bx_px); y = int(by_px)
+            w = int(bw_px); h = int(bh_px)
             x = max(0, min(W - 4, x)); y = max(0, min(H - 4, y))
             w = max(4, min(W - x, w)); h = max(4, min(H - y, h))
             x -= (x % 2); y -= (y % 2)
             w -= (w % 2); h -= (h % 2)
             if w < 2 or h < 2:
                 continue
+            # Single plain rect → no mask needed (the bbox IS the shape).
+            needs_mask = is_poly_legacy or is_compound
+            mask_l = _build_shape_mask(w, h, x, y, shapes_px) if needs_mask else None
             anim_val = (b.get("anim") or "fade").lower() if isinstance(b, dict) else "fade"
-            all_box_records.append((x, y, w, h, anim_val, b if isinstance(b, dict) else {}, poly_local_pts))
+            all_box_records.append((x, y, w, h, anim_val, b if isinstance(b, dict) else {}, mask_l))
             if anim_val != "hide":
                 reveal_indices.append(len(all_box_records) - 1)
         if not all_box_records:
@@ -4026,7 +4087,7 @@ def diagrams_render():
         box_rects = [(r[0], r[1], r[2], r[3]) for i, r in enumerate(all_box_records) if i in reveal_indices]
         box_anims = [all_box_records[i][4] for i in reveal_indices]
         # Parallel to box_rects: poly_local_pts (or None) for masking the crop. None = plain rect box.
-        box_polys = [all_box_records[i][6] for i in reveal_indices]
+        box_masks = [all_box_records[i][6] for i in reveal_indices]
         hide_rects = [(r[0], r[1], r[2], r[3]) for i, r in enumerate(all_box_records) if i not in reveal_indices]
         # Manual time overrides per reveal box (None if not set)
         box_overrides = []
@@ -4281,7 +4342,7 @@ def diagrams_render():
         canvas_w = W
         canvas_h = H + bottom_pad
         for i, ((x, y, w, h), anim_for_box) in enumerate(zip(box_rects, box_anims)):
-            poly_pts = box_polys[i] if i < len(box_polys) else None
+            mask_l = box_masks[i] if i < len(box_masks) else None
             if mode == "reveal":
                 crop = img.crop((x, y, x + w, y + h))
                 dc = ImageDraw.Draw(crop)
@@ -4297,11 +4358,11 @@ def diagrams_render():
                         lx, ly = hx - x, hy - y
                         fill = fill_for_rect.get(hr, (8, 8, 18))
                         dc.rectangle([lx, ly, lx + hw - 1, ly + hh - 1], fill=fill)
-                # Polygon shapes: mask out everything outside the poly so only the
-                # lasso'd region renders. Applied AFTER nested-rect fills so they
-                # also get clipped to the polygon outline.
-                if poly_pts:
-                    crop = _apply_poly_mask(crop, poly_pts)
+                # Polygon / compound shapes: mask out everything outside the
+                # union of shapes. Applied AFTER nested-rect fills so they also
+                # get clipped to the shape outline.
+                if mask_l is not None:
+                    crop = _apply_alpha_mask(crop.convert("RGBA"), mask_l)
                 cp = work_dir / f"crop_{i:02d}.png"
                 crop.save(cp)
                 crop_paths[i] = cp
@@ -4325,9 +4386,9 @@ def diagrams_render():
                 # Remove isolated bright pixels (stars) before upscaling — otherwise
                 # a 1-2px star becomes a 5-10px dot in the slide.
                 box_crop = _despeckle_stars(box_crop, canvas_bg_color)
-                # Polygon mask is applied AFTER despeckle (despeckle needs RGB).
-                if poly_pts:
-                    box_crop = _apply_poly_mask(box_crop, poly_pts)
+                # Mask is applied AFTER despeckle (despeckle needs RGB).
+                if mask_l is not None:
+                    box_crop = _apply_alpha_mask(box_crop.convert("RGBA"), mask_l)
                 margin = 0.85   # leave 15% breathing room
                 sx_ = (canvas_w * margin) / w
                 sy_ = (H * margin) / h   # vertical center within the content area (top H of canvas)
