@@ -4206,7 +4206,10 @@ def diagrams_render():
         bottom_pad = int(min(120, max(60, H * 0.10)))
         bottom_pad -= bottom_pad % 2
         # Priority: user override (eyedropper / hex) → stored auto → fresh compute.
+        # Override is global — when set, it wins for every slide. Otherwise slideshow
+        # mode uses fill_for_rect[box] per slide so each slide's bg matches its locale.
         canvas_bg_color = None
+        has_bg_override = False
         if diagram_row is not None:
             for col in ("bg_color_override", "bg_color_auto"):
                 try:
@@ -4216,11 +4219,14 @@ def diagrams_render():
                 if v and isinstance(v, str) and v.startswith("#") and len(v) == 7:
                     try:
                         canvas_bg_color = (int(v[1:3], 16), int(v[3:5], 16), int(v[5:7], 16))
+                        if col == "bg_color_override":
+                            has_bg_override = True
                         break
                     except ValueError:
                         continue
         if canvas_bg_color is None:
             canvas_bg_color = _corner_bg_color(img, patch=40)
+        use_per_slide_bg = (mode == "slideshow") and (not has_bg_override)
         bg_path = work_dir / "bg.png"
         if mode == "reveal":
             bg_padded = Image.new("RGB", (W, H + bottom_pad), canvas_bg_color)
@@ -4447,10 +4453,13 @@ def diagrams_render():
                     zoom_frame_counts[i] = nf
             else:
                 # SLIDESHOW: the box content becomes a full 16:9 slide.
+                # Per-slide bg = ring sample around this box (matches the locale of the
+                # cropped region). Override, when set, wins globally.
+                slide_bg = fill_for_rect.get((x, y, w, h), canvas_bg_color) if use_per_slide_bg else canvas_bg_color
                 box_crop = img.crop((x, y, x + w, y + h))
                 # Remove isolated bright pixels (stars) before upscaling — otherwise
                 # a 1-2px star becomes a 5-10px dot in the slide.
-                box_crop = _despeckle_stars(box_crop, canvas_bg_color)
+                box_crop = _despeckle_stars(box_crop, slide_bg)
                 # Mask is applied AFTER despeckle (despeckle needs RGB).
                 if mask_l is not None:
                     box_crop = _apply_alpha_mask(box_crop.convert("RGBA"), mask_l)
@@ -4461,7 +4470,7 @@ def diagrams_render():
                 nw = max(2, int(w * s)); nh = max(2, int(h * s))
                 nw -= nw % 2; nh -= nh % 2
                 scaled = box_crop.resize((nw, nh), Image.LANCZOS)
-                slide = Image.new("RGB", (canvas_w, canvas_h), canvas_bg_color)
+                slide = Image.new("RGB", (canvas_w, canvas_h), slide_bg)
                 ox = (canvas_w - nw) // 2
                 oy = (H - nh) // 2   # vertical center within top H, leaves bottom_pad clear
                 # Use the scaled image as its own mask so polygon-transparent pixels
