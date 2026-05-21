@@ -337,30 +337,18 @@
       if (autohide) setTimeout(function(){ if (statusEl) statusEl.style.display = 'none'; }, 3500);
     }
 
-    // Free content-aware fill: sample the 4 edges just outside the selection,
-    // bilinearly blend across the rect, add a small dither. Pure JS, no API.
-    function runPatch(r) {
-      setStatus('Patching…', '#f5b942', false);
-      var dim;
-      try { dim = window.Layers.get_dimensions(); }
-      catch (e) { return setStatus('Layers unavailable', '#e07070', true); }
-
-      var src = document.createElement('canvas');
-      src.width = dim.width; src.height = dim.height;
-      window.Layers.convert_layers_to_canvas(src.getContext('2d'));
-      var sctx = src.getContext('2d');
-      var srcData = sctx.getImageData(0, 0, dim.width, dim.height).data;
-
+    // Compute a patch canvas (full-dim, transparent except inside the rect).
+    // opts: {depth, dither, feather}
+    function computePatch(srcData, dim, r, opts) {
       function px(x, y) {
         x = x < 0 ? 0 : (x >= dim.width ? dim.width - 1 : x);
         y = y < 0 ? 0 : (y >= dim.height ? dim.height - 1 : y);
         var i = (y * dim.width + x) * 4;
         return [srcData[i], srcData[i+1], srcData[i+2]];
       }
-      // Sample N pixels deep outside the edge and average, for stability.
       function sampleEdge(x, y, dx, dy) {
         var R=0, G=0, B=0, n=0;
-        for (var k = 1; k <= 3; k++) {
+        for (var k = 1; k <= opts.depth; k++) {
           var p = px(x + dx*k, y + dy*k);
           R += p[0]; G += p[1]; B += p[2]; n++;
         }
@@ -374,34 +362,42 @@
       var od = outImg.data;
 
       var rx = r.x, ry = r.y, rw = r.w, rh = r.h;
+      var feather = opts.feather | 0;
+      var dither = opts.dither | 0;
+
       for (var y = 0; y < rh; y++) {
         var fy = y / (rh - 1 || 1);
         for (var x = 0; x < rw; x++) {
           var fx = x / (rw - 1 || 1);
-          var t = sampleEdge(rx + x, ry,        0, -1);
-          var b = sampleEdge(rx + x, ry + rh - 1, 0,  1);
-          var l = sampleEdge(rx,         ry + y, -1, 0);
-          var rr = sampleEdge(rx + rw - 1, ry + y,  1, 0);
-
-          // Bilinear blend of 4 edge samples
+          var t  = sampleEdge(rx + x, ry,           0, -1);
+          var b  = sampleEdge(rx + x, ry + rh - 1,  0,  1);
+          var l  = sampleEdge(rx,         ry + y,  -1,  0);
+          var rr = sampleEdge(rx + rw - 1, ry + y,  1,  0);
           var R = (t[0]*(1-fy) + b[0]*fy + l[0]*(1-fx) + rr[0]*fx) * 0.5;
           var G = (t[1]*(1-fy) + b[1]*fy + l[1]*(1-fx) + rr[1]*fx) * 0.5;
           var B = (t[2]*(1-fy) + b[2]*fy + l[2]*(1-fx) + rr[2]*fx) * 0.5;
-
-          // Small dither to avoid posterization
-          var n = (Math.random() - 0.5) * 4;
-          R += n; G += n; B += n;
-
+          if (dither) {
+            var nz = (Math.random() - 0.5) * dither * 2;
+            R += nz; G += nz; B += nz;
+          }
+          var alpha = 255;
+          if (feather > 0) {
+            var de = Math.min(x, y, rw - 1 - x, rh - 1 - y);
+            if (de < feather) alpha = Math.round(255 * de / feather);
+          }
           var di = ((ry + y) * dim.width + (rx + x)) * 4;
           od[di]   = R < 0 ? 0 : (R > 255 ? 255 : R);
           od[di+1] = G < 0 ? 0 : (G > 255 ? 255 : G);
           od[di+2] = B < 0 ? 0 : (B > 255 ? 255 : B);
-          od[di+3] = 255;
+          od[di+3] = alpha;
         }
       }
       octx.putImageData(outImg, 0, 0);
+      return out;
+    }
 
-      out.toBlob(function(blob){
+    function applyPatch(patchCanvas, r, opts) {
+      patchCanvas.toBlob(function(blob){
         var img = new Image();
         img.onload = function(){
           try {
@@ -419,6 +415,114 @@
         };
         img.src = URL.createObjectURL(blob);
       }, 'image/png');
+    }
+
+    // Open the patch preview modal with live sliders.
+    function runPatch(r) {
+      var dim;
+      try { dim = window.Layers.get_dimensions(); }
+      catch (e) { return setStatus('Layers unavailable', '#e07070', true); }
+
+      var src = document.createElement('canvas');
+      src.width = dim.width; src.height = dim.height;
+      var sctx = src.getContext('2d');
+      window.Layers.convert_layers_to_canvas(sctx);
+      var srcData = sctx.getImageData(0, 0, dim.width, dim.height).data;
+
+      var opts = { depth: 3, dither: 4, feather: 0 };
+      var lastPatch = null;
+
+      var overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.72);z-index:100000;display:flex;align-items:center;justify-content:center;font:13px -apple-system,BlinkMacSystemFont,sans-serif;';
+
+      var box = document.createElement('div');
+      box.style.cssText = 'background:#0d0d1a;border:1px solid #2a2a4a;border-radius:12px;padding:18px 20px;max-width:92vw;max-height:92vh;display:flex;flex-direction:column;gap:12px;color:#ddd;box-shadow:0 24px 48px rgba(0,0,0,0.5);';
+      box.onclick = function(e){ e.stopPropagation(); };
+      overlay.onclick = function(){ close(); };
+
+      var title = document.createElement('div');
+      title.textContent = 'PATCH PREVIEW';
+      title.style.cssText = 'font-weight:700;letter-spacing:2px;color:#7ad17a;font-size:11px;';
+      box.appendChild(title);
+
+      var maxW = Math.min(900, window.innerWidth * 0.8);
+      var maxH = Math.min(560, window.innerHeight * 0.6);
+      var scale = Math.min(maxW / dim.width, maxH / dim.height, 1);
+      var pw = Math.round(dim.width * scale);
+      var ph = Math.round(dim.height * scale);
+      var previewCanvas = document.createElement('canvas');
+      previewCanvas.width = pw;
+      previewCanvas.height = ph;
+      previewCanvas.style.cssText = 'border:1px solid #2a2a4a;border-radius:6px;background:#000;display:block;';
+      box.appendChild(previewCanvas);
+
+      function row(label, key, min, max, init) {
+        var wrap = document.createElement('div');
+        wrap.style.cssText = 'display:flex;align-items:center;gap:12px;';
+        var lbl = document.createElement('div');
+        lbl.textContent = label;
+        lbl.style.cssText = 'width:130px;color:#aaa;font-size:12px;';
+        var inp = document.createElement('input');
+        inp.type = 'range'; inp.min = min; inp.max = max; inp.value = init;
+        inp.style.cssText = 'flex:1;accent-color:#7ad17a;';
+        var val = document.createElement('div');
+        val.textContent = init;
+        val.style.cssText = 'width:36px;text-align:right;color:#7ad17a;font-variant-numeric:tabular-nums;';
+        inp.oninput = function(){
+          opts[key] = parseInt(inp.value, 10);
+          val.textContent = inp.value;
+          schedule();
+        };
+        wrap.appendChild(lbl);
+        wrap.appendChild(inp);
+        wrap.appendChild(val);
+        box.appendChild(wrap);
+      }
+      row('Sample depth', 'depth', 1, 12, opts.depth);
+      row('Dither',       'dither', 0, 16, opts.dither);
+      row('Feather edge', 'feather', 0, 32, opts.feather);
+
+      var btnRow = document.createElement('div');
+      btnRow.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;margin-top:6px;';
+      var cancelBtn = mkBtn('CANCEL', false, function(){ close(); });
+      var applyBtn = mkBtn('APPLY PATCH', 'green', function(){
+        if (lastPatch) applyPatch(lastPatch, r, opts);
+        close();
+      });
+      btnRow.appendChild(cancelBtn);
+      btnRow.appendChild(applyBtn);
+      box.appendChild(btnRow);
+
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+
+      var renderTimer = null;
+      function schedule(){ clearTimeout(renderTimer); renderTimer = setTimeout(render, 60); }
+      function render(){
+        lastPatch = computePatch(srcData, dim, r, opts);
+        var pctx = previewCanvas.getContext('2d');
+        pctx.imageSmoothingEnabled = true;
+        pctx.imageSmoothingQuality = 'high';
+        pctx.clearRect(0, 0, pw, ph);
+        pctx.drawImage(src, 0, 0, pw, ph);
+        pctx.drawImage(lastPatch, 0, 0, pw, ph);
+        pctx.strokeStyle = '#7ad17a';
+        pctx.lineWidth = 1;
+        pctx.setLineDash([4, 3]);
+        pctx.strokeRect(r.x * scale + 0.5, r.y * scale + 0.5, r.w * scale, r.h * scale);
+        pctx.setLineDash([]);
+      }
+      render();
+
+      function onKey(e){
+        if (e.key === 'Escape') close();
+        else if (e.key === 'Enter') { if (lastPatch) applyPatch(lastPatch, r, opts); close(); }
+      }
+      document.addEventListener('keydown', onKey);
+      function close(){
+        document.removeEventListener('keydown', onKey);
+        overlay.remove();
+      }
     }
 
     function runFill(promptText, r) {
