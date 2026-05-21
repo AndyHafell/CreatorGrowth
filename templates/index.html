@@ -2296,7 +2296,12 @@
             <div style="font-weight:700; letter-spacing:2px; color:#e87a5b; font-size:12px;">THUMBNAIL STUDIO</div>
             <div id="tsVideoTitle" style="color:#666; font-size:12px; border-left:1px solid #2a2a4a; padding-left:14px;"></div>
             <div style="flex:1;"></div>
-            <span id="tsStatus" style="color:#555; font-size:11px;"></span>
+            <div style="display:flex; flex-direction:column; gap:3px; min-width:300px; align-items:stretch;">
+                <span id="tsStatus" style="color:#555; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-align:right;"></span>
+                <div id="tsProgress" style="height:3px; width:100%; background:#1f1f30; border-radius:2px; overflow:hidden; opacity:0; transition:opacity 0.25s;">
+                    <div id="tsProgressFill" style="height:100%; width:0%; background:linear-gradient(90deg, #e87a5b, #f5b942); border-radius:2px;"></div>
+                </div>
+            </div>
             <button onclick="closeThumbnailsStudio()" style="background:none; border:1px solid #2a2a4a; color:#888; padding:6px 14px; border-radius:4px; font-size:11px; letter-spacing:0.5px; cursor:pointer;">CLOSE</button>
         </div>
 
@@ -5993,11 +5998,59 @@
     function closeThumbnailsStudio() {
         document.getElementById('thumbnailsStudio').style.display = 'none';
     }
-    function tsSetStatus(msg, color) {
+    function tsSetStatus(msg, color, withCounter) {
         var el = document.getElementById('tsStatus');
         if (!el) return;
         el.textContent = msg;
         el.style.color = color || '#555';
+        if (withCounter) el.dataset.baseMsg = msg;
+        else delete el.dataset.baseMsg;
+    }
+    // Progress bar driver — animates 0% → 95% over estSec seconds, then
+    // completeProgress() jumps to 100% / failProgress() turns red.
+    function tsStartProgress(estSec) {
+        var bar = document.getElementById('tsProgress');
+        var fill = document.getElementById('tsProgressFill');
+        if (!bar || !fill) return;
+        if (bar._tick) clearInterval(bar._tick);
+        fill.style.transition = 'none';
+        fill.style.width = '0%';
+        fill.style.background = 'linear-gradient(90deg, #e87a5b, #f5b942)';
+        bar.style.opacity = '1';
+        // Force reflow so the transition starts cleanly
+        void fill.offsetWidth;
+        fill.style.transition = 'width ' + estSec + 's cubic-bezier(0.15, 0.8, 0.3, 0.95), background 0.3s';
+        fill.style.width = '95%';
+        bar._startTime = Date.now();
+        bar._tick = setInterval(function() {
+            var el = document.getElementById('tsStatus');
+            if (!el || !el.dataset.baseMsg) return;
+            var s = Math.round((Date.now() - bar._startTime) / 1000);
+            el.textContent = el.dataset.baseMsg + ' · ' + s + 's';
+        }, 500);
+    }
+    function _tsStopTick() {
+        var bar = document.getElementById('tsProgress');
+        if (bar && bar._tick) { clearInterval(bar._tick); bar._tick = null; }
+    }
+    function tsCompleteProgress() {
+        var bar = document.getElementById('tsProgress');
+        var fill = document.getElementById('tsProgressFill');
+        if (!bar || !fill) return;
+        _tsStopTick();
+        fill.style.transition = 'width 0.35s ease-out, background 0.3s';
+        fill.style.background = 'linear-gradient(90deg, #7ad17a, #7ad17a)';
+        fill.style.width = '100%';
+        setTimeout(function() { bar.style.opacity = '0'; }, 900);
+    }
+    function tsFailProgress() {
+        var bar = document.getElementById('tsProgress');
+        var fill = document.getElementById('tsProgressFill');
+        if (!bar || !fill) return;
+        _tsStopTick();
+        fill.style.transition = 'background 0.3s';
+        fill.style.background = '#e07070';
+        setTimeout(function() { bar.style.opacity = '0'; }, 1500);
     }
     function tsGenerate(kind) {
         var vid = _getStudioVideoId();
@@ -6032,9 +6085,10 @@
             return;
         }
         var nudge = (document.getElementById('tsNudge').value || '').trim();
-        var statusMsg = 'Gemini direct (' + variant + ') — generating 3 in parallel (~30s)…';
-        if (nudge) statusMsg += ' [nudge: ' + nudge.slice(0, 60) + (nudge.length > 60 ? '…' : '') + ']';
-        tsSetStatus(statusMsg, '#f5b942');
+        var statusMsg = 'Generating 3 ' + variant + ' in parallel';
+        if (nudge) statusMsg += ' [nudge: ' + nudge.slice(0, 50) + (nudge.length > 50 ? '…' : '') + ']';
+        tsSetStatus(statusMsg, '#f5b942', true);
+        tsStartProgress(30);
         fetch('/api/videos/' + vid + '/gemini-' + variant, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -6049,11 +6103,12 @@
                   throw new Error(failMsg);
               }
               var slots = (j.thumbs || []).map(function(t) { return t.slot_label; }).join(', ');
-              var msg = 'Gemini direct → ' + j.count + '/' + j.requested + ' thumbs in slots ' + slots;
+              var msg = 'Done → ' + j.count + '/' + j.requested + ' in slots ' + slots;
               if (j.failures && j.failures.length) {
                   msg += ' (failed: ' + j.failures.map(function(f) { return 'slot ' + f.slot_label + ' [' + f.error + ']'; }).join(', ') + ')';
                   console.warn('Gemini direct partial failures:', j.failures);
               }
+              tsCompleteProgress();
               tsSetStatus(msg, j.failures && j.failures.length ? '#f5b942' : '#4caf50');
               tsAppendBatch('gemini', 'gemini_' + variant, 'slots ' + slots, false);
               if (typeof modalDetails !== 'undefined' && modalDetails) {
@@ -6063,7 +6118,7 @@
                   if (typeof renderTitles === 'function') renderTitles('original', modalDetails.original_titles || []);
               }
           })
-          .catch(function(err) { tsSetStatus('Gemini direct failed: ' + err.message, '#e07070'); });
+          .catch(function(err) { tsFailProgress(); tsSetStatus('Failed: ' + err.message, '#e07070'); });
     }
 
     // Listener: thumb editor (separate tab) posts back after Save → re-render
