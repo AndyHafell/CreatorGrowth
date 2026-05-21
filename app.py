@@ -8798,6 +8798,99 @@ def screen_share_cut(vid):
     return jsonify({"job_id": job_id, "clips": clips})
 
 
+# ---- miniPaint inpaint (Remove / Generative fill) via Replicate Flux Fill Pro ----
+
+def _replicate_flux_fill(image_bytes, mask_bytes, prompt):
+    """Inpaint via black-forest-labs/flux-fill-pro.
+    image_bytes: full-canvas PNG. mask_bytes: PNG where WHITE = fill, BLACK = keep.
+    prompt: text (empty/None = content-aware remove). Returns PNG bytes or None."""
+    import base64, time
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    token = os.environ.get("REPLICATE_API_TOKEN", "")
+    if not token:
+        app.logger.warning("flux-fill: REPLICATE_API_TOKEN not set")
+        return None
+
+    image_uri = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+    mask_uri = "data:image/png;base64," + base64.b64encode(mask_bytes).decode("ascii")
+
+    body = {
+        "input": {
+            "image": image_uri,
+            "mask": mask_uri,
+            "prompt": prompt or "",
+            "steps": 50,
+            "guidance": 60,
+            "output_format": "png",
+            "safety_tolerance": 6,
+            "prompt_upsampling": False,
+        },
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Prefer": "wait=60",
+    }
+    url = "https://api.replicate.com/v1/models/black-forest-labs/flux-fill-pro/predictions"
+    req = Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        app.logger.warning(f"flux-fill: replicate http {e.code}: {e.read().decode('utf-8','ignore')[:300]}")
+        return None
+    except URLError as e:
+        app.logger.warning(f"flux-fill: replicate network: {e.reason}")
+        return None
+
+    poll_url = (data.get("urls") or {}).get("get")
+    deadline = time.time() + 120
+    while data.get("status") not in ("succeeded", "failed", "canceled") and poll_url and time.time() < deadline:
+        time.sleep(1.0)
+        try:
+            r2 = Request(poll_url, headers={"Authorization": f"Bearer {token}"})
+            with urlopen(r2, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (HTTPError, URLError):
+            return None
+
+    if data.get("status") != "succeeded":
+        app.logger.warning(f"flux-fill: final status {data.get('status')}: {str(data.get('error'))[:200]}")
+        return None
+
+    out = data.get("output")
+    img_url = out if isinstance(out, str) else (out[0] if isinstance(out, list) and out else None)
+    if not img_url:
+        return None
+    try:
+        with urlopen(img_url, timeout=60) as resp:
+            return resp.read()
+    except (HTTPError, URLError) as e:
+        app.logger.warning(f"flux-fill: download failed: {e}")
+        return None
+
+
+@app.route("/api/thumb-edit/inpaint", methods=["POST"])
+def thumb_edit_inpaint():
+    """Right-click inpaint from miniPaint.
+    Multipart: image (PNG), mask (PNG, white=fill), prompt (str, optional).
+    Returns PNG bytes."""
+    img_f = request.files.get("image")
+    mask_f = request.files.get("mask")
+    if not img_f or not mask_f:
+        return jsonify({"error": "missing image or mask"}), 400
+    prompt = (request.form.get("prompt") or "").strip()
+    image_bytes = img_f.read()
+    mask_bytes = mask_f.read()
+    out = _replicate_flux_fill(image_bytes, mask_bytes, prompt)
+    if not out:
+        return jsonify({"error": "inpaint failed (check server logs)"}), 502
+    from flask import send_file
+    import io
+    return send_file(io.BytesIO(out), mimetype="image/png", download_name="inpaint.png")
+
+
 if __name__ == "__main__":
     import webbrowser, threading
     threading.Timer(1.0, lambda: webbrowser.open("http://127.0.0.1:5050")).start()

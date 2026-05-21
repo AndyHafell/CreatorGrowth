@@ -100,5 +100,156 @@
 	</div>
 	<div class="hidden" id="tmp"></div>
 	<div id="popups"></div>
+
+<script>
+// ---- Right-click inpaint (Remove / Generative fill) via Flux Fill Pro ----
+(function(){
+  function boot() {
+    var canvas = document.getElementById('canvas_minipaint');
+    if (!canvas || !window.Layers || typeof window.Layers.insert !== 'function') {
+      return setTimeout(boot, 100);
+    }
+
+    var lastRect = null;  // {x,y,w,h} in canvas pixel space
+    var dragStart = null;
+
+    function activeTool() {
+      try { return window.AppConfig.GUI.GUI_tools.active_tool; } catch (e) { return null; }
+    }
+    function isSelTool() { return activeTool() === 'selection'; }
+    function canvasPoint(evt) {
+      var r = canvas.getBoundingClientRect();
+      var sx = canvas.width / r.width, sy = canvas.height / r.height;
+      return { x: (evt.clientX - r.left) * sx, y: (evt.clientY - r.top) * sy };
+    }
+    function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+
+    canvas.addEventListener('mousedown', function(e){
+      if (e.button !== 0 || !isSelTool()) return;
+      dragStart = canvasPoint(e);
+    }, true);
+    canvas.addEventListener('mouseup', function(e){
+      if (e.button !== 0 || !isSelTool() || !dragStart) return;
+      var p = canvasPoint(e);
+      var x0 = clamp(Math.min(dragStart.x, p.x), 0, canvas.width);
+      var y0 = clamp(Math.min(dragStart.y, p.y), 0, canvas.height);
+      var x1 = clamp(Math.max(dragStart.x, p.x), 0, canvas.width);
+      var y1 = clamp(Math.max(dragStart.y, p.y), 0, canvas.height);
+      dragStart = null;
+      var w = Math.round(x1 - x0), h = Math.round(y1 - y0);
+      lastRect = (w >= 4 && h >= 4) ? { x: Math.round(x0), y: Math.round(y0), w: w, h: h } : null;
+    }, true);
+
+    // Capture-phase contextmenu beats miniPaint's own preventDefault
+    canvas.addEventListener('contextmenu', function(e){
+      if (!lastRect) return;
+      e.preventDefault();
+      e.stopPropagation();
+      showMenu(e.clientX, e.clientY);
+    }, true);
+
+    var menu = null;
+    function killMenu(){ if (menu){ menu.remove(); menu = null; } }
+    function showMenu(x, y) {
+      killMenu();
+      menu = document.createElement('div');
+      menu.style.cssText = 'position:fixed;left:'+x+'px;top:'+y+'px;background:#1a1a2a;border:1px solid #2a2a4a;border-radius:8px;padding:6px 0;min-width:220px;z-index:99999;font:13px -apple-system,BlinkMacSystemFont,sans-serif;color:#ddd;box-shadow:0 8px 24px rgba(0,0,0,0.5);user-select:none;';
+      var items = [
+        ['Remove (content-aware)', function(){ runFill(''); }],
+        ['Generative fill…', function(){
+          var p = window.prompt('What do you want to generate?', '');
+          if (p && p.trim()) runFill(p.trim());
+        }],
+      ];
+      items.forEach(function(item){
+        var b = document.createElement('div');
+        b.textContent = item[0];
+        b.style.cssText = 'padding:8px 14px;cursor:pointer;';
+        b.onmouseenter = function(){ b.style.background = '#2a2a4a'; };
+        b.onmouseleave = function(){ b.style.background = ''; };
+        b.onclick = function(){ killMenu(); item[1](); };
+        menu.appendChild(b);
+      });
+      document.body.appendChild(menu);
+      setTimeout(function(){ document.addEventListener('mousedown', dismiss, true); }, 0);
+    }
+    function dismiss(e){
+      if (menu && !menu.contains(e.target)) {
+        document.removeEventListener('mousedown', dismiss, true);
+        killMenu();
+      }
+    }
+
+    var statusEl = document.createElement('div');
+    statusEl.style.cssText = 'position:fixed;left:50%;top:64px;transform:translateX(-50%);background:#1a1a2a;border:1px solid #2a2a4a;color:#ddd;padding:10px 18px;border-radius:8px;font:13px -apple-system,BlinkMacSystemFont,sans-serif;z-index:99998;display:none;box-shadow:0 4px 16px rgba(0,0,0,0.4);';
+    document.body.appendChild(statusEl);
+    function setStatus(msg, color, autohide) {
+      statusEl.textContent = msg;
+      statusEl.style.color = color || '#ddd';
+      statusEl.style.display = 'block';
+      if (autohide) setTimeout(function(){ statusEl.style.display = 'none'; }, 3500);
+    }
+
+    function runFill(promptText) {
+      var r = lastRect;
+      if (!r) return;
+      setStatus(promptText ? 'Generating fill…' : 'Removing…', '#f5b942', false);
+
+      var dim;
+      try { dim = window.Layers.get_dimensions(); }
+      catch (e) { return setStatus('Layers unavailable', '#e07070', true); }
+
+      var imgCanvas = document.createElement('canvas');
+      imgCanvas.width = dim.width; imgCanvas.height = dim.height;
+      window.Layers.convert_layers_to_canvas(imgCanvas.getContext('2d'));
+
+      var maskCanvas = document.createElement('canvas');
+      maskCanvas.width = dim.width; maskCanvas.height = dim.height;
+      var mctx = maskCanvas.getContext('2d');
+      mctx.fillStyle = '#000'; mctx.fillRect(0, 0, dim.width, dim.height);
+      mctx.fillStyle = '#fff'; mctx.fillRect(r.x, r.y, r.w, r.h);
+
+      Promise.all([
+        new Promise(function(res){ imgCanvas.toBlob(res, 'image/png'); }),
+        new Promise(function(res){ maskCanvas.toBlob(res, 'image/png'); })
+      ]).then(function(blobs){
+        var fd = new FormData();
+        fd.append('image', blobs[0], 'image.png');
+        fd.append('mask',  blobs[1], 'mask.png');
+        fd.append('prompt', promptText);
+        return fetch('/api/thumb-edit/inpaint', { method: 'POST', body: fd });
+      }).then(function(resp){
+        if (!resp.ok) {
+          return resp.json().then(function(j){ throw new Error(j.error || ('HTTP '+resp.status)); },
+                                  function(){ throw new Error('HTTP '+resp.status); });
+        }
+        return resp.blob();
+      }).then(function(blob){
+        var img = new Image();
+        img.onload = function(){
+          try {
+            window.Layers.insert({
+              name: promptText ? ('fill: ' + promptText.slice(0, 24)) : 'remove',
+              type: 'image',
+              data: img,
+              width: img.naturalWidth, height: img.naturalHeight,
+              width_original: img.naturalWidth, height_original: img.naturalHeight,
+            });
+            setStatus('Done — added as new layer', '#7ad17a', true);
+          } catch (e) {
+            setStatus('Layer insert failed: ' + e.message, '#e07070', true);
+          }
+        };
+        img.onerror = function(){ setStatus('Decode failed', '#e07070', true); };
+        img.src = URL.createObjectURL(blob);
+      }).catch(function(err){
+        setStatus('Failed: ' + err.message, '#e07070', true);
+      });
+    }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
+})();
+</script>
 </body>
 </html>
