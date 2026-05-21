@@ -2037,18 +2037,22 @@
                             <button onclick="resetDiagramsImage()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Replace image</button>
                             <button onclick="openDiagramInPaint()" title="Edit the source image in miniPaint (remove/move text, retouch). Boxes are cleared on save." style="background:none; border:1px solid #2a2a4a; color:#7ad17a; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Edit in Paint</button>
                             <button onclick="enterCropMode()" style="background:none; border:1px solid #2a2a4a; color:#f5b942; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Crop region</button>
-                            <button onclick="enterLassoMode()" title="Draw a freeform polygon shape — clicks add vertices, double-click closes" style="background:none; border:1px solid #2a2a4a; color:#c08af0; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Lasso shape</button>
+                            <button onclick="enterLassoMode()" title="Draw a freeform polygon shape — clicks add vertices, double-click closes" style="background:rgba(192,138,240,0.15); border:1px solid #c08af0; color:#c08af0; border-radius:4px; padding:5px 11px; font-size:11px; font-weight:600; cursor:pointer;">Lasso shape</button>
                             <button onclick="undoLastBox()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Undo last box</button>
                             <button onclick="clearBoxes()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Clear boxes</button>
                             <span id="diagramsBoxCount" style="color:#f5b942; font-size:11px; letter-spacing:0.5px;">0 boxes</span>
                             <span id="diagramsMultiSelectStatus" style="display:none; color:#7ad17a; font-size:11px; letter-spacing:0.5px; padding:2px 8px; border:1px solid #2a4a2a; border-radius:10px; cursor:pointer;" onclick="clearMultiSelect()" title="Click to clear the group"></span>
-                            <span style="color:#444; font-size:11px;">&middot; drag to draw &middot; click to select &middot; + to group &middot; right-click to delete</span>
+                            <span style="color:#444; font-size:11px;">&middot; drag to draw &middot; click box to select &middot; right-click to delete</span>
                             <span style="flex:1;"></span>
-                            <span style="color:#666; font-size:10px; letter-spacing:1px; padding-left:6px;">BG</span>
-                            <div id="diagramsBgSwatch" style="width:20px; height:20px; border:1px solid #2a2a4a; border-radius:4px; background:#0a0a14; cursor:pointer;" onclick="toggleEyedropperMode()" title="Click then click on the image to sample a background color"></div>
-                            <input id="diagramsBgHex" type="text" placeholder="auto" maxlength="7" spellcheck="false" style="width:74px; background:transparent; border:1px solid #2a2a4a; color:#ddd; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; padding:3px 6px; border-radius:4px;" onchange="onBgHexInputChange()" title="Override the background color used for slideshow slides & padded bars">
-                            <button id="diagramsBgReset" onclick="resetBgColor()" title="Clear override — use auto-detected color" style="display:none; background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 9px; font-size:11px; cursor:pointer;">Reset bg</button>
                             <button id="diagramsModeToggle" onclick="toggleSlideshow()" title="Toggle slideshow mode (one slide at a time vs reveals)" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Slideshow mode</button>
+                        </div>
+                        <div id="diagramsBgToolbar" style="margin-top:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:8px 10px; background:rgba(255,255,255,0.02); border:1px solid #1f1f30; border-radius:6px;">
+                            <span style="color:#666; font-size:10px; letter-spacing:1.5px; font-weight:700;">BG COLOR</span>
+                            <div id="diagramsBgSwatch" style="width:22px; height:22px; border:1px solid #2a2a4a; border-radius:4px; background:#0a0a14; cursor:pointer;" onclick="toggleEyedropperMode()" title="Click then click on the image to sample a background color"></div>
+                            <input id="diagramsBgHex" type="text" placeholder="auto" maxlength="7" spellcheck="false" style="width:88px; background:transparent; border:1px solid #2a2a4a; color:#ddd; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; padding:4px 8px; border-radius:4px;" onchange="onBgHexInputChange()" title="Override the background color used for slideshow slides & padded bars">
+                            <button onclick="toggleEyedropperMode()" id="diagramsBgEyeBtn" title="Eyedropper — click then sample a pixel" style="background:none; border:1px solid #2a2a4a; color:#aaa; border-radius:4px; padding:5px 10px; font-size:11px; cursor:pointer;">Pick from image</button>
+                            <button id="diagramsBgReset" onclick="resetBgColor()" title="Clear override — use auto-detected color" style="display:none; background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 10px; font-size:11px; cursor:pointer;">Reset to auto</button>
+                            <span style="color:#444; font-size:11px;">&middot; sets the fill behind slideshow slides &amp; padded bars</span>
                         </div>
                         <div id="diagramsCropToolbar" style="display:none; margin-top:10px; gap:10px; align-items:center; flex-wrap:wrap;">
                             <button onclick="applyCrop()" style="background:#f5b942; color:#000; border:none; border-radius:4px; padding:6px 14px; font-size:11px; font-weight:700; letter-spacing:0.5px; cursor:pointer;">Apply crop</button>
@@ -6401,10 +6405,14 @@
         var img = document.getElementById('diagramsImage');
         if (!img.src) { alert('Upload an image first.'); return; }
         diagramCropMode = true;
+        var existingAct = document.getElementById('diagramSelectedBoxActions');
+        if (existingAct) existingAct.remove();
         var layer = document.getElementById('diagramsBoxLayer');
         Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.style.display = 'none'; });
         document.getElementById('diagramsCropOverlay').style.display = 'block';
         document.getElementById('diagramsBoxToolbar').style.display = 'none';
+        var bgBar = document.getElementById('diagramsBgToolbar');
+        if (bgBar) bgBar.style.display = 'none';
         document.getElementById('diagramsCropToolbar').style.display = 'flex';
         // initial selection: centered, 50% of image
         var r = layer.getBoundingClientRect();
@@ -6418,7 +6426,10 @@
         Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.style.display = 'block'; });
         document.getElementById('diagramsCropOverlay').style.display = 'none';
         document.getElementById('diagramsBoxToolbar').style.display = 'flex';
+        var bgBar = document.getElementById('diagramsBgToolbar');
+        if (bgBar) bgBar.style.display = 'flex';
         document.getElementById('diagramsCropToolbar').style.display = 'none';
+        _renderSelectedBoxActions();
     }
     function updateCropRect(x, y, w, h) {
         var layer = document.getElementById('diagramsBoxLayer');
@@ -6644,10 +6655,14 @@
         if (diagramCropMode) exitCropMode();
         diagramLassoMode = true;
         diagramLassoPoints = [];
+        var existingAct = document.getElementById('diagramSelectedBoxActions');
+        if (existingAct) existingAct.remove();
         // Hide rectangular boxes so the lasso overlay is unobstructed.
         var layer = document.getElementById('diagramsBoxLayer');
         Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.style.display = 'none'; });
         document.getElementById('diagramsBoxToolbar').style.display = 'none';
+        var bgBar = document.getElementById('diagramsBgToolbar');
+        if (bgBar) bgBar.style.display = 'none';
         document.getElementById('diagramsLassoToolbar').style.display = 'flex';
         _renderLassoPreview();
         _setLassoStatus('Click to place first point');
@@ -6662,6 +6677,8 @@
         var layer = document.getElementById('diagramsBoxLayer');
         Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.style.display = 'block'; });
         document.getElementById('diagramsBoxToolbar').style.display = 'flex';
+        var bgBar = document.getElementById('diagramsBgToolbar');
+        if (bgBar) bgBar.style.display = 'flex';
         document.getElementById('diagramsLassoToolbar').style.display = 'none';
         renderBoxes();
     }
@@ -6922,22 +6939,9 @@
             del.onmousedown = function(ev) { ev.stopPropagation(); };
             d.appendChild(del);
 
-            // Multi-select toggle (bottom-right). Checked = in the multi-select group.
-            // Click toggles membership; animation hotkeys apply to all checked boxes.
-            if (!isHide) {
-                var groupClr = inGroup ? '#7ad17a' : '#888';
-                var groupChk = document.createElement('div');
-                groupChk.textContent = inGroup ? '✓' : '+';
-                groupChk.title = inGroup
-                    ? 'In selection group — click to remove'
-                    : 'Add to selection group (animations apply to all checked)';
-                groupChk.style.cssText = 'position:absolute; bottom:-10px; right:-10px; background:#0d0d1a; color:' + groupClr + '; font-weight:700; font-size:13px; line-height:1; width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,0.5); border:1px solid ' + groupClr + '; pointer-events:auto;';
-                groupChk.onmousedown = function(ev) { ev.stopPropagation(); };
-                groupChk.onclick = (function(ix) {
-                    return function(ev) { ev.preventDefault(); ev.stopPropagation(); toggleMultiSelect(ix); };
-                })(i);
-                d.appendChild(groupChk);
-            }
+            // Group membership is shown via the box's green outline (set above) and
+            // the floating action bar that pops up next to the currently-selected box.
+            // No permanent per-box toggle — keeps every box clean by default.
 
             // Resize handles only apply to rectangular boxes — polygons reshape via redraw.
             if (isPoly) {
@@ -6977,6 +6981,7 @@
             layer.appendChild(d);
         });
         document.getElementById('diagramsBoxCount').textContent = diagramBoxes.length + ' box' + (diagramBoxes.length === 1 ? '' : 'es');
+        _renderSelectedBoxActions();
         if (typeof renderSidebar === 'function' && diagramsList && diagramsList.length) renderSidebar();
         // Note: renderBoxAnimList NOT called here. Callers that change box structure
         // call it explicitly. This keeps setSelectedBox (which uses renderBoxes for
@@ -7027,6 +7032,54 @@
         else multiSelectedIdxs.add(idx);
         _updateMultiSelectStatus();
         renderBoxes();
+    }
+    // Pop-up action bar that anchors to the currently-selected box. Replaces the
+    // permanent per-box `+` toggle. Contains group toggle + delete; the box-level
+    // selection glow is rendered inline by renderBoxes.
+    function _renderSelectedBoxActions() {
+        var layer = document.getElementById('diagramsBoxLayer');
+        if (!layer) return;
+        var existing = document.getElementById('diagramSelectedBoxActions');
+        if (existing) existing.remove();
+        if (diagramCropMode || diagramLassoMode) return;
+        if (selectedBoxIdx < 0 || selectedBoxIdx >= diagramBoxes.length) return;
+        var b = diagramBoxes[selectedBoxIdx];
+        if (!b || b.anim === 'hide') return;
+        var bbox = _boxBbox(b);
+        var inGroup = multiSelectedIdxs.has(selectedBoxIdx);
+        var bar = document.createElement('div');
+        bar.id = 'diagramSelectedBoxActions';
+        // Place below the box, centered. CSS will keep it on-screen via translate.
+        var anchorTopPct = (bbox.y + bbox.h) * 100;
+        var anchorLeftPct = (bbox.x + bbox.w / 2) * 100;
+        bar.style.cssText = 'position:absolute; left:' + anchorLeftPct + '%; top:calc(' + anchorTopPct + '% + 8px); transform:translateX(-50%); display:flex; gap:6px; padding:5px 6px; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px; box-shadow:0 6px 18px rgba(0,0,0,0.55); pointer-events:auto; z-index:20; white-space:nowrap;';
+        // + Group / ✓ In group toggle
+        var groupBtn = document.createElement('button');
+        groupBtn.textContent = inGroup ? '✓ In group' : '+ Add to group';
+        groupBtn.title = inGroup
+            ? 'Remove this box from the selection group'
+            : 'Add this box to a selection group — animations apply to every box in the group';
+        var groupBorder = inGroup ? '#7ad17a' : '#2a4a2a';
+        var groupColor = inGroup ? '#7ad17a' : '#aaa';
+        groupBtn.style.cssText = 'background:#0d0d1a; border:1px solid ' + groupBorder + '; color:' + groupColor + '; padding:5px 11px; font-size:11px; font-weight:600; letter-spacing:0.3px; border-radius:4px; cursor:pointer; font-family:inherit;';
+        groupBtn.onmousedown = function(ev) { ev.stopPropagation(); };
+        groupBtn.onclick = function(ev) {
+            ev.preventDefault(); ev.stopPropagation();
+            toggleMultiSelect(selectedBoxIdx);
+        };
+        bar.appendChild(groupBtn);
+        // Delete (duplicates the × on the corner but easier to hit)
+        var delBtn = document.createElement('button');
+        delBtn.textContent = '× Delete';
+        delBtn.title = 'Delete this box';
+        delBtn.style.cssText = 'background:#0d0d1a; border:1px solid #4a2a2a; color:#e07070; padding:5px 11px; font-size:11px; font-weight:600; letter-spacing:0.3px; border-radius:4px; cursor:pointer; font-family:inherit;';
+        delBtn.onmousedown = function(ev) { ev.stopPropagation(); };
+        delBtn.onclick = function(ev) {
+            ev.preventDefault(); ev.stopPropagation();
+            deleteBox(selectedBoxIdx);
+        };
+        bar.appendChild(delBtn);
+        layer.appendChild(bar);
     }
     function clearMultiSelect() {
         if (multiSelectedIdxs.size === 0) return;
