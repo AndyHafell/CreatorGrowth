@@ -6608,6 +6608,69 @@
         if (!/^#[0-9a-f]{6}$/.test(s)) return '';
         return s;
     }
+    // Cached offscreen full-image canvas for per-box bg sampling.
+    var _bgSamplerCanvas = null;
+    var _bgSamplerSrc = '';
+    function _getBgSampler() {
+        var img = document.getElementById('diagramsImage');
+        if (!img || !img.naturalWidth) return null;
+        if (_bgSamplerCanvas && _bgSamplerSrc === img.src) return _bgSamplerCanvas;
+        try {
+            var c = document.createElement('canvas');
+            c.width = img.naturalWidth;
+            c.height = img.naturalHeight;
+            c.getContext('2d').drawImage(img, 0, 0);
+            _bgSamplerCanvas = c;
+            _bgSamplerSrc = img.src;
+            return c;
+        } catch (e) { return null; }
+    }
+    // Sample a ring of pixels just outside `b`'s bbox and return the median color hex.
+    // Median over R/G/B is robust against the box border itself bleeding into the ring.
+    function _sampleBgForBox(b) {
+        if (!b) return '';
+        var rectKey = [Math.round((b.x||0)*1e4), Math.round((b.y||0)*1e4),
+                       Math.round((b.w||0)*1e4), Math.round((b.h||0)*1e4)].join(',');
+        if (b._bgAutoCached && b._bgAutoCachedKey === rectKey) return b._bgAutoCached;
+        var canvas = _getBgSampler();
+        if (!canvas) return '';
+        var W = canvas.width, H = canvas.height;
+        var ctx = canvas.getContext('2d');
+        var bx = Math.round((b.x||0) * W);
+        var by = Math.round((b.y||0) * H);
+        var bw = Math.round((b.w||0) * W);
+        var bh = Math.round((b.h||0) * H);
+        var off = Math.max(8, Math.round(Math.min(W, H) * 0.012)); // ring offset outside box
+        var pts = [];
+        var N_SIDE = 7; // samples per edge
+        function pushSample(px, py) {
+            px = Math.max(0, Math.min(W - 1, px));
+            py = Math.max(0, Math.min(H - 1, py));
+            try {
+                var d = ctx.getImageData(px, py, 1, 1).data;
+                pts.push([d[0], d[1], d[2]]);
+            } catch (e) {}
+        }
+        for (var i = 0; i < N_SIDE; i++) {
+            var f = (i + 0.5) / N_SIDE;
+            pushSample(bx + Math.round(f * bw), by - off);            // top
+            pushSample(bx + Math.round(f * bw), by + bh + off);       // bottom
+            pushSample(bx - off,                by + Math.round(f * bh)); // left
+            pushSample(bx + bw + off,           by + Math.round(f * bh)); // right
+        }
+        if (!pts.length) return '';
+        function med(idx) {
+            var arr = pts.map(function(p) { return p[idx]; }).sort(function(a, c) { return a - c; });
+            return arr[Math.floor(arr.length / 2)];
+        }
+        var r = med(0), g = med(1), bl = med(2);
+        var hex = '#' + [r, g, bl].map(function(v) {
+            var h = v.toString(16); return h.length === 1 ? '0' + h : h;
+        }).join('');
+        b._bgAutoCached = hex;
+        b._bgAutoCachedKey = rectKey;
+        return hex;
+    }
     function updateBgUI() {
         var d = diagramsList[activeDiagramIdx];
         var swatch = document.getElementById('diagramsBgSwatch');
@@ -6615,15 +6678,26 @@
         var resetBtn = document.getElementById('diagramsBgReset');
         if (!swatch || !input) return;
         var override = d && d.bg_color_override ? _normalizeHex(d.bg_color_override) : '';
-        var auto = d && d.bg_color_auto ? _normalizeHex(d.bg_color_auto) : '';
+        // Per-slide auto: when a box row is selected, sample the ring around that box.
+        // Falls back to the diagram-level corner-sampled auto when nothing is selected.
+        var perSlideAuto = '';
+        if (typeof selectedBoxIdx !== 'undefined' && selectedBoxIdx >= 0 &&
+            typeof diagramBoxes !== 'undefined' && diagramBoxes[selectedBoxIdx]) {
+            perSlideAuto = _normalizeHex(_sampleBgForBox(diagramBoxes[selectedBoxIdx]));
+        }
+        var diagramAuto = d && d.bg_color_auto ? _normalizeHex(d.bg_color_auto) : '';
+        var auto = perSlideAuto || diagramAuto;
         var effective = override || auto;
         swatch.style.background = effective || '#0a0a14';
         swatch.style.borderColor = diagramEyedropperMode ? '#f5b942' : '#2a2a4a';
+        var autoLabel = perSlideAuto
+            ? 'Auto (slide ' + (selectedBoxIdx + 1) + '): ' + perSlideAuto
+            : (auto ? 'Auto: ' + auto : '');
         swatch.title = diagramEyedropperMode
             ? 'Eyedropper active — click on the image to sample a color. Click swatch again to cancel.'
             : (override
                 ? 'Override: ' + override + ' (click to re-sample)'
-                : (auto ? 'Auto: ' + auto + ' (click to override via eyedropper)' : 'Click to sample a bg color from the image'));
+                : (autoLabel ? autoLabel + ' (click to override via eyedropper)' : 'Click to sample a bg color from the image'));
         if (override) {
             input.value = override;
             input.style.color = '#f5b942';
@@ -7302,6 +7376,7 @@
             if (typeof renderBoxAnimList === 'function') renderBoxAnimList();
         }
         if (typeof renderBoxes === 'function') renderBoxes();
+        if (typeof updateBgUI === 'function') updateBgUI();
     }
     // Pop-up action bar anchored under the currently-selected box. Single action:
     // enter Lasso mode targeting this box (rect → poly, or extend existing poly).
