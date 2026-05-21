@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html dir="ltr" lang="en-US">
+<head>
+	<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+	<meta http-equiv="x-ua-compatible" content="IE=edge" />
+	<title>miniPaint - image editor</title>
+	<meta name="description" content="miniPaint is free online image editor using HTML5. Edit, adjust your images, add effects online in your browser, without installing anything..." />
+	<meta name="keywords" content="photo, image, picture, transparent, layers, free, edit, html5, canvas, javascript, online, photoshop, gimp, effects, sharpen, blur, magic eraser tool, clone tool, rotate, resize, photoshop online, online tools, tilt shift, sprites, keypoints" />
+	<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1.0, user-scalable=0" />
+	<link rel="icon" sizes="192x192" href="images/favicon.png">
+	<!-- <link rel="manifest" href="dist/manifest.json"> -->
+	<!-- Google -->
+	<meta itemprop="name" content="miniPaint" />
+	<meta itemprop="description" content="miniPaint is free online image editor using HTML5. Edit, adjust your images, add effects online in your browser, without installing anything..." />
+	<meta itemprop="image" content="https://viliusle.github.io/miniPaint/images/preview.jpg" />
+	<!-- Twitter -->
+	<meta name="twitter:card" content="summary_large_image" />
+	<meta name="twitter:title" content="miniPaint" />
+	<meta name="twitter:description" content="miniPaint is free online image editor using HTML5. Edit, adjust your images, add effects online in your browser, without installing anything..." />
+	<meta name="twitter:image" content="https://viliusle.github.io/miniPaint/images/preview.jpg" />
+	<meta name="twitter:image:alt" content="miniPaint is free online image editor using HTML5. Edit, adjust your images, add effects online in your browser, without installing anything..." />
+	<!-- Facebook, Pinterest -->
+	<meta property="og:title" content="miniPaint" />
+	<meta property="og:type" content="article" />
+	<meta property="og:url" content="https://viliusle.github.io/miniPaint/" />
+	<meta property="og:image" content="https://viliusle.github.io/miniPaint/images/preview.jpg" />
+	<meta property="og:description" content="miniPaint is free online image editor using HTML5. Edit, adjust your images, add effects online in your browser, without installing anything..." />
+	<meta property="og:site_name" content="miniPaint" />
+	
+	<script src="dist/bundle.js"></script>
+</head>
+<body>
+	<div class="wrapper">
+
+		<nav aria-label="Main Menu" class="main_menu" id="main_menu"></nav>
+		
+		<div class="submenu">
+			<a class="logo" href="#">miniPaint</a>
+			<div class="block attributes" id="action_attributes"></div>
+			<button class="undo_button" id="undo_button" type="button">
+				<span class="sr_only">Undo</span>
+			</button>
+		</div>
+		
+		<div class="sidebar_left" id="tools_container"></div>
+
+
+		<div class="middle_area" id="middle_area">
+
+			<canvas class="ruler_left" id="ruler_left"></canvas>
+			<canvas class="ruler_top" id="ruler_top"></canvas>
+
+			<div class="main_wrapper" id="main_wrapper">
+				<div class="canvas_wrapper" id="canvas_wrapper">
+					<div id="mouse"></div>
+					<div class="transparent-grid" id="canvas_minipaint_background"></div>
+					<canvas id="canvas_minipaint">
+						<div class="trn error">
+							Your browser does not support canvas or JavaScript is not enabled.
+						</div>
+					</canvas>
+				</div>
+			</div>
+		</div>
+
+		<div class="sidebar_right">
+			<div class="preview block">
+				<h2 class="trn toggle" data-target="toggle_preview">Preview</h2>
+				<div id="toggle_preview"></div>
+			</div>
+			
+			<div class="colors block">
+				<h2 class="trn toggle" data-target="toggle_colors">Colors</h2>
+				<div class="content" id="toggle_colors"></div>
+			</div>
+			
+			<div class="block" id="info_base">
+				<h2 class="trn toggle toggle-full" data-target="toggle_info">Information</h2>
+				<div class="content" id="toggle_info"></div>
+			</div>
+			
+			<div class="details block" id="details_base">
+				<h2 class="trn toggle toggle-full" data-target="toggle_details">Layer details</h2>
+				<div class="content details-content" id="toggle_details"></div>
+			</div>
+			
+			<div class="layers block">
+				<h2 class="trn">Layers</h2>
+				<div class="content" id="layers_base"></div>
+			</div>
+		</div>
+	</div>
+	<div class="mobile_menu">
+		<button class="left_mobile_menu" id="left_mobile_menu_button" type="button">
+			<span class="sr_only">Toggle Menu</span>
+		</button>
+		<button class="right_mobile_menu" id="mobile_menu_button" type="button">
+			<span class="sr_only">Toggle Menu</span>
+		</button>
+	</div>
+	<div class="hidden" id="tmp"></div>
+	<div id="popups"></div>
+
+<script>
+// ---- Right-click inpaint (Remove / Generative fill) via Flux Fill Pro ----
+(function(){
+  function boot() {
+    var canvas = document.getElementById('canvas_minipaint');
+    if (!canvas || !window.Layers || typeof window.Layers.insert !== 'function') {
+      return setTimeout(boot, 100);
+    }
+
+    // Try every known path miniPaint may expose its selection rect from.
+    // Returns {x,y,w,h, _via} on hit, or {_diag: [...]} on miss for debugging.
+    function probeSelection() {
+      var diag = [];
+      function asRect(d, via) {
+        if (!d) return null;
+        diag.push(via + ' → ' + JSON.stringify({x:d.x, y:d.y, w:d.width, h:d.height, status:d.status, type:d.type}));
+        if (d.x == null || d.y == null || !d.width || !d.height) return null;
+        var w = Math.round(d.width), h = Math.round(d.height);
+        if (w < 4 || h < 4) return null;
+        return { x: Math.round(d.x), y: Math.round(d.y), w: w, h: h, _via: via };
+      }
+      try {
+        var mods = window.AppConfig && window.AppConfig.GUI && window.AppConfig.GUI.GUI_tools
+                   && window.AppConfig.GUI.GUI_tools.tools_modules;
+        if (!mods) { diag.push('AppConfig.GUI.GUI_tools.tools_modules missing'); return { _diag: diag }; }
+        diag.push('tools_modules keys: ' + Object.keys(mods).join(','));
+        diag.push('active_tool: ' + (window.AppConfig.GUI.GUI_tools.active_tool || '?'));
+
+        // Try every module that has Base_selection
+        for (var k in mods) {
+          var obj = mods[k] && mods[k].object;
+          if (!obj || !obj.Base_selection) continue;
+          var bs = obj.Base_selection;
+          // 1. get_selection()
+          if (typeof bs.get_selection === 'function') {
+            try {
+              var r = asRect(bs.get_selection(), k + '.get_selection');
+              if (r) return r;
+            } catch (e) { diag.push(k + '.get_selection threw: ' + e.message); }
+          }
+          // 2. find_settings().data
+          if (typeof bs.find_settings === 'function') {
+            try {
+              var fs = bs.find_settings();
+              var r2 = asRect(fs && fs.data, k + '.find_settings.data');
+              if (r2) return r2;
+            } catch (e) { diag.push(k + '.find_settings threw: ' + e.message); }
+          }
+          // 3. direct .selection
+          try {
+            var r3 = asRect(bs.selection, k + '.Base_selection.selection');
+            if (r3) return r3;
+          } catch (e) {}
+        }
+      } catch (e) { diag.push('outer threw: ' + e.message); }
+      return { _diag: diag };
+    }
+    function getLiveRect() {
+      var p = probeSelection();
+      return p && p.x != null ? p : null;
+    }
+    // Expose for DevTools: document.getElementById('mp').contentWindow.__miniPaintProbe()
+    window.__miniPaintProbe = probeSelection;
+    window.__miniPaintGetRect = getLiveRect;
+
+    // miniPaint binds pointerdown on document and preventDefaults right-clicks,
+    // which kills the browser's contextmenu event. Block right-button events from
+    // reaching miniPaint so the browser fires contextmenu normally.
+    function swallowRightBtn(e) {
+      if (e.button === 2) {
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      }
+    }
+    canvas.addEventListener('pointerdown', swallowRightBtn, true);
+    canvas.addEventListener('mousedown',   swallowRightBtn, true);
+    canvas.addEventListener('pointerup',   swallowRightBtn, true);
+    canvas.addEventListener('mouseup',     swallowRightBtn, true);
+
+    // Capture-phase contextmenu so we win against any document-level handler
+    canvas.addEventListener('contextmenu', function(e){
+      e.preventDefault();
+      e.stopPropagation();
+      showMenu(e.clientX, e.clientY);
+    }, true);
+    document.addEventListener('contextmenu', function(e){
+      if (e.target === canvas || canvas.contains(e.target)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
+
+    var menu = null;
+    function killMenu(){ if (menu){ menu.remove(); menu = null; } }
+    function showMenu(x, y) {
+      killMenu();
+      var rect = getLiveRect();
+      menu = document.createElement('div');
+      menu.style.cssText = 'position:fixed;left:'+x+'px;top:'+y+'px;background:#1a1a2a;border:1px solid #2a2a4a;border-radius:8px;padding:6px 0;min-width:240px;z-index:99999;font:13px -apple-system,BlinkMacSystemFont,sans-serif;color:#ddd;box-shadow:0 8px 24px rgba(0,0,0,0.5);user-select:none;';
+      var header = document.createElement('div');
+      header.style.cssText = 'padding:4px 14px 6px;font-size:11px;letter-spacing:1px;color:#666;border-bottom:1px solid #2a2a4a;margin-bottom:4px;';
+      header.textContent = rect ? ('SELECTION  ' + rect.w + '×' + rect.h) : 'NO SELECTION';
+      menu.appendChild(header);
+      var items = [
+        ['Remove (content-aware)', function(){ runFill('', rect); }],
+        ['Generative fill…', function(){
+          var p = window.prompt('What do you want to generate?', '');
+          if (p && p.trim()) runFill(p.trim(), rect);
+        }],
+      ];
+      items.forEach(function(item){
+        var b = document.createElement('div');
+        b.textContent = item[0];
+        var disabled = !rect;
+        b.style.cssText = 'padding:8px 14px;cursor:'+(disabled?'not-allowed':'pointer')+';opacity:'+(disabled?'0.4':'1')+';';
+        if (!disabled) {
+          b.onmouseenter = function(){ b.style.background = '#2a2a4a'; };
+          b.onmouseleave = function(){ b.style.background = ''; };
+          b.onclick = function(){ killMenu(); item[1](); };
+        }
+        menu.appendChild(b);
+      });
+      document.body.appendChild(menu);
+      setTimeout(function(){ document.addEventListener('mousedown', dismiss, true); }, 0);
+    }
+    function dismiss(e){
+      if (menu && !menu.contains(e.target)) {
+        document.removeEventListener('mousedown', dismiss, true);
+        killMenu();
+      }
+    }
+
+    // ---- Top-bar AI buttons (in the empty submenu space, left of the undo button) ----
+    var submenu = document.querySelector('.submenu');
+    if (submenu) {
+      var actions = document.createElement('div');
+      actions.id = 'ai_fill_actions';
+      actions.style.cssText = 'display:flex;gap:8px;margin-left:18px;align-items:center;';
+
+      function mkBtn(label, accent, onClick) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = label;
+        var base = accent
+          ? 'background:#e8a800;border:1px solid #e8a800;color:#000;'
+          : 'background:#2a2a4a;border:1px solid #3a3a5a;color:#ddd;';
+        b.style.cssText = base + 'padding:6px 14px;border-radius:6px;font-size:11px;letter-spacing:1px;font-weight:700;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,sans-serif;';
+        b.onmouseenter = function(){ b.style.filter = 'brightness(1.15)'; };
+        b.onmouseleave = function(){ b.style.filter = ''; };
+        b.onclick = onClick;
+        return b;
+      }
+
+      var removeBtn = mkBtn('REMOVE', false, function(){
+        var rect = getLiveRect();
+        if (!rect) {
+          var p = probeSelection();
+          var msg = 'No selection detected. Diag: ' + ((p && p._diag) ? p._diag.join(' | ') : 'unknown');
+          console.log('[miniPaint-AI] probe:', p);
+          return setStatus(msg, '#f5b942', false);
+        }
+        runFill('', rect);
+      });
+      var fillBtn = mkBtn('FILL…', true, function(){
+        var rect = getLiveRect();
+        if (!rect) {
+          var p = probeSelection();
+          var msg = 'No selection detected. Diag: ' + ((p && p._diag) ? p._diag.join(' | ') : 'unknown');
+          console.log('[miniPaint-AI] probe:', p);
+          return setStatus(msg, '#f5b942', false);
+        }
+        var p = window.prompt('What do you want to generate?', '');
+        if (p && p.trim()) runFill(p.trim(), rect);
+      });
+      actions.appendChild(removeBtn);
+      actions.appendChild(fillBtn);
+
+      // Place buttons right after the miniPaint logo (left side of the submenu)
+      var attrBlock = submenu.querySelector('#action_attributes');
+      if (attrBlock) submenu.insertBefore(actions, attrBlock);
+      else {
+        var logo = submenu.querySelector('.logo');
+        if (logo && logo.nextSibling) submenu.insertBefore(actions, logo.nextSibling);
+        else submenu.appendChild(actions);
+      }
+    }
+
+    var statusEl = document.createElement('div');
+    statusEl.style.cssText = 'position:fixed;left:50%;top:64px;transform:translateX(-50%);background:#1a1a2a;border:1px solid #2a2a4a;color:#ddd;padding:10px 18px;border-radius:8px;font:13px -apple-system,BlinkMacSystemFont,sans-serif;z-index:99998;display:none;box-shadow:0 4px 16px rgba(0,0,0,0.4);';
+    document.body.appendChild(statusEl);
+    function setStatus(msg, color, autohide) {
+      statusEl.textContent = msg;
+      statusEl.style.color = color || '#ddd';
+      statusEl.style.display = 'block';
+      statusEl.style.maxWidth = '70vw';
+      statusEl.style.whiteSpace = 'normal';
+      statusEl.style.fontSize = '12px';
+      statusEl.onclick = function(){ statusEl.style.display = 'none'; };
+      statusEl.style.cursor = 'pointer';
+      if (autohide) setTimeout(function(){ if (statusEl) statusEl.style.display = 'none'; }, 3500);
+    }
+
+    function runFill(promptText, r) {
+      if (!r) return;
+      setStatus(promptText ? 'Generating fill…' : 'Removing…', '#f5b942', false);
+
+      var dim;
+      try { dim = window.Layers.get_dimensions(); }
+      catch (e) { return setStatus('Layers unavailable', '#e07070', true); }
+
+      var imgCanvas = document.createElement('canvas');
+      imgCanvas.width = dim.width; imgCanvas.height = dim.height;
+      window.Layers.convert_layers_to_canvas(imgCanvas.getContext('2d'));
+
+      var maskCanvas = document.createElement('canvas');
+      maskCanvas.width = dim.width; maskCanvas.height = dim.height;
+      var mctx = maskCanvas.getContext('2d');
+      mctx.fillStyle = '#000'; mctx.fillRect(0, 0, dim.width, dim.height);
+      mctx.fillStyle = '#fff'; mctx.fillRect(r.x, r.y, r.w, r.h);
+
+      Promise.all([
+        new Promise(function(res){ imgCanvas.toBlob(res, 'image/png'); }),
+        new Promise(function(res){ maskCanvas.toBlob(res, 'image/png'); })
+      ]).then(function(blobs){
+        var fd = new FormData();
+        fd.append('image', blobs[0], 'image.png');
+        fd.append('mask',  blobs[1], 'mask.png');
+        fd.append('prompt', promptText);
+        return fetch('/api/thumb-edit/inpaint', { method: 'POST', body: fd });
+      }).then(function(resp){
+        if (!resp.ok) {
+          return resp.json().then(function(j){ throw new Error(j.error || ('HTTP '+resp.status)); },
+                                  function(){ throw new Error('HTTP '+resp.status); });
+        }
+        return resp.blob();
+      }).then(function(blob){
+        var img = new Image();
+        img.onload = function(){
+          try {
+            window.Layers.insert({
+              name: promptText ? ('fill: ' + promptText.slice(0, 24)) : 'remove',
+              type: 'image',
+              data: img,
+              width: img.naturalWidth, height: img.naturalHeight,
+              width_original: img.naturalWidth, height_original: img.naturalHeight,
+            });
+            setStatus('Done — added as new layer', '#7ad17a', true);
+          } catch (e) {
+            setStatus('Layer insert failed: ' + e.message, '#e07070', true);
+          }
+        };
+        img.onerror = function(){ setStatus('Decode failed', '#e07070', true); };
+        img.src = URL.createObjectURL(blob);
+      }).catch(function(err){
+        setStatus('Failed: ' + err.message, '#e07070', true);
+      });
+    }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
+  else boot();
+})();
+</script>
+</body>
+</html>
