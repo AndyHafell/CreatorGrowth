@@ -3383,24 +3383,27 @@ def _apply_alpha_mask(crop_rgba, mask_l):
 
 
 def _build_shape_mask(W, H, x, y, shapes_px):
-    """Build an L-mode mask of size (W, H) representing the union of shapes_px.
-    Each shape is a dict in pixel coords (relative to image origin, NOT bbox).
-    The mask is drawn in bbox-local coords (subtract x, y)."""
+    """Build an L-mode mask of size (W, H) for a compound shape. Each shape is a
+    dict in absolute pixel coords. Draw order is the input order — ADD shapes paint
+    255, SUBTRACT shapes paint 0 — so painter's algorithm applies the lasso
+    operations sequentially (matching the UI's stack)."""
     from PIL import ImageDraw as _ID
     mask = Image.new("L", (W, H), 0)
     draw = _ID.Draw(mask)
     for s in shapes_px:
+        op = s.get("op", "add")
+        fill = 0 if op == "subtract" else 255
         t = s.get("type")
         if t == "poly":
             pts = s.get("points") or []
             if len(pts) >= 3:
                 local = [(px - x, py - y) for (px, py) in pts]
-                draw.polygon(local, fill=255)
+                draw.polygon(local, fill=fill)
         else:  # rect
             sx = s.get("x", 0); sy = s.get("y", 0)
             sw = s.get("w", 0); sh = s.get("h", 0)
             lx = sx - x; ly = sy - y
-            draw.rectangle([lx, ly, lx + sw - 1, ly + sh - 1], fill=255)
+            draw.rectangle([lx, ly, lx + sw - 1, ly + sh - 1], fill=fill)
     return mask
 
 
@@ -4017,6 +4020,7 @@ def diagrams_render():
                 for s in b["shapes"]:
                     if not isinstance(s, dict):
                         continue
+                    s_op = "subtract" if s.get("op") == "subtract" else "add"
                     st = s.get("type")
                     if st == "poly":
                         pts = s.get("points") or []
@@ -4026,14 +4030,14 @@ def diagrams_render():
                             pts_px = [(float(p["x"]) * W, float(p["y"]) * H) for p in pts]
                         except (KeyError, TypeError, ValueError):
                             return jsonify({"error": "compound poly shape has invalid points"}), 400
-                        shapes_px.append({"type": "poly", "points": pts_px})
+                        shapes_px.append({"type": "poly", "points": pts_px, "op": s_op})
                     else:
                         try:
                             sx = float(s["x"]) * W; sy = float(s["y"]) * H
                             sw = float(s["w"]) * W; sh = float(s["h"]) * H
                         except (KeyError, TypeError, ValueError):
                             return jsonify({"error": "compound rect shape missing x/y/w/h"}), 400
-                        shapes_px.append({"type": "rect", "x": sx, "y": sy, "w": sw, "h": sh})
+                        shapes_px.append({"type": "rect", "x": sx, "y": sy, "w": sw, "h": sh, "op": s_op})
                 if not shapes_px:
                     continue
             elif is_poly_legacy:
@@ -4051,9 +4055,12 @@ def diagrams_render():
                 except (KeyError, TypeError, ValueError):
                     return jsonify({"error": "box missing x/y/w/h"}), 400
                 shapes_px.append({"type": "rect", "x": bx * W, "y": by * H, "w": bw * W, "h": bh * H})
-            # Union bbox over every sub-shape.
+            # Bbox is computed over ADDITIVE shapes only — subtract shapes carve
+            # holes inside the union, they never extend it.
             xs_lo = []; ys_lo = []; xs_hi = []; ys_hi = []
             for s in shapes_px:
+                if s.get("op") == "subtract":
+                    continue
                 if s["type"] == "poly":
                     pts = s["points"]
                     xs_lo.append(min(p[0] for p in pts))
@@ -4063,6 +4070,9 @@ def diagrams_render():
                 else:
                     xs_lo.append(s["x"]);             ys_lo.append(s["y"])
                     xs_hi.append(s["x"] + s["w"]);    ys_hi.append(s["y"] + s["h"])
+            if not xs_lo:
+                # Edge case: only subtract shapes (no adds). Skip the box.
+                continue
             bx_px = min(xs_lo); by_px = min(ys_lo)
             bw_px = max(xs_hi) - bx_px; bh_px = max(ys_hi) - by_px
             x = int(bx_px); y = int(by_px)
