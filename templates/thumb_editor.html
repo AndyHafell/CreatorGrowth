@@ -23,6 +23,7 @@
     <div class="title">THUMB EDITOR</div>
     <div class="meta">slot {{ slot_label }} · {{ video_title }}</div>
     <span id="status" class="status">Loading miniPaint…</span>
+    <button id="downloadBtn" onclick="saveAsDownload()" disabled title="Download a copy to your Downloads folder (does not touch the card)">SAVE AS…</button>
     <button id="saveBtn" class="primary" onclick="saveToSlot()" disabled>SAVE TO SLOT {{ slot_label }}</button>
     <button onclick="goBackToCard()">CLOSE</button>
   </div>
@@ -64,6 +65,7 @@ frame.addEventListener('load', function() {
     const W = frame.contentWindow;
     if (W && W.Layers && typeof W.Layers.insert === 'function') {
       loadThumbAsLayer();
+      installScrollZoomDampener();
       return;
     }
     if (Date.now() - start > 15000) {
@@ -74,10 +76,40 @@ frame.addEventListener('load', function() {
   })();
 });
 
+// Halve miniPaint's scroll-zoom step by swallowing every other wheel event
+// on the canvas viewport. Capture-phase listener runs before miniPaint's own
+// handler. We only touch wheel events with ctrlKey OR over #middle_area, so
+// scrolling the layers panel / tool sidebar stays at normal speed.
+function installScrollZoomDampener() {
+  try {
+    const doc = frame.contentDocument;
+    if (!doc) return;
+    const middle = doc.getElementById('middle_area');
+    if (!middle) return;
+    let count = 0;
+    middle.addEventListener('wheel', function(ev) {
+      count++;
+      // Pass every other event through; swallow the rest before miniPaint sees them.
+      if (count % 2 === 0) {
+        ev.stopImmediatePropagation();
+        ev.preventDefault();
+      }
+    }, { capture: true, passive: false });
+  } catch (e) {
+    // Cross-origin would block this, but iframe is same-origin so should never hit.
+    console.warn('scroll-zoom dampener install failed:', e);
+  }
+}
+
+function enableSaveButtons() {
+  document.getElementById('saveBtn').disabled = false;
+  document.getElementById('downloadBtn').disabled = false;
+}
+
 function loadThumbAsLayer() {
   if (!THUMB_URL) {
     setStatus('Ready (no source thumb — start from blank)', '#4caf50');
-    document.getElementById('saveBtn').disabled = false;
+    enableSaveButtons();
     return;
   }
   setStatus('Loading thumbnail…', '#f5b942');
@@ -96,7 +128,7 @@ function loadThumbAsLayer() {
         height_original: img.naturalHeight,
       });
       setStatus('Loaded ' + img.naturalWidth + '×' + img.naturalHeight, '#4caf50');
-      document.getElementById('saveBtn').disabled = false;
+      enableSaveButtons();
     } catch (e) {
       setStatus('Layers.insert failed: ' + e.message, '#e07070');
     }
@@ -105,6 +137,43 @@ function loadThumbAsLayer() {
     setStatus('Could not load thumbnail at ' + THUMB_URL, '#e07070');
   };
   img.src = THUMB_URL;
+}
+
+// Slugify the video title for a sensible download filename
+function _filenameSlug(s) {
+  return (s || 'thumb')
+    .replace(/[^a-z0-9\-_]+/gi, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 60) || 'thumb';
+}
+
+function _exportCanvas(cb) {
+  const W = frame.contentWindow;
+  if (!W || !W.Layers) { setStatus('miniPaint not ready', '#e07070'); return; }
+  const dim = W.Layers.get_dimensions();
+  const tmp = document.createElement('canvas');
+  tmp.width = dim.width;
+  tmp.height = dim.height;
+  W.Layers.convert_layers_to_canvas(tmp.getContext('2d'));
+  tmp.toBlob(cb, 'image/png');
+}
+
+function saveAsDownload() {
+  setStatus('Exporting…', '#f5b942');
+  _exportCanvas(function(blob) {
+    if (!blob) { setStatus('Export failed', '#e07070'); return; }
+    const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16);
+    const fname = _filenameSlug({{ video_title|tojson }}) + '_slot' + (SLOT + 1) + '_' + ts + '.png';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function() { URL.revokeObjectURL(url); }, 60000);
+    setStatus('Downloaded ' + fname + ' (' + Math.round(blob.size / 1024) + 'KB)', '#4caf50');
+  });
 }
 
 function saveToSlot() {
