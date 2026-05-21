@@ -2039,7 +2039,8 @@
                             <button onclick="undoLastBox()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Undo last box</button>
                             <button onclick="clearBoxes()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Clear boxes</button>
                             <span id="diagramsBoxCount" style="color:#f5b942; font-size:11px; letter-spacing:0.5px;">0 boxes</span>
-                            <span style="color:#444; font-size:11px;">&middot; drag to draw &middot; right-click box to delete</span>
+                            <span id="diagramsMultiSelectStatus" style="display:none; color:#7ad17a; font-size:11px; letter-spacing:0.5px; padding:2px 8px; border:1px solid #2a4a2a; border-radius:10px; cursor:pointer;" onclick="clearMultiSelect()" title="Click to clear the group"></span>
+                            <span style="color:#444; font-size:11px;">&middot; drag to draw &middot; click to select &middot; + to group &middot; right-click to delete</span>
                             <span style="flex:1;"></span>
                             <button id="diagramsModeToggle" onclick="toggleSlideshow()" title="Toggle slideshow mode (one slide at a time vs reveals)" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Slideshow mode</button>
                         </div>
@@ -6219,6 +6220,11 @@
             document.getElementById('diagramsDropZone').style.display = 'block';
         }
         diagramBoxes = (d.boxes || []).slice();
+        // Group membership is per-diagram and the box list just got replaced.
+        if (typeof multiSelectedIdxs !== 'undefined') {
+            multiSelectedIdxs.clear();
+            _updateMultiSelectStatus();
+        }
         renderBoxes();
         renderBoxAnimList();
 
@@ -6546,13 +6552,14 @@
             return;
         }
         if (!diagramDragStart || !diagramActiveEl) return;
-        var rect = diagramActiveEl.getBoundingClientRect();
         var layer = document.getElementById('diagramsBoxLayer');
         var r = layer.getBoundingClientRect();
         var w = parseFloat(diagramActiveEl.style.width) || 0;
         var h = parseFloat(diagramActiveEl.style.height) || 0;
         var x = parseFloat(diagramActiveEl.style.left) || 0;
         var y = parseFloat(diagramActiveEl.style.top) || 0;
+        var startFx = diagramDragStart.x / r.width;
+        var startFy = diagramDragStart.y / r.height;
         diagramActiveEl.remove();
         diagramActiveEl = null;
         diagramDragStart = null;
@@ -6563,7 +6570,12 @@
             // Auto-select the just-drawn box so the user can immediately hit W/A/S/D/Q/E/C/H
             if (typeof setSelectedBox === 'function') setSelectedBox(diagramBoxes.length - 1);
             if (typeof schedulePatch === 'function') schedulePatch();
+            return;
         }
+        // Tiny click → treat as a tap-select on whatever existing box contains the start point.
+        // Lets the user click anywhere inside a box (not just the badge) to select it.
+        var hitIdx = _hitBoxAtFraction(startFx, startFy);
+        if (hitIdx >= 0) setSelectedBox(hitIdx);
     }
     function renderBoxes() {
         var layer = document.getElementById('diagramsBoxLayer');
@@ -6572,16 +6584,20 @@
         diagramBoxes.forEach(function(b, i) {
             var isHide = (b.anim === 'hide');
             var isSelected = (i === selectedBoxIdx);
-            var borderClr = isHide ? '#e07070' : '#f5b942';
-            var bgClr = isHide ? 'rgba(224,112,112,0.18)' : 'rgba(245,185,66,0.10)';
+            var inGroup = multiSelectedIdxs.has(i);
+            var borderClr = isHide ? '#e07070' : (inGroup ? '#7ad17a' : '#f5b942');
+            var bgClr = isHide ? 'rgba(224,112,112,0.18)' : (inGroup ? 'rgba(122,209,122,0.12)' : 'rgba(245,185,66,0.10)');
             var d = document.createElement('div');
             d.className = 'diagram-box';
             d.dataset.idx = i;
             d.title = isHide
                 ? 'Hidden region — masked the whole video. Right-click to delete.'
                 : 'Right-click or click the × to delete';
-            var borderWidth = isSelected ? 3 : 2;
-            var glow = isSelected ? 'box-shadow:0 0 0 1px rgba(0,0,0,0.4),0 0 12px rgba(245,185,66,0.6);' : 'box-shadow:0 0 0 1px rgba(0,0,0,0.4);';
+            var borderWidth = (isSelected || inGroup) ? 3 : 2;
+            var glowColor = inGroup ? 'rgba(122,209,122,0.55)' : 'rgba(245,185,66,0.6)';
+            var glow = (isSelected || inGroup)
+                ? 'box-shadow:0 0 0 1px rgba(0,0,0,0.4),0 0 12px ' + glowColor + ';'
+                : 'box-shadow:0 0 0 1px rgba(0,0,0,0.4);';
             d.style.cssText = 'position:absolute; border:' + borderWidth + 'px solid ' + borderClr + '; background:' + bgClr + '; pointer-events:auto;' + glow + ' cursor:context-menu;';
             if (isHide) {
                 d.style.borderStyle = 'dashed';
@@ -6612,6 +6628,23 @@
             del.onclick = function(ev) { ev.preventDefault(); ev.stopPropagation(); deleteBox(parseInt(d.dataset.idx, 10)); };
             del.onmousedown = function(ev) { ev.stopPropagation(); };
             d.appendChild(del);
+
+            // Multi-select toggle (bottom-right). Checked = in the multi-select group.
+            // Click toggles membership; animation hotkeys apply to all checked boxes.
+            if (!isHide) {
+                var groupClr = inGroup ? '#7ad17a' : '#888';
+                var groupChk = document.createElement('div');
+                groupChk.textContent = inGroup ? '✓' : '+';
+                groupChk.title = inGroup
+                    ? 'In selection group — click to remove'
+                    : 'Add to selection group (animations apply to all checked)';
+                groupChk.style.cssText = 'position:absolute; bottom:-10px; right:-10px; background:#0d0d1a; color:' + groupClr + '; font-weight:700; font-size:13px; line-height:1; width:20px; height:20px; border-radius:50%; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 1px 4px rgba(0,0,0,0.5); border:1px solid ' + groupClr + '; pointer-events:auto;';
+                groupChk.onmousedown = function(ev) { ev.stopPropagation(); };
+                groupChk.onclick = (function(ix) {
+                    return function(ev) { ev.preventDefault(); ev.stopPropagation(); toggleMultiSelect(ix); };
+                })(i);
+                d.appendChild(groupChk);
+            }
 
             // Resize handles: 4 edges + 4 corners
             var handles = [
@@ -6676,6 +6709,9 @@
         h: 'hide',
     };
     var selectedBoxIdx = -1;
+    // Multi-select group: boxes toggled into the group via per-box checkmark.
+    // Animation hotkeys + dropdown apply to ALL members when non-empty.
+    var multiSelectedIdxs = new Set();
     function setSelectedBox(idx, opts) {
         opts = opts || {};
         selectedBoxIdx = (idx >= 0 && idx < diagramBoxes.length) ? idx : -1;
@@ -6686,6 +6722,39 @@
             if (typeof renderBoxAnimList === 'function') renderBoxAnimList();
         }
         if (typeof renderBoxes === 'function') renderBoxes();
+    }
+    function toggleMultiSelect(idx) {
+        if (idx < 0 || idx >= diagramBoxes.length) return;
+        if (multiSelectedIdxs.has(idx)) multiSelectedIdxs.delete(idx);
+        else multiSelectedIdxs.add(idx);
+        _updateMultiSelectStatus();
+        renderBoxes();
+    }
+    function clearMultiSelect() {
+        if (multiSelectedIdxs.size === 0) return;
+        multiSelectedIdxs.clear();
+        _updateMultiSelectStatus();
+        renderBoxes();
+    }
+    function _updateMultiSelectStatus() {
+        var el = document.getElementById('diagramsMultiSelectStatus');
+        if (!el) return;
+        var n = multiSelectedIdxs.size;
+        if (n === 0) {
+            el.style.display = 'none';
+            el.textContent = '';
+        } else {
+            el.style.display = 'inline-block';
+            el.textContent = n + ' in group · animation applies to all · click ✕ to clear';
+        }
+    }
+    // Hit-test: which box (if any) contains the given layer-fraction point? Top box wins.
+    function _hitBoxAtFraction(fx, fy) {
+        for (var i = diagramBoxes.length - 1; i >= 0; i--) {
+            var b = diagramBoxes[i];
+            if (fx >= b.x && fx <= b.x + b.w && fy >= b.y && fy <= b.y + b.h) return i;
+        }
+        return -1;
     }
     var _dragInsertBefore = null;
     function _setDragInsertIndicator(insertBeforeIdx) {
@@ -6718,6 +6787,16 @@
         }
     }
     function applyAnimToSelected(animKey) {
+        // Multi-select group takes precedence when populated — animation hits every member.
+        if (multiSelectedIdxs.size > 0) {
+            multiSelectedIdxs.forEach(function(i) {
+                if (i >= 0 && i < diagramBoxes.length) diagramBoxes[i].anim = animKey;
+            });
+            renderBoxes();
+            renderBoxAnimList();
+            if (typeof schedulePatch === 'function') schedulePatch();
+            return;
+        }
         if (selectedBoxIdx < 0 || selectedBoxIdx >= diagramBoxes.length) return;
         diagramBoxes[selectedBoxIdx].anim = animKey;
         renderBoxes();
@@ -6793,9 +6872,15 @@
         var k = ev.key;
         var kLower = k.toLowerCase();
         if (KEY_TO_ANIM[kLower]) {
-            if (selectedBoxIdx < 0) return;  // need a selection
+            // Need either a single selection or a non-empty multi-select group.
+            if (selectedBoxIdx < 0 && multiSelectedIdxs.size === 0) return;
             ev.preventDefault();
             applyAnimToSelected(KEY_TO_ANIM[kLower]);
+            return;
+        }
+        if (k === 'Escape' && multiSelectedIdxs.size > 0) {
+            ev.preventDefault();
+            clearMultiSelect();
             return;
         }
         if (k >= '1' && k <= '9') {
@@ -6947,22 +7032,39 @@
             c.appendChild(row);
         });
     }
+    // When a box is removed at position `removedIdx`, shift the multi-select index set:
+    // drop the removed index, decrement any index > removedIdx by 1.
+    function _shiftMultiSelectAfterRemove(removedIdx) {
+        if (multiSelectedIdxs.size === 0) return;
+        var next = new Set();
+        multiSelectedIdxs.forEach(function(j) {
+            if (j === removedIdx) return;          // dropped
+            next.add(j > removedIdx ? j - 1 : j);  // shift down
+        });
+        multiSelectedIdxs = next;
+        _updateMultiSelectStatus();
+    }
     function deleteBox(idx) {
         if (idx < 0 || idx >= diagramBoxes.length) return;
         diagramBoxes.splice(idx, 1);
+        _shiftMultiSelectAfterRemove(idx);
         renderBoxes();
         renderBoxAnimList();
         if (typeof schedulePatch === 'function') schedulePatch();
     }
     function undoLastBox() {
         if (diagramBoxes.length === 0) return;
+        var removedIdx = diagramBoxes.length - 1;
         diagramBoxes.pop();
+        _shiftMultiSelectAfterRemove(removedIdx);
         renderBoxes();
         renderBoxAnimList();
         if (typeof schedulePatch === 'function') schedulePatch();
     }
     function clearBoxes() {
         diagramBoxes = [];
+        multiSelectedIdxs.clear();
+        _updateMultiSelectStatus();
         var layer = document.getElementById('diagramsBoxLayer');
         if (layer) Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.remove(); });
         var counter = document.getElementById('diagramsBoxCount');
