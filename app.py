@@ -3354,6 +3354,24 @@ def _despeckle_stars(crop, bg_color, luma_threshold=110, radius=3, dark_ratio=0.
     return out
 
 
+def _apply_poly_mask(crop_rgba, points_local):
+    """Set alpha to 0 outside the polygon. points_local are (x,y) tuples in the
+    cropped image's local coords (i.e. already relative to the crop's top-left)."""
+    from PIL import ImageDraw as _ID, ImageChops as _IC
+    if not points_local or len(points_local) < 3:
+        return crop_rgba
+    if crop_rgba.mode != "RGBA":
+        crop_rgba = crop_rgba.convert("RGBA")
+    W, H = crop_rgba.size
+    mask = Image.new("L", (W, H), 0)
+    _ID.Draw(mask).polygon(points_local, fill=255)
+    # Multiply existing alpha by the polygon mask so anything outside becomes transparent.
+    existing_alpha = crop_rgba.split()[3]
+    new_alpha = _IC.multiply(existing_alpha, mask)
+    crop_rgba.putalpha(new_alpha)
+    return crop_rgba
+
+
 def _corner_bg_color(img, patch=40):
     """Median RGB sampled from the 4 corner patches — global background guess."""
     px = img.load()
@@ -3924,15 +3942,35 @@ def diagrams_render():
             return jsonify({"error": f"audio duration out of range ({duration:.1f}s, max 600s)"}), 400
 
         # Compute box rects + kind (reveal vs hide) + anim style + time_override
-        all_box_records = []   # each: (x, y, w, h, anim, original_box_dict)
+        # Each record: (x, y, w, h, anim, original_box_dict, poly_local_pts_or_None)
+        # Polygon boxes are stored as their bbox + an alpha-mask of local points.
+        all_box_records = []
         reveal_indices = []
         for b in boxes:
-            try:
-                bx = float(b["x"]); by = float(b["y"]); bw = float(b["w"]); bh = float(b["h"])
-            except (KeyError, TypeError, ValueError):
-                return jsonify({"error": "box missing x/y/w/h"}), 400
-            x = int(bx * W); y = int(by * H)
-            w = int(bw * W); h = int(bh * H)
+            poly_local_pts = None
+            is_poly = isinstance(b, dict) and b.get("type") == "poly" and isinstance(b.get("points"), list)
+            if is_poly:
+                pts_frac = b.get("points") or []
+                if len(pts_frac) < 3:
+                    continue
+                try:
+                    pts_px = [(float(p["x"]) * W, float(p["y"]) * H) for p in pts_frac]
+                except (KeyError, TypeError, ValueError):
+                    return jsonify({"error": "poly box has invalid points"}), 400
+                xs = [p[0] for p in pts_px]; ys = [p[1] for p in pts_px]
+                bx_px = min(xs); by_px = min(ys)
+                bw_px = max(xs) - bx_px; bh_px = max(ys) - by_px
+                x = int(bx_px); y = int(by_px)
+                w = int(bw_px); h = int(bh_px)
+                # store local pixel-space poly points (relative to bbox top-left)
+                poly_local_pts = [(p[0] - bx_px, p[1] - by_px) for p in pts_px]
+            else:
+                try:
+                    bx = float(b["x"]); by = float(b["y"]); bw = float(b["w"]); bh = float(b["h"])
+                except (KeyError, TypeError, ValueError):
+                    return jsonify({"error": "box missing x/y/w/h"}), 400
+                x = int(bx * W); y = int(by * H)
+                w = int(bw * W); h = int(bh * H)
             x = max(0, min(W - 4, x)); y = max(0, min(H - 4, y))
             w = max(4, min(W - x, w)); h = max(4, min(H - y, h))
             x -= (x % 2); y -= (y % 2)
@@ -3940,7 +3978,7 @@ def diagrams_render():
             if w < 2 or h < 2:
                 continue
             anim_val = (b.get("anim") or "fade").lower() if isinstance(b, dict) else "fade"
-            all_box_records.append((x, y, w, h, anim_val, b if isinstance(b, dict) else {}))
+            all_box_records.append((x, y, w, h, anim_val, b if isinstance(b, dict) else {}, poly_local_pts))
             if anim_val != "hide":
                 reveal_indices.append(len(all_box_records) - 1)
         if not all_box_records:
@@ -3949,6 +3987,8 @@ def diagrams_render():
         # Reveal boxes are the ones that animate in. Hide boxes only mask the bg permanently.
         box_rects = [(r[0], r[1], r[2], r[3]) for i, r in enumerate(all_box_records) if i in reveal_indices]
         box_anims = [all_box_records[i][4] for i in reveal_indices]
+        # Parallel to box_rects: poly_local_pts (or None) for masking the crop. None = plain rect box.
+        box_polys = [all_box_records[i][6] for i in reveal_indices]
         hide_rects = [(r[0], r[1], r[2], r[3]) for i, r in enumerate(all_box_records) if i not in reveal_indices]
         # Manual time overrides per reveal box (None if not set)
         box_overrides = []
@@ -4188,6 +4228,7 @@ def diagrams_render():
         canvas_w = W
         canvas_h = H + bottom_pad
         for i, ((x, y, w, h), anim_for_box) in enumerate(zip(box_rects, box_anims)):
+            poly_pts = box_polys[i] if i < len(box_polys) else None
             if mode == "reveal":
                 crop = img.crop((x, y, x + w, y + h))
                 dc = ImageDraw.Draw(crop)
@@ -4203,6 +4244,11 @@ def diagrams_render():
                         lx, ly = hx - x, hy - y
                         fill = fill_for_rect.get(hr, (8, 8, 18))
                         dc.rectangle([lx, ly, lx + hw - 1, ly + hh - 1], fill=fill)
+                # Polygon shapes: mask out everything outside the poly so only the
+                # lasso'd region renders. Applied AFTER nested-rect fills so they
+                # also get clipped to the polygon outline.
+                if poly_pts:
+                    crop = _apply_poly_mask(crop, poly_pts)
                 cp = work_dir / f"crop_{i:02d}.png"
                 crop.save(cp)
                 crop_paths[i] = cp
@@ -4226,6 +4272,9 @@ def diagrams_render():
                 # Remove isolated bright pixels (stars) before upscaling — otherwise
                 # a 1-2px star becomes a 5-10px dot in the slide.
                 box_crop = _despeckle_stars(box_crop, canvas_bg_color)
+                # Polygon mask is applied AFTER despeckle (despeckle needs RGB).
+                if poly_pts:
+                    box_crop = _apply_poly_mask(box_crop, poly_pts)
                 margin = 0.85   # leave 15% breathing room
                 sx_ = (canvas_w * margin) / w
                 sy_ = (H * margin) / h   # vertical center within the content area (top H of canvas)
@@ -4236,7 +4285,12 @@ def diagrams_render():
                 slide = Image.new("RGB", (canvas_w, canvas_h), canvas_bg_color)
                 ox = (canvas_w - nw) // 2
                 oy = (H - nh) // 2   # vertical center within top H, leaves bottom_pad clear
-                slide.paste(scaled, (ox, oy))
+                # Use the scaled image as its own mask so polygon-transparent pixels
+                # fall through to the slide's bg color instead of showing as black.
+                if scaled.mode == "RGBA":
+                    slide.paste(scaled, (ox, oy), scaled)
+                else:
+                    slide.paste(scaled, (ox, oy))
                 sp = work_dir / f"slide_{i:02d}.png"
                 slide.save(sp)
                 crop_paths[i] = sp
