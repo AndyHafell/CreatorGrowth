@@ -123,13 +123,26 @@
       } catch (e) { return null; }
     }
 
-    // Capture-phase contextmenu beats miniPaint's own preventDefault
+    // miniPaint binds pointerdown on document and preventDefaults right-clicks,
+    // which kills the browser's contextmenu event. Block right-button events from
+    // reaching miniPaint so the browser fires contextmenu normally.
+    function swallowRightBtn(e) {
+      if (e.button === 2) {
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      }
+    }
+    canvas.addEventListener('pointerdown', swallowRightBtn, true);
+    canvas.addEventListener('mousedown',   swallowRightBtn, true);
+    canvas.addEventListener('pointerup',   swallowRightBtn, true);
+    canvas.addEventListener('mouseup',     swallowRightBtn, true);
+
+    // Capture-phase contextmenu so we win against any document-level handler
     canvas.addEventListener('contextmenu', function(e){
       e.preventDefault();
       e.stopPropagation();
       showMenu(e.clientX, e.clientY);
     }, true);
-    // Also win against the document-level handler miniPaint registers
     document.addEventListener('contextmenu', function(e){
       if (e.target === canvas || canvas.contains(e.target)) {
         e.preventDefault();
