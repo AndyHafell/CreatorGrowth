@@ -3387,8 +3387,8 @@ def _build_shape_mask(W, H, x, y, shapes_px):
     dict in absolute pixel coords. Draw order is the input order — ADD shapes paint
     255, SUBTRACT shapes paint 0 — so painter's algorithm applies the lasso
     operations sequentially (matching the UI's stack)."""
-    from PIL import ImageDraw as _ID
-    mask = Image.new("L", (W, H), 0)
+    from PIL import Image as _Image, ImageDraw as _ID
+    mask = _Image.new("L", (W, H), 0)
     draw = _ID.Draw(mask)
     for s in shapes_px:
         op = s.get("op", "add")
@@ -3794,7 +3794,8 @@ def diagrams_upload_image(diagram_id):
     # eyedropper / hex input (-> bg_color_override).
     bg_auto_hex = None
     try:
-        with Image.open(target) as _bg_img:
+        from PIL import Image as _PIL_Image
+        with _PIL_Image.open(target) as _bg_img:
             _bg_rgb = _bg_img.convert("RGB")
             r, g, b = _corner_bg_color(_bg_rgb, patch=40)
             bg_auto_hex = "#{:02x}{:02x}{:02x}".format(int(r), int(g), int(b))
