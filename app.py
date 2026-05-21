@@ -8997,6 +8997,75 @@ def _replicate_flux_fill(image_bytes, mask_bytes, prompt):
         return None
 
 
+def _replicate_remove_bg(image_bytes):
+    """Remove background via 851-labs/background-remover (BiRefNet) on Replicate.
+    Returns PNG bytes (with alpha) or None on failure."""
+    import base64, time
+    from urllib.request import urlopen, Request
+    from urllib.error import HTTPError, URLError
+    token = os.environ.get("REPLICATE_API_TOKEN", "")
+    if not token:
+        app.logger.warning("remove-bg: REPLICATE_API_TOKEN not set")
+        return None
+    image_uri = "data:image/png;base64," + base64.b64encode(image_bytes).decode("ascii")
+    body = {"input": {"image": image_uri}}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Prefer": "wait=60",
+    }
+    url = "https://api.replicate.com/v1/models/851-labs/background-remover/predictions"
+    req = Request(url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except HTTPError as e:
+        app.logger.warning(f"remove-bg: replicate http {e.code}: {e.read().decode('utf-8','ignore')[:300]}")
+        return None
+    except URLError as e:
+        app.logger.warning(f"remove-bg: replicate network: {e.reason}")
+        return None
+
+    poll_url = (data.get("urls") or {}).get("get")
+    deadline = time.time() + 120
+    while data.get("status") not in ("succeeded", "failed", "canceled") and poll_url and time.time() < deadline:
+        time.sleep(1.0)
+        try:
+            r2 = Request(poll_url, headers={"Authorization": f"Bearer {token}"})
+            with urlopen(r2, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (HTTPError, URLError):
+            return None
+    if data.get("status") != "succeeded":
+        app.logger.warning(f"remove-bg: final status {data.get('status')}: {str(data.get('error'))[:200]}")
+        return None
+    out = data.get("output")
+    img_url = out if isinstance(out, str) else (out[0] if isinstance(out, list) and out else None)
+    if not img_url:
+        return None
+    try:
+        with urlopen(img_url, timeout=60) as resp:
+            return resp.read()
+    except (HTTPError, URLError) as e:
+        app.logger.warning(f"remove-bg: download failed: {e}")
+        return None
+
+
+@app.route("/api/thumb-edit/remove-bg", methods=["POST"])
+def thumb_edit_remove_bg():
+    """Remove background from a flattened canvas image. Multipart: image (PNG).
+    Returns PNG with alpha."""
+    img_f = request.files.get("image")
+    if not img_f:
+        return jsonify({"error": "missing image"}), 400
+    out = _replicate_remove_bg(img_f.read())
+    if not out:
+        return jsonify({"error": "remove-bg failed (check server logs)"}), 502
+    from flask import send_file
+    import io
+    return send_file(io.BytesIO(out), mimetype="image/png", download_name="no_bg.png")
+
+
 @app.route("/api/thumb-edit/inpaint", methods=["POST"])
 def thumb_edit_inpaint():
     """Right-click inpaint from miniPaint.

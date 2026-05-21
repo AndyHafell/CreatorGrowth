@@ -280,6 +280,7 @@
         b.textContent = label;
         var base;
         if (accent === 'green')      base = 'background:#7ad17a;border:1px solid #7ad17a;color:#000;';
+        else if (accent === 'cyan')  base = 'background:#5ab9d6;border:1px solid #5ab9d6;color:#000;';
         else if (accent === true)    base = 'background:#e8a800;border:1px solid #e8a800;color:#000;';
         else                          base = 'background:#2a2a4a;border:1px solid #3a3a5a;color:#ddd;';
         b.style.cssText = base + 'padding:6px 14px;border-radius:6px;font-size:11px;letter-spacing:1px;font-weight:700;cursor:pointer;font-family:-apple-system,BlinkMacSystemFont,sans-serif;';
@@ -302,6 +303,13 @@
         };
       }
 
+      // Always-visible BG remove button (independent of selection tool)
+      var bgActions = document.createElement('div');
+      bgActions.id = 'ai_bg_actions';
+      bgActions.style.cssText = 'display:flex;align-items:center;margin-left:18px;';
+      var bgBtn = mkBtn('NO BG', 'cyan', function(){ runRemoveBg(); });
+      bgActions.appendChild(bgBtn);
+
       var patchBtn = mkBtn('PATCH', 'green', withRect(function(rect){ runPatch(rect); }));
       var fillBtn  = mkBtn('FILL…', true,    withRect(function(rect){
         var p = window.prompt('What do you want to generate?', '');
@@ -310,13 +318,22 @@
       actions.appendChild(patchBtn);
       actions.appendChild(fillBtn);
 
-      // Place buttons right after the miniPaint logo (left side of the submenu)
+      // Place buttons right after the miniPaint logo (left side of the submenu).
+      // Order: [logo] [NO BG] [PATCH FILL (if selection)] [...]
       var attrBlock = submenu.querySelector('#action_attributes');
-      if (attrBlock) submenu.insertBefore(actions, attrBlock);
-      else {
+      if (attrBlock) {
+        submenu.insertBefore(bgActions, attrBlock);
+        submenu.insertBefore(actions, attrBlock);
+      } else {
         var logo = submenu.querySelector('.logo');
-        if (logo && logo.nextSibling) submenu.insertBefore(actions, logo.nextSibling);
-        else submenu.appendChild(actions);
+        var anchor = logo && logo.nextSibling;
+        if (anchor) {
+          submenu.insertBefore(bgActions, anchor);
+          submenu.insertBefore(actions, anchor);
+        } else {
+          submenu.appendChild(bgActions);
+          submenu.appendChild(actions);
+        }
       }
 
       // Show buttons only when the rectangle-selection tool is active.
@@ -571,6 +588,53 @@
         document.removeEventListener('keydown', onKey, true);
         overlay.remove();
       }
+    }
+
+    // Remove background from the flattened canvas via BiRefNet (851-labs on Replicate).
+    // Result is added as a new layer "no_bg" on top of existing layers.
+    function runRemoveBg() {
+      setStatus('Removing background…', '#f5b942', false);
+      var dim;
+      try { dim = window.Layers.get_dimensions(); }
+      catch (e) { return setStatus('Layers unavailable', '#e07070', true); }
+
+      var src = document.createElement('canvas');
+      src.width = dim.width; src.height = dim.height;
+      window.Layers.convert_layers_to_canvas(src.getContext('2d'));
+
+      src.toBlob(function(blob){
+        if (!blob) return setStatus('Export failed', '#e07070', true);
+        var fd = new FormData();
+        fd.append('image', blob, 'image.png');
+        fetch('/api/thumb-edit/remove-bg', { method: 'POST', body: fd })
+          .then(function(resp){
+            if (!resp.ok) {
+              return resp.json().then(function(j){ throw new Error(j.error || ('HTTP '+resp.status)); },
+                                      function(){ throw new Error('HTTP '+resp.status); });
+            }
+            return resp.blob();
+          })
+          .then(function(blob){
+            var img = new Image();
+            img.onload = function(){
+              try {
+                window.Layers.insert({
+                  name: 'no_bg',
+                  type: 'image',
+                  data: img,
+                  width: img.naturalWidth, height: img.naturalHeight,
+                  width_original: img.naturalWidth, height_original: img.naturalHeight,
+                });
+                setStatus('Background removed — added as new layer', '#7ad17a', true);
+              } catch (e) {
+                setStatus('Layer insert failed: ' + e.message, '#e07070', true);
+              }
+            };
+            img.onerror = function(){ setStatus('Decode failed', '#e07070', true); };
+            img.src = URL.createObjectURL(blob);
+          })
+          .catch(function(err){ setStatus('Failed: ' + err.message, '#e07070', true); });
+      }, 'image/png');
     }
 
     function runFill(promptText, r) {
