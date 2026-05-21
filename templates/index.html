@@ -6203,7 +6203,48 @@
             info.style.cssText = 'flex:1; min-width:0;';
             var nm = document.createElement('div');
             nm.textContent = d.name;
+            nm.title = 'Double-click to rename';
             nm.style.cssText = 'font-size:12px; color:' + (active ? '#ddd' : '#aaa') + '; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+            // Double-click → inline rename. Swap the text node for an input,
+            // commit on blur/Enter, cancel on Escape.
+            nm.ondblclick = (function(idx, currentName, labelEl) {
+                return function(ev) {
+                    ev.preventDefault(); ev.stopPropagation();
+                    var input = document.createElement('input');
+                    input.type = 'text';
+                    input.value = currentName;
+                    input.style.cssText = 'width:100%; box-sizing:border-box; background:#0a0a14; border:1px solid #f5b942; color:#ddd; font-size:12px; padding:2px 5px; border-radius:3px; font-family:inherit;';
+                    var committed = false;
+                    var commit = function() {
+                        if (committed) return;
+                        committed = true;
+                        var next = (input.value || '').trim();
+                        var target = diagramsList[idx];
+                        if (!target) { renderSidebar(); return; }
+                        if (next && next !== target.name) {
+                            target.name = next;
+                            _apiPatch(target.id, { name: next })
+                                .then(function() { setStudioStatus('Renamed → ' + next, '#4caf50'); })
+                                .catch(function() { setStudioStatus('Rename save failed', '#e07070'); });
+                            if (idx === activeDiagramIdx) {
+                                var tEl = document.getElementById('diagramsStudioTitle');
+                                if (tEl) tEl.textContent = next;
+                            }
+                        }
+                        renderSidebar();
+                    };
+                    var cancel = function() { committed = true; renderSidebar(); };
+                    input.onkeydown = function(e) {
+                        if (e.key === 'Enter')      { e.preventDefault(); commit(); }
+                        else if (e.key === 'Escape'){ e.preventDefault(); cancel(); }
+                    };
+                    input.onblur = commit;
+                    input.onclick = function(e) { e.stopPropagation(); };
+                    labelEl.replaceWith(input);
+                    input.focus();
+                    input.select();
+                };
+            })(i, d.name, nm);
             info.appendChild(nm);
             var bits = [];
             var liveBoxes = active ? diagramBoxes.length : (d.boxes ? d.boxes.length : 0);
