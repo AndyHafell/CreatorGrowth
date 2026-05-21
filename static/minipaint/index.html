@@ -318,6 +318,44 @@
         if (logo && logo.nextSibling) submenu.insertBefore(actions, logo.nextSibling);
         else submenu.appendChild(actions);
       }
+
+      // Show buttons only when the rectangle-selection tool is active.
+      // miniPaint writes the active tool name to the "active_tool" cookie on change.
+      function isSelectionToolActive() {
+        try {
+          var m = document.cookie.match(/(?:^|;\s*)active_tool=([^;]+)/);
+          return !!m && decodeURIComponent(m[1]) === 'selection';
+        } catch (e) { return false; }
+      }
+      function syncVisibility() {
+        actions.style.display = isSelectionToolActive() ? 'flex' : 'none';
+      }
+      syncVisibility();
+      setInterval(syncVisibility, 200);
+
+      // Keyboard shortcuts: P = PATCH, F = FILL. Only when selection tool is active.
+      function isTypingTarget(t) {
+        if (!t) return false;
+        var tag = (t.tagName || '').toUpperCase();
+        return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable;
+      }
+      document.addEventListener('keydown', function(e){
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        if (isTypingTarget(e.target)) return;
+        if (!isSelectionToolActive()) return;
+        // Don't fire while the patch modal is open (it has its own Enter/Escape)
+        if (document.querySelector('[data-ai-fill-modal]')) return;
+        var k = (e.key || '').toLowerCase();
+        if (k === 'p') {
+          e.preventDefault();
+          e.stopPropagation();
+          patchBtn.click();
+        } else if (k === 'f') {
+          e.preventDefault();
+          e.stopPropagation();
+          fillBtn.click();
+        }
+      }, true);
     }
 
     var statusEl = document.createElement('div');
@@ -431,6 +469,7 @@
       var lastPatch = null;
 
       var overlay = document.createElement('div');
+      overlay.setAttribute('data-ai-fill-modal', '1');
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.72);z-index:100000;display:flex;align-items:center;justify-content:center;font:13px -apple-system,BlinkMacSystemFont,sans-serif;';
 
       var box = document.createElement('div');
@@ -482,11 +521,15 @@
 
       var btnRow = document.createElement('div');
       btnRow.style.cssText = 'display:flex;gap:10px;justify-content:flex-end;margin-top:6px;';
-      var cancelBtn = mkBtn('CANCEL', false, function(){ close(); });
-      var applyBtn = mkBtn('APPLY PATCH', 'green', function(){
+      var done = false;
+      function applyOnce() {
+        if (done) return;
+        done = true;
         if (lastPatch) applyPatch(lastPatch, r, opts);
         close();
-      });
+      }
+      var cancelBtn = mkBtn('CANCEL', false, function(){ close(); });
+      var applyBtn = mkBtn('APPLY PATCH', 'green', applyOnce);
       btnRow.appendChild(cancelBtn);
       btnRow.appendChild(applyBtn);
       box.appendChild(btnRow);
@@ -513,12 +556,12 @@
       render();
 
       function onKey(e){
-        if (e.key === 'Escape') close();
-        else if (e.key === 'Enter') { if (lastPatch) applyPatch(lastPatch, r, opts); close(); }
+        if (e.key === 'Escape') { e.stopPropagation(); close(); }
+        else if (e.key === 'Enter') { e.stopPropagation(); applyOnce(); }
       }
-      document.addEventListener('keydown', onKey);
+      document.addEventListener('keydown', onKey, true);
       function close(){
-        document.removeEventListener('keydown', onKey);
+        document.removeEventListener('keydown', onKey, true);
         overlay.remove();
       }
     }
