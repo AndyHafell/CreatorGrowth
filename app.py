@@ -1333,6 +1333,60 @@ def backfill_views():
     return jsonify({"backfilled": updated, "remaining": remaining})
 
 
+@app.route("/api/videos/sync-published", methods=["POST"])
+def sync_published():
+    """Refresh view_count + published_at for every video with status='published'
+    by batching YouTube Data API v3 videos.list calls (50 IDs per call)."""
+    if not YOUTUBE_API_KEY:
+        return jsonify({"error": "YOUTUBE_API_KEY not configured"}), 500
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT id, video_id FROM videos WHERE status = 'published' AND video_id IS NOT NULL AND video_id != ''"
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return jsonify({"updated": 0, "total": 0})
+
+    id_to_row = {r["video_id"]: r["id"] for r in rows}
+    ids = list(id_to_row.keys())
+    updated = 0
+    channel_avg_cache: dict[str, int] = {}
+    for i in range(0, len(ids), 50):
+        chunk = ids[i:i + 50]
+        try:
+            api_url = (
+                "https://www.googleapis.com/youtube/v3/videos"
+                f"?part=snippet,statistics&id={','.join(chunk)}&key={YOUTUBE_API_KEY}"
+            )
+            with urlopen(api_url, timeout=20) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            continue
+        for item in payload.get("items", []):
+            vid = item.get("id")
+            if not vid or vid not in id_to_row:
+                continue
+            stats = item.get("statistics", {})
+            view_count = int(stats.get("viewCount", 0) or 0)
+            snippet = item.get("snippet", {})
+            channel_id = snippet.get("channelId", "")
+            published_at = snippet.get("publishedAt", "")
+            if channel_id and channel_id not in channel_avg_cache:
+                channel_url = f"https://www.youtube.com/channel/{channel_id}"
+                channel_avg_cache[channel_id] = fetch_channel_avg_views(channel_url)
+            channel_avg = channel_avg_cache.get(channel_id, 0)
+            outlier = round(view_count / channel_avg, 1) if channel_avg > 0 else 0.0
+            conn.execute(
+                "UPDATE videos SET view_count = ?, outlier_score = ?, channel_avg_views = ?, "
+                "published_at = COALESCE(NULLIF(?, ''), published_at) WHERE id = ?",
+                (view_count, outlier, channel_avg, published_at, id_to_row[vid]),
+            )
+            updated += 1
+    conn.commit()
+    conn.close()
+    return jsonify({"updated": updated, "total": len(ids)})
+
+
 # ── Video Details (modal data) ────────────────────────────
 
 @app.route("/api/videos/<int:vid>/details", methods=["GET"])
