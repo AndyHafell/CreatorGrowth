@@ -2023,7 +2023,8 @@
                             <div id="diagramsBoxLayer" style="position:absolute; inset:0; cursor:crosshair;"
                                  onmousedown="boxLayerDown(event)"
                                  onmousemove="boxLayerMove(event)"
-                                 onmouseup="boxLayerUp(event)"></div>
+                                 onmouseup="boxLayerUp(event)"
+                                 ondblclick="if (diagramLassoMode) { event.preventDefault(); finishLasso(); }"></div>
                             <div id="diagramsCropOverlay" style="display:none; position:absolute; inset:0; pointer-events:none;">
                                 <div id="diagramsCropDimT"></div>
                                 <div id="diagramsCropDimB"></div>
@@ -2036,6 +2037,7 @@
                             <button onclick="resetDiagramsImage()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Replace image</button>
                             <button onclick="openDiagramInPaint()" title="Edit the source image in miniPaint (remove/move text, retouch). Boxes are cleared on save." style="background:none; border:1px solid #2a2a4a; color:#7ad17a; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Edit in Paint</button>
                             <button onclick="enterCropMode()" style="background:none; border:1px solid #2a2a4a; color:#f5b942; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Crop region</button>
+                            <button onclick="enterLassoMode()" title="Draw a freeform polygon shape — clicks add vertices, double-click closes" style="background:none; border:1px solid #2a2a4a; color:#c08af0; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Lasso shape</button>
                             <button onclick="undoLastBox()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Undo last box</button>
                             <button onclick="clearBoxes()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Clear boxes</button>
                             <span id="diagramsBoxCount" style="color:#f5b942; font-size:11px; letter-spacing:0.5px;">0 boxes</span>
@@ -2048,6 +2050,12 @@
                             <button onclick="applyCrop()" style="background:#f5b942; color:#000; border:none; border-radius:4px; padding:6px 14px; font-size:11px; font-weight:700; letter-spacing:0.5px; cursor:pointer;">Apply crop</button>
                             <button onclick="exitCropMode()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Cancel</button>
                             <span style="color:#888; font-size:11px;">Drag any region &middot; output is 16:9 with bg color padding &middot; boxes will be cleared</span>
+                        </div>
+                        <div id="diagramsLassoToolbar" style="display:none; margin-top:10px; gap:10px; align-items:center; flex-wrap:wrap;">
+                            <button onclick="finishLasso()" style="background:#c08af0; color:#000; border:none; border-radius:4px; padding:6px 14px; font-size:11px; font-weight:700; letter-spacing:0.5px; cursor:pointer;">Finish lasso</button>
+                            <button onclick="exitLassoMode()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Cancel</button>
+                            <button onclick="undoLassoPoint()" style="background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 11px; font-size:11px; cursor:pointer;">Undo last point</button>
+                            <span id="diagramsLassoStatus" style="color:#c08af0; font-size:11px;">Click to place points &middot; double-click or Enter to close (need 3+ points)</span>
                         </div>
                     </div>
                 </div>
@@ -6498,7 +6506,125 @@
         }, 'image/png');
     }
 
+    // ---- lasso (polygon shape) mode ----
+    var diagramLassoMode = false;
+    var diagramLassoPoints = []; // [{x,y}] in fractions of layer (0..1)
+    var diagramLassoSvg = null;
+
+    function enterLassoMode() {
+        var img = document.getElementById('diagramsImage');
+        if (!img.src) { alert('Upload an image first.'); return; }
+        if (diagramCropMode) exitCropMode();
+        diagramLassoMode = true;
+        diagramLassoPoints = [];
+        // Hide rectangular boxes so the lasso overlay is unobstructed.
+        var layer = document.getElementById('diagramsBoxLayer');
+        Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.style.display = 'none'; });
+        document.getElementById('diagramsBoxToolbar').style.display = 'none';
+        document.getElementById('diagramsLassoToolbar').style.display = 'flex';
+        _renderLassoPreview();
+        _setLassoStatus('Click to place first point');
+    }
+    function exitLassoMode() {
+        diagramLassoMode = false;
+        diagramLassoPoints = [];
+        if (diagramLassoSvg && diagramLassoSvg.parentNode) {
+            diagramLassoSvg.parentNode.removeChild(diagramLassoSvg);
+        }
+        diagramLassoSvg = null;
+        var layer = document.getElementById('diagramsBoxLayer');
+        Array.from(layer.querySelectorAll('.diagram-box')).forEach(function(el) { el.style.display = 'block'; });
+        document.getElementById('diagramsBoxToolbar').style.display = 'flex';
+        document.getElementById('diagramsLassoToolbar').style.display = 'none';
+        renderBoxes();
+    }
+    function undoLassoPoint() {
+        if (!diagramLassoMode) return;
+        if (diagramLassoPoints.length === 0) return;
+        diagramLassoPoints.pop();
+        _renderLassoPreview();
+        _setLassoStatus(diagramLassoPoints.length === 0
+            ? 'Click to place first point'
+            : (diagramLassoPoints.length + ' point' + (diagramLassoPoints.length === 1 ? '' : 's') + ' · click to add · double-click to close'));
+    }
+    function finishLasso() {
+        if (!diagramLassoMode) return;
+        if (diagramLassoPoints.length < 3) {
+            _setLassoStatus('Need at least 3 points to close the shape', '#e07070');
+            return;
+        }
+        diagramBoxes.push({
+            type: 'poly',
+            points: diagramLassoPoints.slice(),
+            anim: 'fade',
+        });
+        var newIdx = diagramBoxes.length - 1;
+        exitLassoMode();
+        renderBoxes();
+        renderBoxAnimList();
+        setSelectedBox(newIdx);
+        if (typeof schedulePatch === 'function') schedulePatch();
+    }
+    function _setLassoStatus(msg, color) {
+        var s = document.getElementById('diagramsLassoStatus');
+        if (s) {
+            s.textContent = msg || '';
+            s.style.color = color || '#c08af0';
+        }
+    }
+    function _lassoAddPointFromEvent(e) {
+        var layer = document.getElementById('diagramsBoxLayer');
+        var r = layer.getBoundingClientRect();
+        var fx = (e.clientX - r.left) / r.width;
+        var fy = (e.clientY - r.top) / r.height;
+        fx = Math.max(0, Math.min(1, fx));
+        fy = Math.max(0, Math.min(1, fy));
+        diagramLassoPoints.push({ x: fx, y: fy });
+        _renderLassoPreview();
+        _setLassoStatus(diagramLassoPoints.length + ' point' + (diagramLassoPoints.length === 1 ? '' : 's') + ' · click to add · double-click to close');
+    }
+    function _renderLassoPreview() {
+        var layer = document.getElementById('diagramsBoxLayer');
+        if (!diagramLassoSvg) {
+            diagramLassoSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            diagramLassoSvg.style.cssText = 'position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible;';
+            diagramLassoSvg.setAttribute('viewBox', '0 0 1 1');
+            diagramLassoSvg.setAttribute('preserveAspectRatio', 'none');
+            layer.appendChild(diagramLassoSvg);
+        }
+        // Clear existing children
+        while (diagramLassoSvg.firstChild) diagramLassoSvg.removeChild(diagramLassoSvg.firstChild);
+        if (diagramLassoPoints.length === 0) return;
+        // Polygon fill (open) — uses polyline so it doesn't auto-close
+        var pts = diagramLassoPoints.map(function(p) { return p.x + ',' + p.y; }).join(' ');
+        if (diagramLassoPoints.length >= 2) {
+            var line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+            line.setAttribute('points', pts);
+            line.setAttribute('fill', 'rgba(192,138,240,0.18)');
+            line.setAttribute('stroke', '#c08af0');
+            line.setAttribute('stroke-width', '0.004');
+            line.setAttribute('vector-effect', 'non-scaling-stroke');
+            diagramLassoSvg.appendChild(line);
+        }
+        // Vertex dots
+        diagramLassoPoints.forEach(function(p) {
+            var c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            c.setAttribute('cx', p.x);
+            c.setAttribute('cy', p.y);
+            c.setAttribute('r', '0.008');
+            c.setAttribute('fill', '#c08af0');
+            c.setAttribute('vector-effect', 'non-scaling-stroke');
+            diagramLassoSvg.appendChild(c);
+        });
+    }
+
     function boxLayerDown(e) {
+        if (diagramLassoMode) {
+            // Single click adds a vertex. Double-click handled separately on the layer.
+            _lassoAddPointFromEvent(e);
+            e.preventDefault();
+            return;
+        }
         if (diagramCropMode) {
             var layer = document.getElementById('diagramsBoxLayer');
             var r = layer.getBoundingClientRect();
@@ -6520,6 +6646,7 @@
         e.preventDefault();
     }
     function boxLayerMove(e) {
+        if (diagramLassoMode) return; // lasso uses click events only, ignore drag
         if (diagramCropMode) {
             if (!diagramCropStart) return;
             var layer = document.getElementById('diagramsBoxLayer');
@@ -6547,6 +6674,7 @@
         diagramActiveEl.style.height = h + 'px';
     }
     function boxLayerUp(e) {
+        if (diagramLassoMode) return; // lasso adds points on mousedown only
         if (diagramCropMode) {
             diagramCropStart = null;
             return;
@@ -6585,27 +6713,60 @@
             var isHide = (b.anim === 'hide');
             var isSelected = (i === selectedBoxIdx);
             var inGroup = multiSelectedIdxs.has(i);
-            var borderClr = isHide ? '#e07070' : (inGroup ? '#7ad17a' : '#f5b942');
-            var bgClr = isHide ? 'rgba(224,112,112,0.18)' : (inGroup ? 'rgba(122,209,122,0.12)' : 'rgba(245,185,66,0.10)');
+            var isPoly = (b && b.type === 'poly');
+            var bbox = _boxBbox(b);
+            var borderClr = isHide ? '#e07070' : (inGroup ? '#7ad17a' : (isPoly ? '#c08af0' : '#f5b942'));
+            var bgClr = isHide ? 'rgba(224,112,112,0.18)' : (inGroup ? 'rgba(122,209,122,0.12)' : (isPoly ? 'rgba(192,138,240,0.10)' : 'rgba(245,185,66,0.10)'));
             var d = document.createElement('div');
             d.className = 'diagram-box';
             d.dataset.idx = i;
             d.title = isHide
                 ? 'Hidden region — masked the whole video. Right-click to delete.'
-                : 'Right-click or click the × to delete';
+                : (isPoly
+                    ? 'Lasso shape — to reshape, delete and redraw'
+                    : 'Right-click or click the × to delete');
             var borderWidth = (isSelected || inGroup) ? 3 : 2;
-            var glowColor = inGroup ? 'rgba(122,209,122,0.55)' : 'rgba(245,185,66,0.6)';
+            var glowColor = inGroup ? 'rgba(122,209,122,0.55)' : (isPoly ? 'rgba(192,138,240,0.6)' : 'rgba(245,185,66,0.6)');
             var glow = (isSelected || inGroup)
                 ? 'box-shadow:0 0 0 1px rgba(0,0,0,0.4),0 0 12px ' + glowColor + ';'
                 : 'box-shadow:0 0 0 1px rgba(0,0,0,0.4);';
-            d.style.cssText = 'position:absolute; border:' + borderWidth + 'px solid ' + borderClr + '; background:' + bgClr + '; pointer-events:auto;' + glow + ' cursor:context-menu;';
-            if (isHide) {
-                d.style.borderStyle = 'dashed';
+            // For poly boxes, the rectangular wrapper holds the bbox; the actual polygon
+            // shape is drawn inside via an SVG. The wrapper itself stays borderless so it
+            // doesn't draw a rectangle around the polygon.
+            if (isPoly) {
+                d.style.cssText = 'position:absolute; border:0; background:transparent; pointer-events:auto; cursor:context-menu;';
+            } else {
+                d.style.cssText = 'position:absolute; border:' + borderWidth + 'px solid ' + borderClr + '; background:' + bgClr + '; pointer-events:auto;' + glow + ' cursor:context-menu;';
+                if (isHide) d.style.borderStyle = 'dashed';
             }
-            d.style.left = (b.x * 100) + '%';
-            d.style.top = (b.y * 100) + '%';
-            d.style.width = (b.w * 100) + '%';
-            d.style.height = (b.h * 100) + '%';
+            d.style.left = (bbox.x * 100) + '%';
+            d.style.top = (bbox.y * 100) + '%';
+            d.style.width = (bbox.w * 100) + '%';
+            d.style.height = (bbox.h * 100) + '%';
+
+            if (isPoly) {
+                // Inner SVG draws the polygon. Coordinates are local to the bbox (0..1).
+                var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                svg.style.cssText = 'position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible;';
+                svg.setAttribute('viewBox', '0 0 1 1');
+                svg.setAttribute('preserveAspectRatio', 'none');
+                var pts = (b.points || []).map(function(p) {
+                    var lx = bbox.w > 0 ? (p.x - bbox.x) / bbox.w : 0;
+                    var ly = bbox.h > 0 ? (p.y - bbox.y) / bbox.h : 0;
+                    return lx + ',' + ly;
+                }).join(' ');
+                var poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+                poly.setAttribute('points', pts);
+                poly.setAttribute('fill', bgClr);
+                poly.setAttribute('stroke', borderClr);
+                poly.setAttribute('stroke-width', String(borderWidth));
+                poly.setAttribute('vector-effect', 'non-scaling-stroke');
+                if (isSelected || inGroup) {
+                    poly.setAttribute('filter', 'drop-shadow(0 0 6px ' + glowColor + ')');
+                }
+                svg.appendChild(poly);
+                d.appendChild(svg);
+            }
             d.oncontextmenu = function(ev) { ev.preventDefault(); ev.stopPropagation(); deleteBox(parseInt(d.dataset.idx, 10)); };
             // Allow left-click+drag to fall through to the layer so users can draw a NEW
             // box inside an existing one (e.g. selecting smaller text inside a big region).
@@ -6646,6 +6807,11 @@
                 d.appendChild(groupChk);
             }
 
+            // Resize handles only apply to rectangular boxes — polygons reshape via redraw.
+            if (isPoly) {
+                layer.appendChild(d);
+                return;
+            }
             // Resize handles: 4 edges + 4 corners
             var handles = [
                 { e: 'n',  style: 'left:10px; right:10px; top:-4px; height:8px; cursor:ns-resize;' },
@@ -6748,11 +6914,44 @@
             el.textContent = n + ' in group · animation applies to all · click ✕ to clear';
         }
     }
+    // Compute the bounding box (fractions) of a polygon's points.
+    function _polyBbox(points) {
+        if (!points || points.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
+        var minX = 1, minY = 1, maxX = 0, maxY = 0;
+        points.forEach(function(p) {
+            if (p.x < minX) minX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y > maxY) maxY = p.y;
+        });
+        return { x: minX, y: minY, w: Math.max(0, maxX - minX), h: Math.max(0, maxY - minY) };
+    }
+    // Standard ray-casting point-in-polygon. Points in same coord space as (fx,fy).
+    function _pointInPolygon(fx, fy, points) {
+        var inside = false;
+        for (var i = 0, j = points.length - 1; i < points.length; j = i++) {
+            var xi = points[i].x, yi = points[i].y;
+            var xj = points[j].x, yj = points[j].y;
+            var intersect = ((yi > fy) !== (yj > fy)) &&
+                (fx < (xj - xi) * (fy - yi) / ((yj - yi) || 1e-9) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
+    }
+    // Treat rect or poly boxes uniformly: returns the effective bbox in fractions.
+    function _boxBbox(b) {
+        if (b && b.type === 'poly') return _polyBbox(b.points || []);
+        return { x: b.x, y: b.y, w: b.w, h: b.h };
+    }
     // Hit-test: which box (if any) contains the given layer-fraction point? Top box wins.
     function _hitBoxAtFraction(fx, fy) {
         for (var i = diagramBoxes.length - 1; i >= 0; i--) {
             var b = diagramBoxes[i];
-            if (fx >= b.x && fx <= b.x + b.w && fy >= b.y && fy <= b.y + b.h) return i;
+            if (b && b.type === 'poly') {
+                if (_pointInPolygon(fx, fy, b.points || [])) return i;
+            } else {
+                if (fx >= b.x && fx <= b.x + b.w && fy >= b.y && fy <= b.y + b.h) return i;
+            }
         }
         return -1;
     }
@@ -6877,6 +7076,11 @@
             ev.preventDefault();
             applyAnimToSelected(KEY_TO_ANIM[kLower]);
             return;
+        }
+        if (diagramLassoMode) {
+            if (k === 'Enter') { ev.preventDefault(); finishLasso(); return; }
+            if (k === 'Escape') { ev.preventDefault(); exitLassoMode(); return; }
+            if (k === 'Backspace') { ev.preventDefault(); undoLassoPoint(); return; }
         }
         if (k === 'Escape' && multiSelectedIdxs.size > 0) {
             ev.preventDefault();
