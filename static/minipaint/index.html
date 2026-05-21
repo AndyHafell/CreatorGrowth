@@ -307,7 +307,8 @@
       var bgActions = document.createElement('div');
       bgActions.id = 'ai_bg_actions';
       bgActions.style.cssText = 'display:flex;align-items:center;margin-left:18px;';
-      var bgBtn = mkBtn('NO BG', 'cyan', function(){ runRemoveBg(); });
+      var bgBtn = mkBtn('REMOVE BG', 'cyan', function(){ runRemoveBg(); });
+      bgBtn.style.whiteSpace = 'nowrap';
       bgActions.appendChild(bgBtn);
 
       var patchBtn = mkBtn('PATCH', 'green', withRect(function(rect){ runPatch(rect); }));
