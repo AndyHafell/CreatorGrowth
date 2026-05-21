@@ -8144,6 +8144,36 @@ def thumb_editor_page(vid, slot):
     )
 
 
+@app.route("/diagrams/<diagram_id>/image-edit", methods=["GET"])
+@login_required
+def diagram_image_editor_page(diagram_id):
+    """miniPaint-wrapped editor for a single diagram's source image. Opens in a
+    new tab from Diagram Studio. Pre-loads the diagram's current image as layer 1
+    and writes back to /api/diagrams/<id>/image on save (existing endpoint)."""
+    conn = get_db()
+    conn.row_factory = sqlite3.Row
+    drow = conn.execute(
+        "SELECT id, video_id, name, image_path FROM diagrams WHERE id=?",
+        (diagram_id,),
+    ).fetchone()
+    if not drow:
+        conn.close()
+        return "diagram not found", 404
+    vrow = conn.execute("SELECT title FROM videos WHERE id=?", (drow["video_id"],)).fetchone()
+    conn.close()
+    video_title = ((vrow["title"] if vrow else "") or "").strip() or "(untitled)"
+    diagram_name = (drow["name"] or "").strip() or "untitled diagram"
+    image_url = ("/" + drow["image_path"]) if drow["image_path"] else ""
+    return render_template(
+        "diagram_image_editor.html",
+        diagram_id=diagram_id,
+        video_id=drow["video_id"],
+        diagram_name=diagram_name,
+        video_title=video_title,
+        image_url=image_url,
+    )
+
+
 @app.route("/api/videos/<int:vid>/thumb-slot/<int:slot>", methods=["POST"])
 @login_required
 def thumb_slot_save(vid, slot):
