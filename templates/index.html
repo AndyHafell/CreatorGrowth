@@ -6647,15 +6647,17 @@
     var diagramLassoMode = false;
     var diagramLassoPoints = []; // [{x,y}] in fractions (0..1) of layer
     var diagramLassoTargetIdx = -1; // -1 = create new box; else = reshape this box
+    var diagramLassoOp = 'add';     // 'add' = grow union; 'subtract' = carve hole
     var diagramLassoSvg = null;
     var diagramLassoDotsLayer = null;
 
-    function enterLassoMode(targetIdx) {
+    function enterLassoMode(targetIdx, op) {
         var img = document.getElementById('diagramsImage');
         if (!img.src) { alert('Upload an image first.'); return; }
         if (diagramCropMode) exitCropMode();
         diagramLassoMode = true;
         diagramLassoTargetIdx = (typeof targetIdx === 'number' && targetIdx >= 0 && targetIdx < diagramBoxes.length) ? targetIdx : -1;
+        diagramLassoOp = (op === 'subtract' && diagramLassoTargetIdx >= 0) ? 'subtract' : 'add';
         diagramLassoPoints = [];
         var existingAct = document.getElementById('diagramSelectedBoxActions');
         if (existingAct) existingAct.remove();
@@ -6683,6 +6685,7 @@
         diagramLassoMode = false;
         diagramLassoPoints = [];
         diagramLassoTargetIdx = -1;
+        diagramLassoOp = 'add';
         if (diagramLassoSvg && diagramLassoSvg.parentNode) {
             diagramLassoSvg.parentNode.removeChild(diagramLassoSvg);
         }
@@ -6717,13 +6720,13 @@
         }
         _pushUndoSnapshot();
         var pointsCopy = diagramLassoPoints.map(function(p) { return { x: p.x, y: p.y }; });
-        var newPolyShape = { type: 'poly', points: pointsCopy };
+        var newPolyShape = { type: 'poly', points: pointsCopy, op: diagramLassoOp };
         var resultIdx;
         if (diagramLassoTargetIdx >= 0 && diagramLassoTargetIdx < diagramBoxes.length) {
-            // ADDITIVE: existing shape stays untouched, new lasso is layered on top.
+            // Layered: existing shapes stay untouched, new lasso appends as add/subtract.
             var existing = diagramBoxes[diagramLassoTargetIdx];
             var prevAnim = (existing && existing.anim) || 'fade';
-            var existingShapes = _boxShapes(existing); // normalized array (rect or poly entries)
+            var existingShapes = _boxShapes(existing); // normalized array with op=='add' default
             diagramBoxes[diagramLassoTargetIdx] = {
                 type: 'compound',
                 shapes: existingShapes.concat([newPolyShape]),
@@ -6731,6 +6734,7 @@
             };
             resultIdx = diagramLassoTargetIdx;
         } else {
+            // Standalone toolbar lasso: subtract makes no sense here — always 'add'.
             diagramBoxes.push({
                 type: 'poly',
                 points: pointsCopy,
@@ -6753,11 +6757,18 @@
     }
     function _updateLassoStatusForCount() {
         var n = diagramLassoPoints.length;
-        var prefix = (diagramLassoTargetIdx >= 0)
-            ? ('Adding new shape to box ' + (diagramLassoTargetIdx + 1) + ' · ')
-            : '';
-        if (n === 0) _setLassoStatus(prefix + 'Click to place first point');
-        else _setLassoStatus(prefix + n + ' point' + (n === 1 ? '' : 's') + ' · click to add · double-click or Enter to finish');
+        var prefix = '';
+        var color = '#f5b942';
+        if (diagramLassoTargetIdx >= 0) {
+            if (diagramLassoOp === 'subtract') {
+                prefix = 'Removing area from box ' + (diagramLassoTargetIdx + 1) + ' · ';
+                color = '#e07070';
+            } else {
+                prefix = 'Adding new shape to box ' + (diagramLassoTargetIdx + 1) + ' · ';
+            }
+        }
+        if (n === 0) _setLassoStatus(prefix + 'Click to place first point', color);
+        else _setLassoStatus(prefix + n + ' point' + (n === 1 ? '' : 's') + ' · click to add · double-click or Enter to finish', color);
     }
     function _lassoAddPointFromEvent(e) {
         var layer = document.getElementById('diagramsBoxLayer');
@@ -6789,37 +6800,36 @@
         while (diagramLassoSvg.firstChild) diagramLassoSvg.removeChild(diagramLassoSvg.firstChild);
         while (diagramLassoDotsLayer.firstChild) diagramLassoDotsLayer.removeChild(diagramLassoDotsLayer.firstChild);
         if (diagramLassoPoints.length === 0) return;
-        // Outline/fill (open polyline). If ≥3 points, also close it with a faint preview line.
+        var isSub = (diagramLassoOp === 'subtract');
+        var strokeClr = isSub ? '#e07070' : '#f5b942';
+        var fillClr = isSub ? 'rgba(224,112,112,0.16)' : 'rgba(245,185,66,0.16)';
         var pts = diagramLassoPoints.map(function(p) { return p.x + ',' + p.y; }).join(' ');
         if (diagramLassoPoints.length >= 2) {
             var line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
             line.setAttribute('points', pts);
-            line.setAttribute('fill', diagramLassoPoints.length >= 3 ? 'rgba(245,185,66,0.16)' : 'none');
-            line.setAttribute('stroke', '#f5b942');
+            line.setAttribute('fill', diagramLassoPoints.length >= 3 ? fillClr : 'none');
+            line.setAttribute('stroke', strokeClr);
             line.setAttribute('stroke-width', '2');
             line.setAttribute('vector-effect', 'non-scaling-stroke');
             diagramLassoSvg.appendChild(line);
         }
         if (diagramLassoPoints.length >= 3) {
-            // Faint dashed closing line from last → first so the user sees the polygon outline.
             var first = diagramLassoPoints[0];
             var last = diagramLassoPoints[diagramLassoPoints.length - 1];
             var close = document.createElementNS('http://www.w3.org/2000/svg', 'line');
             close.setAttribute('x1', last.x); close.setAttribute('y1', last.y);
             close.setAttribute('x2', first.x); close.setAttribute('y2', first.y);
-            close.setAttribute('stroke', '#f5b942');
+            close.setAttribute('stroke', strokeClr);
             close.setAttribute('stroke-width', '1.5');
             close.setAttribute('stroke-dasharray', '4 3');
             close.setAttribute('vector-effect', 'non-scaling-stroke');
             diagramLassoSvg.appendChild(close);
         }
-        // Vertex dots: HTML divs sized in pixels so they stay perfectly circular even
-        // when the layer's aspect ratio isn't 1:1.
         diagramLassoPoints.forEach(function(p, i) {
             var dot = document.createElement('div');
             var isFirst = (i === 0);
             var sz = isFirst ? 14 : 11;
-            dot.style.cssText = 'position:absolute; left:' + (p.x * 100) + '%; top:' + (p.y * 100) + '%; width:' + sz + 'px; height:' + sz + 'px; margin-left:' + (-sz/2) + 'px; margin-top:' + (-sz/2) + 'px; background:#f5b942; border:' + (isFirst ? 2 : 1.5) + 'px solid #1a1a1a; border-radius:50%; box-shadow:0 1px 4px rgba(0,0,0,0.6); box-sizing:border-box;';
+            dot.style.cssText = 'position:absolute; left:' + (p.x * 100) + '%; top:' + (p.y * 100) + '%; width:' + sz + 'px; height:' + sz + 'px; margin-left:' + (-sz/2) + 'px; margin-top:' + (-sz/2) + 'px; background:' + strokeClr + '; border:' + (isFirst ? 2 : 1.5) + 'px solid #1a1a1a; border-radius:50%; box-shadow:0 1px 4px rgba(0,0,0,0.6); box-sizing:border-box;';
             diagramLassoDotsLayer.appendChild(dot);
         });
     }
@@ -6991,59 +7001,112 @@
             }
 
             if (isCompound) {
-                // Unified silhouette: every shape uses the SAME yellow fill, so where
-                // they overlap or touch they read as one merged shape. To hide stroke
-                // seams where shapes share interior space, each shape's stroke is
-                // masked by the OTHER shapes' fills — only the outer perimeter shows.
+                // Split shapes by op so we can render adds + subtracts correctly.
+                var addShapes = shapes.filter(function(s) { return _shapeOp(s) !== 'subtract'; });
+                var subShapes = shapes.filter(function(s) { return _shapeOp(s) === 'subtract'; });
                 var unionClr = isHide ? '#e07070' : '#f5b942';
                 var unionBg  = isHide ? bgClr : 'rgba(245,185,66,0.10)';
+                var subClr   = '#e07070';
 
-                // 1) Fill pass — all shapes, no stroke.
-                shapes.forEach(function(s) {
-                    var fillEl = _mkShapeEl(s);
-                    fillEl.setAttribute('fill', unionBg);
-                    fillEl.setAttribute('stroke', 'none');
-                    svg.appendChild(fillEl);
-                });
-
-                // 2) Outline pass — one mask per shape, where mask = white minus the
-                //    other shapes' fills. The stroke shows only outside the union seam.
                 var maskKey = 'cgms_' + i + '_' + Math.random().toString(36).slice(2, 8);
                 var defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-                shapes.forEach(function(_s, sIdx) {
-                    var mask = document.createElementNS('http://www.w3.org/2000/svg', 'mask');
-                    mask.setAttribute('id', maskKey + '_' + sIdx);
-                    // The mask covers the entire SVG viewBox (0..1) and its contents
-                    // use the same coordinate system as the shapes themselves. This is
-                    // what makes subtracting "other shapes" from "this shape's stroke"
-                    // actually align spatially.
-                    mask.setAttribute('maskUnits', 'userSpaceOnUse');
-                    mask.setAttribute('maskContentUnits', 'userSpaceOnUse');
-                    mask.setAttribute('x', '0'); mask.setAttribute('y', '0');
-                    mask.setAttribute('width', '1'); mask.setAttribute('height', '1');
+
+                // ----- Fill mask: white where ADD shapes are, black where SUBTRACT -----
+                var fillMask = document.createElementNS('http://www.w3.org/2000/svg', 'mask');
+                fillMask.setAttribute('id', maskKey + '_fill');
+                fillMask.setAttribute('maskUnits', 'userSpaceOnUse');
+                fillMask.setAttribute('maskContentUnits', 'userSpaceOnUse');
+                fillMask.setAttribute('x', '0'); fillMask.setAttribute('y', '0');
+                fillMask.setAttribute('width', '1'); fillMask.setAttribute('height', '1');
+                addShapes.forEach(function(a) {
+                    var aw = _mkShapeEl(a);
+                    aw.setAttribute('fill', 'white');
+                    aw.setAttribute('stroke', 'none');
+                    fillMask.appendChild(aw);
+                });
+                subShapes.forEach(function(s) {
+                    var sb = _mkShapeEl(s);
+                    sb.setAttribute('fill', 'black');
+                    sb.setAttribute('stroke', 'none');
+                    fillMask.appendChild(sb);
+                });
+                defs.appendChild(fillMask);
+
+                // Single yellow rect over the whole viewBox, masked to the merged silhouette.
+                var fillRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                fillRect.setAttribute('x', '0'); fillRect.setAttribute('y', '0');
+                fillRect.setAttribute('width', '1'); fillRect.setAttribute('height', '1');
+                fillRect.setAttribute('fill', unionBg);
+                fillRect.setAttribute('mask', 'url(#' + maskKey + '_fill)');
+
+                // ----- Stroke masks for ADD shapes: hide where inside OTHER ADD shapes -----
+                addShapes.forEach(function(_s, sIdx) {
+                    var m = document.createElementNS('http://www.w3.org/2000/svg', 'mask');
+                    m.setAttribute('id', maskKey + '_a_' + sIdx);
+                    m.setAttribute('maskUnits', 'userSpaceOnUse');
+                    m.setAttribute('maskContentUnits', 'userSpaceOnUse');
+                    m.setAttribute('x', '0'); m.setAttribute('y', '0');
+                    m.setAttribute('width', '1'); m.setAttribute('height', '1');
                     var wbg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
                     wbg.setAttribute('x', '0'); wbg.setAttribute('y', '0');
                     wbg.setAttribute('width', '1'); wbg.setAttribute('height', '1');
                     wbg.setAttribute('fill', 'white');
-                    mask.appendChild(wbg);
-                    shapes.forEach(function(other, oIdx) {
+                    m.appendChild(wbg);
+                    addShapes.forEach(function(other, oIdx) {
                         if (oIdx === sIdx) return;
                         var blk = _mkShapeEl(other);
                         blk.setAttribute('fill', 'black');
                         blk.setAttribute('stroke', 'none');
-                        mask.appendChild(blk);
+                        m.appendChild(blk);
                     });
-                    defs.appendChild(mask);
+                    defs.appendChild(m);
                 });
+
+                // ----- Stroke masks for SUBTRACT shapes: show only where inside ADD union -----
+                subShapes.forEach(function(_s, sIdx) {
+                    var m = document.createElementNS('http://www.w3.org/2000/svg', 'mask');
+                    m.setAttribute('id', maskKey + '_s_' + sIdx);
+                    m.setAttribute('maskUnits', 'userSpaceOnUse');
+                    m.setAttribute('maskContentUnits', 'userSpaceOnUse');
+                    m.setAttribute('x', '0'); m.setAttribute('y', '0');
+                    m.setAttribute('width', '1'); m.setAttribute('height', '1');
+                    // Black bg — only the ADD-union turns white, so subtract stroke
+                    // appears only where it sits inside the visible union.
+                    var bbg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                    bbg.setAttribute('x', '0'); bbg.setAttribute('y', '0');
+                    bbg.setAttribute('width', '1'); bbg.setAttribute('height', '1');
+                    bbg.setAttribute('fill', 'black');
+                    m.appendChild(bbg);
+                    addShapes.forEach(function(a) {
+                        var wa = _mkShapeEl(a);
+                        wa.setAttribute('fill', 'white');
+                        wa.setAttribute('stroke', 'none');
+                        m.appendChild(wa);
+                    });
+                    defs.appendChild(m);
+                });
+
                 svg.appendChild(defs);
-                shapes.forEach(function(s, sIdx) {
+                svg.appendChild(fillRect);
+
+                addShapes.forEach(function(s, sIdx) {
                     var strokeEl = _mkShapeEl(s);
                     strokeEl.setAttribute('fill', 'none');
                     strokeEl.setAttribute('stroke', unionClr);
                     strokeEl.setAttribute('stroke-width', String(borderWidth));
                     if (isHide) strokeEl.setAttribute('stroke-dasharray', '6 4');
                     strokeEl.setAttribute('vector-effect', 'non-scaling-stroke');
-                    strokeEl.setAttribute('mask', 'url(#' + maskKey + '_' + sIdx + ')');
+                    strokeEl.setAttribute('mask', 'url(#' + maskKey + '_a_' + sIdx + ')');
+                    svg.appendChild(strokeEl);
+                });
+                subShapes.forEach(function(s, sIdx) {
+                    var strokeEl = _mkShapeEl(s);
+                    strokeEl.setAttribute('fill', 'none');
+                    strokeEl.setAttribute('stroke', subClr);
+                    strokeEl.setAttribute('stroke-width', String(borderWidth));
+                    strokeEl.setAttribute('stroke-dasharray', '4 3');
+                    strokeEl.setAttribute('vector-effect', 'non-scaling-stroke');
+                    strokeEl.setAttribute('mask', 'url(#' + maskKey + '_s_' + sIdx + ')');
                     svg.appendChild(strokeEl);
                 });
             } else {
@@ -7193,17 +7256,28 @@
         var anchorTopPct = (anchorBox.y + anchorBox.h) * 100;
         var anchorLeftPct = (anchorBox.x + anchorBox.w / 2) * 100;
         bar.style.cssText = 'position:absolute; left:' + anchorLeftPct + '%; top:calc(' + anchorTopPct + '% + 8px); transform:translateX(-50%); display:flex; gap:6px; padding:5px 6px; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:6px; box-shadow:0 6px 18px rgba(0,0,0,0.55); pointer-events:auto; z-index:20; white-space:nowrap;';
-        var lassoBtn = document.createElement('button');
-        var isCompoundOrPoly = (b.type === 'poly' || b.type === 'compound');
-        lassoBtn.textContent = isCompoundOrPoly ? '+ Add another shape (lasso)' : '+ Add lasso shape';
-        lassoBtn.title = 'Existing shape stays as-is. Draw a new lasso polygon — it gets layered on top and the selection becomes the union.';
-        lassoBtn.style.cssText = 'background:rgba(245,185,66,0.15); border:1px solid #f5b942; color:#f5b942; padding:5px 12px; font-size:11px; font-weight:700; letter-spacing:0.3px; border-radius:4px; cursor:pointer; font-family:inherit;';
-        lassoBtn.onmousedown = function(ev) { ev.stopPropagation(); };
-        lassoBtn.onclick = function(ev) {
+        var addBtn = document.createElement('button');
+        addBtn.textContent = '+ Add lasso';
+        addBtn.title = 'Draw a polygon and ADD it to this box — the selection grows to the union.';
+        addBtn.style.cssText = 'background:rgba(245,185,66,0.15); border:1px solid #f5b942; color:#f5b942; padding:5px 12px; font-size:11px; font-weight:700; letter-spacing:0.3px; border-radius:4px; cursor:pointer; font-family:inherit;';
+        addBtn.onmousedown = function(ev) { ev.stopPropagation(); };
+        addBtn.onclick = function(ev) {
             ev.preventDefault(); ev.stopPropagation();
-            enterLassoMode(selectedBoxIdx);
+            enterLassoMode(selectedBoxIdx, 'add');
         };
-        bar.appendChild(lassoBtn);
+        bar.appendChild(addBtn);
+
+        var removeBtn = document.createElement('button');
+        removeBtn.textContent = '− Remove lasso';
+        removeBtn.title = 'Draw a polygon and SUBTRACT it from this box — punches a hole.';
+        removeBtn.style.cssText = 'background:rgba(224,112,112,0.12); border:1px solid #e07070; color:#e07070; padding:5px 12px; font-size:11px; font-weight:700; letter-spacing:0.3px; border-radius:4px; cursor:pointer; font-family:inherit;';
+        removeBtn.onmousedown = function(ev) { ev.stopPropagation(); };
+        removeBtn.onclick = function(ev) {
+            ev.preventDefault(); ev.stopPropagation();
+            enterLassoMode(selectedBoxIdx, 'subtract');
+        };
+        bar.appendChild(removeBtn);
+
         layer.appendChild(bar);
     }
     // Compute the bounding box (fractions) of a polygon's points.
@@ -7239,18 +7313,24 @@
         if (s.type === 'poly') return _pointInPolygon(fx, fy, s.points || []);
         return (fx >= s.x && fx <= s.x + s.w && fy >= s.y && fy <= s.y + s.h);
     }
+    function _shapeOp(s) { return (s && s.op === 'subtract') ? 'subtract' : 'add'; }
     // Returns the list of sub-shapes a box is made of. Always returns an array so
     // compound and legacy boxes can be iterated the same way.
     function _boxShapes(b) {
         if (!b) return [];
         if (b.type === 'compound' && Array.isArray(b.shapes)) return b.shapes;
-        if (b.type === 'poly') return [{ type: 'poly', points: b.points || [] }];
-        return [{ type: 'rect', x: b.x, y: b.y, w: b.w, h: b.h }];
+        if (b.type === 'poly') return [{ type: 'poly', points: b.points || [], op: 'add' }];
+        return [{ type: 'rect', x: b.x, y: b.y, w: b.w, h: b.h, op: 'add' }];
     }
-    // Bbox covering every sub-shape in the box.
+    // Bbox covering all ADDITIVE sub-shapes (subtract shapes only carve out, they
+    // never extend the bbox).
     function _boxBbox(b) {
-        var shapes = _boxShapes(b);
-        if (shapes.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
+        var shapes = _boxShapes(b).filter(function(s) { return _shapeOp(s) !== 'subtract'; });
+        if (shapes.length === 0) {
+            // Fallback when somehow there are no adds — use raw shapes.
+            shapes = _boxShapes(b);
+            if (shapes.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
+        }
         var minX = 1, minY = 1, maxX = 0, maxY = 0;
         shapes.forEach(function(s) {
             var sb = _shapeBbox(s);
@@ -7261,13 +7341,20 @@
         });
         return { x: minX, y: minY, w: Math.max(0, maxX - minX), h: Math.max(0, maxY - minY) };
     }
-    // Hit-test: top-most box whose union of shapes contains the point.
+    // Hit-test: a point hits a box if it's inside any ADD shape AND not inside any
+    // SUBTRACT shape. Top-most box wins.
     function _hitBoxAtFraction(fx, fy) {
         for (var i = diagramBoxes.length - 1; i >= 0; i--) {
             var shapes = _boxShapes(diagramBoxes[i]);
+            var inAdd = false, inSub = false;
             for (var j = 0; j < shapes.length; j++) {
-                if (_shapeContains(shapes[j], fx, fy)) return i;
+                var s = shapes[j];
+                if (_shapeContains(s, fx, fy)) {
+                    if (_shapeOp(s) === 'subtract') inSub = true;
+                    else inAdd = true;
+                }
             }
+            if (inAdd && !inSub) return i;
         }
         return -1;
     }
