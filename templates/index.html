@@ -682,6 +682,51 @@
         }
         .kw-filter-btn:hover { color: #f1f1f1; border-color: #555; }
         .kw-filter-btn.active { background: #1c62b9; color: #fff; border-color: #1c62b9; }
+        .showdoc-filter-btn {
+            background: transparent; border: 1px solid #333; color: #888;
+            padding: 6px 14px; border-radius: 8px; font-size: 13px; cursor: pointer; transition: all 0.15s;
+        }
+        .showdoc-filter-btn:hover { color: #f1f1f1; border-color: #555; }
+        .showdoc-filter-btn.active { background: #1c62b9; color: #fff; border-color: #1c62b9; }
+        .showdoc-card {
+            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px;
+            padding: 16px 18px; display: grid;
+            grid-template-columns: 90px 1fr auto; gap: 16px; align-items: start;
+            transition: border-color 0.15s;
+        }
+        .showdoc-card:hover { border-color: #444; }
+        .showdoc-date {
+            color: #888; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .showdoc-body { min-width: 0; }
+        .showdoc-title {
+            color: #f1f1f1; font-size: 15px; font-weight: 600; margin-bottom: 8px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .showdoc-topics { display: flex; flex-direction: column; gap: 4px; }
+        .showdoc-topic { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: #aaa; }
+        .showdoc-topic-num { color: #555; font-weight: 600; width: 16px; flex-shrink: 0; }
+        .showdoc-topic-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+        .showdoc-topic-fmt { color: #1c62b9; font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px; flex-shrink: 0; }
+        .showdoc-actions { display: flex; flex-direction: column; gap: 6px; align-items: stretch; min-width: 140px; }
+        .showdoc-status-badge {
+            display: inline-block; padding: 4px 10px; border-radius: 6px;
+            font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; text-align: center;
+            cursor: pointer; transition: opacity 0.15s; border: none;
+        }
+        .showdoc-status-badge:hover { opacity: 0.85; }
+        .showdoc-status-draft { background: #3a3a3a; color: #ccc; }
+        .showdoc-status-ready { background: #b78600; color: #fff; }
+        .showdoc-status-filmed { background: #1c62b9; color: #fff; }
+        .showdoc-status-published { background: #1e8e3e; color: #fff; }
+        .showdoc-doc-btn {
+            background: transparent; border: 1px solid #444; color: #aaa;
+            padding: 5px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; text-decoration: none; text-align: center;
+        }
+        .showdoc-doc-btn:hover { color: #fff; border-color: #666; }
+        .showdoc-empty { color: #666; text-align: center; padding: 60px 20px; font-size: 14px; }
+        #showDocsContainer { display: none; padding: 20px; max-width: 980px; margin: 0 auto; }
+        #showDocsContainer.visible { display: block !important; }
         .kw-table-wrap {
             overflow-x: auto;
             border-radius: 12px;
@@ -1707,6 +1752,9 @@
         <button class="tab" data-tab="twitter" onclick="setTab('twitter')">
             Twitter
         </button>
+        <button class="tab" data-tab="showdocs" onclick="setTab('showdocs')">
+            Show Docs <span class="tab-count" id="countShowDocs">0</span>
+        </button>
     </div>
 
     <div class="sort-bar">
@@ -1862,6 +1910,20 @@
             <div id="notionEditor" class="notion-editor" contenteditable="true" spellcheck="true"></div>
             <textarea id="contentTextarea" style="display:none;"></textarea>
         </div>
+    </div>
+
+    <div class="content-container" id="showDocsContainer">
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
+            <h2 style="margin:0; color:#fff;">Show Docs</h2>
+            <div class="showdoc-filter-bar" style="display:flex; gap:6px; margin-left:auto;">
+                <button class="showdoc-filter-btn active" data-sdfilter="all" onclick="setShowDocFilter('all')">All</button>
+                <button class="showdoc-filter-btn" data-sdfilter="draft" onclick="setShowDocFilter('draft')">Draft</button>
+                <button class="showdoc-filter-btn" data-sdfilter="ready" onclick="setShowDocFilter('ready')">Ready</button>
+                <button class="showdoc-filter-btn" data-sdfilter="filmed" onclick="setShowDocFilter('filmed')">Filmed</button>
+                <button class="showdoc-filter-btn" data-sdfilter="published" onclick="setShowDocFilter('published')">Published</button>
+            </div>
+        </div>
+        <div id="showDocsList" style="display:flex; flex-direction:column; gap:12px;"></div>
     </div>
 
     <div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
@@ -2728,6 +2790,7 @@
         (async () => {
             await loadVideos();
             await loadChannels();
+            loadShowDocs();
             autoScrapeIfNeeded();
             // Backfill dates: RSS first, then deep (yt-dlp individual lookups) for remaining
             const missingCount = videos.filter(v => !v.time_ago).length;
@@ -2843,12 +2906,14 @@
             const isContent = tab === 'content';
             document.getElementById('newVideoBtn').style.display = tab === 'packaging' ? '' : 'none';
             const isTwitter = tab === 'twitter';
-            const isSpecial = isCreators || isKeywords || isContent || isTwitter;
+            const isShowDocs = tab === 'showdocs';
+            const isSpecial = isCreators || isKeywords || isContent || isTwitter || isShowDocs;
             document.getElementById('videoGrid').style.display = isSpecial ? 'none' : '';
             document.getElementById('creatorsContainer').classList.toggle('visible', isCreators);
             document.getElementById('keywordsContainer').classList.toggle('visible', isKeywords);
             document.getElementById('contentContainer').style.display = isContent ? 'block' : 'none';
             document.getElementById('twitterContainer').style.display = isTwitter ? 'block' : 'none';
+            document.getElementById('showDocsContainer').classList.toggle('visible', isShowDocs);
             document.getElementById('channelsBar').style.display = isSpecial ? 'none' : '';
             document.querySelector('.sort-bar').style.display = isSpecial ? 'none' : '';
             document.getElementById('syncPublishedBtn').style.display = tab === 'published' ? '' : 'none';
@@ -2862,6 +2927,8 @@
                 loadContentList();
             } else if (isTwitter) {
                 loadTweetFeed();
+            } else if (isShowDocs) {
+                loadShowDocs();
             } else {
                 renderGrid();
             }
@@ -4923,6 +4990,86 @@
                 btn.disabled = false;
                 btn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zM6 20V4h5v7h7v9H6z"/></svg> Create Content Doc';
             }
+        }
+
+        // ── Show Docs ────────────────────────────────────────
+        let showDocs = [];
+        let showDocFilter = 'all';
+
+        async function loadShowDocs() {
+            try {
+                const r = await fetch('/api/show-docs');
+                showDocs = await r.json();
+                document.getElementById('countShowDocs').textContent = showDocs.length;
+                renderShowDocs();
+            } catch (e) { console.error('loadShowDocs:', e); }
+        }
+
+        function setShowDocFilter(f) {
+            showDocFilter = f;
+            document.querySelectorAll('.showdoc-filter-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.sdfilter === f);
+            });
+            renderShowDocs();
+        }
+
+        function renderShowDocs() {
+            const list = document.getElementById('showDocsList');
+            const filtered = showDocFilter === 'all' ? showDocs : showDocs.filter(d => d.status === showDocFilter);
+            if (filtered.length === 0) {
+                list.innerHTML = '<div class="showdoc-empty">No show docs ' + (showDocFilter === 'all' ? 'yet' : 'with status "' + showDocFilter + '"') + '.</div>';
+                return;
+            }
+            list.innerHTML = filtered.map(d => {
+                const url = d.google_doc_url || ('https://docs.google.com/document/d/' + d.google_doc_id + '/edit' + (d.tab_id ? '?tab=' + d.tab_id : ''));
+                const dateDisplay = d.date ? new Date(d.date + 'T12:00:00').toLocaleDateString('en-US', {month: 'short', day: 'numeric'}) : '';
+                const yr = d.date ? d.date.slice(0,4) : '';
+                return `
+                <div class="showdoc-card">
+                    <div>
+                        <div class="showdoc-date">${esc(dateDisplay)}</div>
+                        <div class="showdoc-date" style="color:#555; margin-top:2px;">${esc(yr)}</div>
+                    </div>
+                    <div class="showdoc-body">
+                        <div class="showdoc-title">${esc(d.title)}</div>
+                        <div class="showdoc-topics">
+                            ${[1,2,3].map(n => {
+                                const t = d['topic_' + n];
+                                const fmt = d['topic_' + n + '_format'];
+                                if (!t) return '';
+                                return `<div class="showdoc-topic">
+                                    <span class="showdoc-topic-num">${n}.</span>
+                                    <span class="showdoc-topic-text">${esc(t)}</span>
+                                    ${fmt ? `<span class="showdoc-topic-fmt">${esc(fmt)}</span>` : ''}
+                                </div>`;
+                            }).join('')}
+                        </div>
+                    </div>
+                    <div class="showdoc-actions">
+                        <button class="showdoc-status-badge showdoc-status-${d.status}" onclick="cycleShowDocStatus(${d.id})" title="Click to cycle status">${esc(d.status)}</button>
+                        <a class="showdoc-doc-btn" href="${esc(url)}" target="_blank">Open Doc &rarr;</a>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        async function cycleShowDocStatus(id) {
+            const order = ['draft', 'ready', 'filmed', 'published'];
+            const doc = showDocs.find(d => d.id === id);
+            if (!doc) return;
+            const next = order[(order.indexOf(doc.status) + 1) % order.length];
+            try {
+                const r = await fetch('/api/show-docs/' + id + '/status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ status: next })
+                });
+                if (r.ok) {
+                    doc.status = next;
+                    renderShowDocs();
+                    showToast('Show doc → ' + next);
+                }
+            } catch (e) { console.error('cycleShowDocStatus:', e); }
         }
 
         // ── Auto-scrape on load ──────────────────────────────
