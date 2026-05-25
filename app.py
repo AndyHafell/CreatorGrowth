@@ -672,6 +672,61 @@ def fetch_video_metadata(video_id: str) -> dict | None:
     }
 
 
+def extract_tweet_id(url: str) -> str | None:
+    m = re.search(r"(?:twitter\.com|x\.com|fxtwitter\.com|vxtwitter\.com)/[^/]+/status/(\d+)", url)
+    return m.group(1) if m else None
+
+
+def fetch_tweet_metadata(tweet_id: str) -> dict | None:
+    """Fetch tweet metadata via fxtwitter (public, no auth)."""
+    try:
+        req = Request(
+            f"https://api.fxtwitter.com/status/{tweet_id}",
+            headers={"User-Agent": "Mozilla/5.0 creatorgrowth"},
+        )
+        with urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+    if data.get("code") != 200 or "tweet" not in data:
+        return None
+    t = data["tweet"]
+    author = t.get("author") or {}
+
+    title = (t.get("text") or "").strip()
+    if len(title) > 200:
+        title = title[:197] + "..."
+
+    media_all = (t.get("media") or {}).get("all") or []
+    thumbnail_url = ""
+    if media_all:
+        first = media_all[0]
+        thumbnail_url = first.get("thumbnail_url") or first.get("url") or ""
+    if not thumbnail_url:
+        thumbnail_url = (author.get("avatar_url") or "").replace("_200x200", "_400x400")
+
+    published_at = ""
+    ts = t.get("created_timestamp")
+    if isinstance(ts, (int, float)):
+        published_at = datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    screen_name = author.get("screen_name") or ""
+    channel_title = f"@{screen_name}" if screen_name else (author.get("name") or "X")
+
+    return {
+        "video_id": f"x_{tweet_id}",
+        "title": title or "(tweet)",
+        "channel_title": channel_title,
+        "channel_thumb": author.get("avatar_url") or "",
+        "thumbnail_url": thumbnail_url,
+        "view_count": int(t.get("views") or 0),
+        "duration": "",
+        "published_at": published_at,
+        "outlier_score": 0.0,
+        "channel_avg_views": 0,
+    }
+
+
 @app.route("/")
 def index():
     return render_template("index.html", authenticated=session.get("authenticated", False))
@@ -692,19 +747,27 @@ def add_video():
     if not url_input:
         return jsonify({"error": "No URL provided"}), 400
 
-    video_id = extract_video_id(url_input)
-    if not video_id:
-        return jsonify({"error": "Could not extract video ID from URL"}), 400
+    tweet_id = extract_tweet_id(url_input)
+    video_id = None if tweet_id else extract_video_id(url_input)
+    if not tweet_id and not video_id:
+        return jsonify({"error": "Could not extract video or tweet ID from URL"}), 400
 
+    lookup_id = f"x_{tweet_id}" if tweet_id else video_id
     conn = get_db()
-    if conn.execute("SELECT id FROM videos WHERE video_id = ?", (video_id,)).fetchone():
+    if conn.execute("SELECT id FROM videos WHERE video_id = ?", (lookup_id,)).fetchone():
         conn.close()
-        return jsonify({"error": "Video already added"}), 409
+        return jsonify({"error": "Already added"}), 409
 
-    meta = fetch_video_metadata(video_id)
-    if not meta:
-        conn.close()
-        return jsonify({"error": "Video not found on YouTube"}), 404
+    if tweet_id:
+        meta = fetch_tweet_metadata(tweet_id)
+        if not meta:
+            conn.close()
+            return jsonify({"error": "Tweet not found"}), 404
+    else:
+        meta = fetch_video_metadata(video_id)
+        if not meta:
+            conn.close()
+            return jsonify({"error": "Video not found on YouTube"}), 404
 
     conn.execute(
         """INSERT INTO videos (video_id, title, channel_title, channel_thumb, thumbnail_url, view_count, duration, published_at, status, outlier_score, channel_avg_views)
@@ -714,7 +777,7 @@ def add_video():
          meta["outlier_score"], meta["channel_avg_views"]),
     )
     conn.commit()
-    row = conn.execute("SELECT * FROM videos WHERE video_id = ?", (video_id,)).fetchone()
+    row = conn.execute("SELECT * FROM videos WHERE video_id = ?", (meta["video_id"],)).fetchone()
     conn.close()
     return jsonify(row_to_dict(row)), 201
 
