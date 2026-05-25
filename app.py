@@ -944,8 +944,6 @@ def update_thumbnail(vid):
     data = request.get_json(force=True)
     url = (data.get("url") or "").strip()
     title = (data.get("title") or "").strip()
-    if not url:
-        return jsonify({"error": "Missing url"}), 400
     conn = get_db()
     if title:
         conn.execute("UPDATE videos SET thumbnail_url = ?, title = ? WHERE id = ?", (url, title, vid))

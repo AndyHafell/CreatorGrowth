@@ -4076,12 +4076,27 @@
             input.click();
         }
 
-        function removeThumb(prefix, index, event) {
+        async function removeThumb(prefix, index, event) {
             event.stopPropagation();
             const arr = prefix === 'inspo' ? modalDetails.inspo_thumbs : modalDetails.original_thumbs;
+            const removedUrl = arr[index] || '';
             arr[index] = '';
             renderThumbs(prefix, arr);
             saveModalData();
+            // If the removed thumb was the one Set as the card thumbnail, clear it
+            // so the card reverts to its default render (topic block for show docs).
+            const v = videos.find(x => x.id === modalVideoId);
+            if (v && removedUrl && v.thumbnail_url === removedUrl) {
+                try {
+                    await fetch(`/api/videos/${modalVideoId}/thumbnail`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url: '' }),
+                    });
+                    v.thumbnail_url = '';
+                    renderGrid();
+                } catch (_) {}
+            }
         }
 
         function updateTitle(prefix, index, value) {
