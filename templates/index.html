@@ -1718,6 +1718,9 @@
         <button class="tab active" data-tab="options" onclick="setTab('options')" ondragover="tabDragOver(event, 'options')" ondragleave="tabDragLeave(event)" ondrop="tabDrop(event, 'options')">
             Ideas <span class="tab-count" id="countOptions">0</span>
         </button>
+        <button class="tab" data-tab="show" onclick="setTab('show')">
+            Show <span class="tab-count" id="countShow">0</span>
+        </button>
         <button class="tab" data-tab="best" onclick="setTab('best')" ondragover="tabDragOver(event, 'best')" ondragleave="tabDragLeave(event)" ondrop="tabDrop(event, 'best')">
             Best <span class="tab-count" id="countBest">0</span>
         </button>
@@ -1751,9 +1754,6 @@
         </button>
         <button class="tab" data-tab="twitter" onclick="setTab('twitter')">
             Twitter
-        </button>
-        <button class="tab" data-tab="showdocs" onclick="setTab('showdocs')">
-            Show Docs <span class="tab-count" id="countShowDocs">0</span>
         </button>
     </div>
 
@@ -1910,20 +1910,6 @@
             <div id="notionEditor" class="notion-editor" contenteditable="true" spellcheck="true"></div>
             <textarea id="contentTextarea" style="display:none;"></textarea>
         </div>
-    </div>
-
-    <div class="content-container" id="showDocsContainer">
-        <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
-            <h2 style="margin:0; color:#fff;">Show Docs</h2>
-            <div class="showdoc-filter-bar" style="display:flex; gap:6px; margin-left:auto;">
-                <button class="showdoc-filter-btn active" data-sdfilter="all" onclick="setShowDocFilter('all')">All</button>
-                <button class="showdoc-filter-btn" data-sdfilter="draft" onclick="setShowDocFilter('draft')">Draft</button>
-                <button class="showdoc-filter-btn" data-sdfilter="ready" onclick="setShowDocFilter('ready')">Ready</button>
-                <button class="showdoc-filter-btn" data-sdfilter="filmed" onclick="setShowDocFilter('filmed')">Filmed</button>
-                <button class="showdoc-filter-btn" data-sdfilter="published" onclick="setShowDocFilter('published')">Published</button>
-            </div>
-        </div>
-        <div id="showDocsList" style="display:flex; flex-direction:column; gap:12px;"></div>
     </div>
 
     <div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
@@ -2906,16 +2892,15 @@
             const isContent = tab === 'content';
             document.getElementById('newVideoBtn').style.display = tab === 'packaging' ? '' : 'none';
             const isTwitter = tab === 'twitter';
-            const isShowDocs = tab === 'showdocs';
-            const isSpecial = isCreators || isKeywords || isContent || isTwitter || isShowDocs;
+            const isShow = tab === 'show';
+            const isSpecial = isCreators || isKeywords || isContent || isTwitter;
             document.getElementById('videoGrid').style.display = isSpecial ? 'none' : '';
             document.getElementById('creatorsContainer').classList.toggle('visible', isCreators);
             document.getElementById('keywordsContainer').classList.toggle('visible', isKeywords);
             document.getElementById('contentContainer').style.display = isContent ? 'block' : 'none';
             document.getElementById('twitterContainer').style.display = isTwitter ? 'block' : 'none';
-            document.getElementById('showDocsContainer').classList.toggle('visible', isShowDocs);
-            document.getElementById('channelsBar').style.display = isSpecial ? 'none' : '';
-            document.querySelector('.sort-bar').style.display = isSpecial ? 'none' : '';
+            document.getElementById('channelsBar').style.display = (isSpecial || isShow) ? 'none' : '';
+            document.querySelector('.sort-bar').style.display = (isSpecial || isShow) ? 'none' : '';
             document.getElementById('syncPublishedBtn').style.display = tab === 'published' ? '' : 'none';
             document.getElementById('syncVisibleBtn').style.display = (tab === 'options' || tab === 'best') ? '' : 'none';
             // (batch-brief button removed — briefs are per-card now)
@@ -2927,8 +2912,8 @@
                 loadContentList();
             } else if (isTwitter) {
                 loadTweetFeed();
-            } else if (isShowDocs) {
-                loadShowDocs();
+            } else if (isShow) {
+                loadShowDocs().then(renderShowGrid);
             } else {
                 renderGrid();
             }
@@ -5000,57 +4985,65 @@
             try {
                 const r = await fetch('/api/show-docs');
                 showDocs = await r.json();
-                document.getElementById('countShowDocs').textContent = showDocs.length;
-                renderShowDocs();
+                const countEl = document.getElementById('countShow');
+                if (countEl) countEl.textContent = showDocs.length;
             } catch (e) { console.error('loadShowDocs:', e); }
         }
 
-        function setShowDocFilter(f) {
-            showDocFilter = f;
-            document.querySelectorAll('.showdoc-filter-btn').forEach(b => {
-                b.classList.toggle('active', b.dataset.sdfilter === f);
-            });
-            renderShowDocs();
-        }
-
-        function renderShowDocs() {
-            const list = document.getElementById('showDocsList');
-            const filtered = showDocFilter === 'all' ? showDocs : showDocs.filter(d => d.status === showDocFilter);
-            if (filtered.length === 0) {
-                list.innerHTML = '<div class="showdoc-empty">No show docs ' + (showDocFilter === 'all' ? 'yet' : 'with status "' + showDocFilter + '"') + '.</div>';
+        function renderShowGrid() {
+            const grid = document.getElementById('videoGrid');
+            if (!grid) return;
+            if (!showDocs.length) {
+                grid.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">&#127909;</div>
+                        <div class="empty-title">No show docs yet</div>
+                        <div class="empty-sub">Run the morning show doc automation to create one</div>
+                    </div>
+                `;
                 return;
             }
-            list.innerHTML = filtered.map(d => {
-                const url = d.google_doc_url || ('https://docs.google.com/document/d/' + d.google_doc_id + '/edit' + (d.tab_id ? '?tab=' + d.tab_id : ''));
-                const dateDisplay = d.date ? new Date(d.date + 'T12:00:00').toLocaleDateString('en-US', {month: 'short', day: 'numeric'}) : '';
-                const yr = d.date ? d.date.slice(0,4) : '';
+            grid.innerHTML = showDocs.map(showCardHtml).join('');
+        }
+
+        function showCardHtml(d) {
+            const url = d.google_doc_url || ('https://docs.google.com/document/d/' + d.google_doc_id + '/edit' + (d.tab_id ? '?tab=' + d.tab_id : ''));
+            const dateDisplay = d.date ? new Date(d.date + 'T12:00:00').toLocaleDateString('en-US', {month: 'short', day: 'numeric'}).toUpperCase() : '';
+            const yr = d.date ? d.date.slice(0,4) : '';
+            const statusColors = { draft:'#888', ready:'#5b9bd5', filmed:'#1c62b9', published:'#3aaf5b' };
+            const statusColor = statusColors[d.status] || '#666';
+            const topicsHtml = [1,2,3].map(n => {
+                const t = d['topic_' + n];
+                const fmt = d['topic_' + n + '_format'];
+                if (!t) return '';
                 return `
-                <div class="showdoc-card">
-                    <div>
-                        <div class="showdoc-date">${esc(dateDisplay)}</div>
-                        <div class="showdoc-date" style="color:#555; margin-top:2px;">${esc(yr)}</div>
-                    </div>
-                    <div class="showdoc-body">
-                        <div class="showdoc-title">${esc(d.title)}</div>
-                        <div class="showdoc-topics">
-                            ${[1,2,3].map(n => {
-                                const t = d['topic_' + n];
-                                const fmt = d['topic_' + n + '_format'];
-                                if (!t) return '';
-                                return `<div class="showdoc-topic">
-                                    <span class="showdoc-topic-num">${n}.</span>
-                                    <span class="showdoc-topic-text">${esc(t)}</span>
-                                    ${fmt ? `<span class="showdoc-topic-fmt">${esc(fmt)}</span>` : ''}
-                                </div>`;
-                            }).join('')}
-                        </div>
-                    </div>
-                    <div class="showdoc-actions">
-                        <button class="showdoc-status-badge showdoc-status-${d.status}" onclick="cycleShowDocStatus(${d.id})" title="Click to cycle status">${esc(d.status)}</button>
-                        <a class="showdoc-doc-btn" href="${esc(url)}" target="_blank">Open Doc &rarr;</a>
-                    </div>
-                </div>`;
+                    <div style="display:flex; align-items:flex-start; gap:6px; margin-bottom:6px; font-size:11px; line-height:1.3;">
+                        <span style="color:#888; flex-shrink:0;">${n}.</span>
+                        <span style="color:#f1f1f1; flex:1; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">${esc(t)}</span>
+                        ${fmt ? `<span style="color:#5b9bd5; font-size:9px; font-weight:600; letter-spacing:0.5px; text-transform:uppercase; flex-shrink:0; max-width:80px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(fmt)}</span>` : ''}
+                    </div>`;
             }).join('');
+            return `
+            <div class="card" onclick="window.open('${esc(url)}', '_blank')" style="cursor:pointer;">
+                <div class="thumb-wrap" style="background:#0d0d1a; display:flex; flex-direction:column; padding:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
+                        <div>
+                            <div style="color:#f5b942; font-size:11px; font-weight:700; letter-spacing:1px;">${esc(dateDisplay)}</div>
+                            <div style="color:#555; font-size:10px;">${esc(yr)}</div>
+                        </div>
+                        <span style="background:${statusColor}; color:#fff; font-size:9px; padding:3px 8px; border-radius:3px; letter-spacing:0.5px; text-transform:uppercase; font-weight:700;">${esc(d.status)}</span>
+                    </div>
+                    <div style="flex:1; overflow:hidden;">${topicsHtml}</div>
+                </div>
+                <div class="card-info">
+                    <div class="channel-avatar" style="background:#1a1a2e; display:flex; align-items:center; justify-content:center; color:#f5b942; font-weight:700; font-size:12px;">SD</div>
+                    <div class="card-text">
+                        <div class="card-title">${esc(d.title)}</div>
+                        <div class="card-channel">Show Doc</div>
+                        <div class="card-stats">Click to open doc</div>
+                    </div>
+                </div>
+            </div>`;
         }
 
         async function cycleShowDocStatus(id) {
@@ -5066,7 +5059,7 @@
                 });
                 if (r.ok) {
                     doc.status = next;
-                    renderShowDocs();
+                    if (currentTab === 'show') renderShowGrid();
                     showToast('Show doc → ' + next);
                 }
             } catch (e) { console.error('cycleShowDocStatus:', e); }
