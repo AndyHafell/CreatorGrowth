@@ -712,6 +712,8 @@ def fetch_tweet_metadata(tweet_id: str) -> dict | None:
 
     screen_name = author.get("screen_name") or ""
     channel_title = f"@{screen_name}" if screen_name else (author.get("name") or "X")
+    canonical_url = t.get("url") or (f"https://x.com/{screen_name}/status/{tweet_id}" if screen_name else f"https://x.com/i/status/{tweet_id}")
+    full_text = (t.get("text") or "").strip()
 
     return {
         "video_id": f"x_{tweet_id}",
@@ -724,6 +726,18 @@ def fetch_tweet_metadata(tweet_id: str) -> dict | None:
         "published_at": published_at,
         "outlier_score": 0.0,
         "channel_avg_views": 0,
+        "_source": {
+            "platform": "x",
+            "url": canonical_url,
+            "text": full_text,
+            "author_name": author.get("name") or "",
+            "author_handle": screen_name,
+            "author_avatar": author.get("avatar_url") or "",
+            "created_at": published_at,
+            "views": int(t.get("views") or 0),
+            "likes": int(t.get("likes") or 0),
+            "media": [{"url": m.get("url"), "thumbnail_url": m.get("thumbnail_url"), "type": m.get("type")} for m in media_all],
+        },
     }
 
 
@@ -778,6 +792,14 @@ def add_video():
     )
     conn.commit()
     row = conn.execute("SELECT * FROM videos WHERE video_id = ?", (meta["video_id"],)).fetchone()
+    # Persist X source bundle to video_details.meta so the modal can render it.
+    if tweet_id and meta.get("_source"):
+        meta_payload = json.dumps({"source": meta["_source"]})
+        conn.execute(
+            "INSERT INTO video_details (video_id, meta) VALUES (?, ?)",
+            (row["id"], meta_payload),
+        )
+        conn.commit()
     conn.close()
     return jsonify(row_to_dict(row)), 201
 
@@ -1534,6 +1556,23 @@ def get_video_details(vid):
         )
         conn.commit()
         row = conn.execute("SELECT * FROM video_details WHERE video_id = ?", (vid,)).fetchone()
+    # Lazy backfill: if this is an X-sourced card and meta has no source yet, fetch + persist.
+    parent = conn.execute("SELECT video_id FROM videos WHERE id = ?", (vid,)).fetchone()
+    if parent and isinstance(parent["video_id"], str) and parent["video_id"].startswith("x_"):
+        try:
+            existing_meta = json.loads(row["meta"]) if "meta" in row.keys() and row["meta"] else {}
+        except (TypeError, ValueError):
+            existing_meta = {}
+        if not existing_meta.get("source"):
+            tweet_meta = fetch_tweet_metadata(parent["video_id"][2:])
+            if tweet_meta and tweet_meta.get("_source"):
+                existing_meta["source"] = tweet_meta["_source"]
+                conn.execute(
+                    "UPDATE video_details SET meta = ? WHERE video_id = ?",
+                    (json.dumps(existing_meta), vid),
+                )
+                conn.commit()
+                row = conn.execute("SELECT * FROM video_details WHERE video_id = ?", (vid,)).fetchone()
     conn.close()
     def _pad(arr, n):
         return (arr + [""] * n)[:n]
