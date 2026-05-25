@@ -1387,6 +1387,67 @@ def sync_published():
     return jsonify({"updated": updated, "total": len(ids)})
 
 
+@app.route("/api/videos/sync-ids", methods=["POST"])
+def sync_ids():
+    """Refresh view_count + published_at for a specific list of YouTube video_ids
+    (the ones visible in the current frontend filter)."""
+    if not YOUTUBE_API_KEY:
+        return jsonify({"error": "YOUTUBE_API_KEY not configured"}), 500
+    body = request.get_json(silent=True) or {}
+    requested_ids = [vid for vid in (body.get("video_ids") or []) if vid]
+    if not requested_ids:
+        return jsonify({"updated": 0, "total": 0})
+
+    conn = get_db()
+    placeholders = ",".join("?" * len(requested_ids))
+    rows = conn.execute(
+        f"SELECT id, video_id FROM videos WHERE video_id IN ({placeholders})",
+        requested_ids,
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return jsonify({"updated": 0, "total": len(requested_ids)})
+
+    id_to_row = {r["video_id"]: r["id"] for r in rows}
+    ids = list(id_to_row.keys())
+    updated = 0
+    channel_avg_cache: dict[str, int] = {}
+    for i in range(0, len(ids), 50):
+        chunk = ids[i:i + 50]
+        try:
+            api_url = (
+                "https://www.googleapis.com/youtube/v3/videos"
+                f"?part=snippet,statistics&id={','.join(chunk)}&key={YOUTUBE_API_KEY}"
+            )
+            with urlopen(api_url, timeout=20) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            continue
+        for item in payload.get("items", []):
+            vid = item.get("id")
+            if not vid or vid not in id_to_row:
+                continue
+            stats = item.get("statistics", {})
+            view_count = int(stats.get("viewCount", 0) or 0)
+            snippet = item.get("snippet", {})
+            channel_id = snippet.get("channelId", "")
+            published_at = snippet.get("publishedAt", "")
+            if channel_id and channel_id not in channel_avg_cache:
+                channel_url = f"https://www.youtube.com/channel/{channel_id}"
+                channel_avg_cache[channel_id] = fetch_channel_avg_views(channel_url)
+            channel_avg = channel_avg_cache.get(channel_id, 0)
+            outlier = round(view_count / channel_avg, 1) if channel_avg > 0 else 0.0
+            conn.execute(
+                "UPDATE videos SET view_count = ?, outlier_score = ?, channel_avg_views = ?, "
+                "published_at = COALESCE(NULLIF(?, ''), published_at) WHERE id = ?",
+                (view_count, outlier, channel_avg, published_at, id_to_row[vid]),
+            )
+            updated += 1
+    conn.commit()
+    conn.close()
+    return jsonify({"updated": updated, "total": len(requested_ids)})
+
+
 # ── Video Details (modal data) ────────────────────────────
 
 @app.route("/api/videos/<int:vid>/details", methods=["GET"])
@@ -8514,13 +8575,18 @@ def thumb_change_text():
         f"CRITICAL — preserve EVERYTHING else exactly:\n"
         f"- EXACT same font family, weight, letter spacing, and line breaks "
         f"(re-break the new text across the same number of lines if it's long).\n"
+        f"- MATCH THE LETTER-CASE CONVENTION of the original text. If the "
+        f"original is ALL CAPS, render the new text in ALL CAPS regardless of "
+        f"how it was typed. If the original is Title Case, use Title Case. If "
+        f"lowercase, use lowercase. The new text I provided ('{new_text}') is "
+        f"only the WORDING — you decide the casing by mirroring the source.\n"
         f"- EXACT same color, vertical gradient, outline, drop shadow, glow.\n"
         f"- EXACT same pixel-art / 16-bit chunky treatment (or whatever style "
         f"the original uses — match it pixel for pixel).\n"
         f"- EXACT same background behind the text (do not change the background).\n"
         f"- EXACT same image dimensions as the input (width × height unchanged).\n"
         f"- EXACT same positioning of the text block within the crop.\n\n"
-        f"Only the text CHARACTERS change to read: \"{new_text}\". Everything "
+        f"Only the text CHARACTERS change to read the new wording. Everything "
         f"else is identical. Output the crop with the swapped text."
     )
 
