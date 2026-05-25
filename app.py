@@ -340,6 +340,30 @@ def init_db():
             refreshed_at TEXT
         )
     """)
+
+    # ── Show Docs — daily livestream doc records (replaces Airtable Show Docs) ──
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS show_docs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            date TEXT NOT NULL,
+            google_doc_id TEXT NOT NULL,
+            tab_id TEXT,
+            google_doc_url TEXT NOT NULL,
+            topic_1 TEXT,
+            topic_1_format TEXT,
+            topic_1_outlier_score REAL,
+            topic_2 TEXT,
+            topic_2_format TEXT,
+            topic_2_outlier_score REAL,
+            topic_3 TEXT,
+            topic_3_format TEXT,
+            topic_3_outlier_score REAL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -410,6 +434,8 @@ def require_auth():
         return None
     # Bearer-authed endpoints handle their own auth in the route
     if path.startswith("/api/thumb-queue"):
+        return None
+    if path.startswith("/api/show-docs"):
         return None
     if not session.get("authenticated"):
         return jsonify({"error": "Unauthorized"}), 401
@@ -971,6 +997,113 @@ def delete_video(vid):
 def clear_videos():
     conn = get_db()
     conn.execute("DELETE FROM videos")
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+# ── Show Docs routes ──────────────────────────────────────────
+
+SHOW_DOC_STATUSES = ("draft", "ready", "filmed", "published")
+
+
+def showdoc_row_to_dict(r):
+    return {
+        "id": r["id"],
+        "title": r["title"],
+        "date": r["date"],
+        "google_doc_id": r["google_doc_id"],
+        "tab_id": r["tab_id"] or "",
+        "google_doc_url": r["google_doc_url"],
+        "topic_1": r["topic_1"] or "",
+        "topic_1_format": r["topic_1_format"] or "",
+        "topic_1_outlier_score": r["topic_1_outlier_score"] or 0,
+        "topic_2": r["topic_2"] or "",
+        "topic_2_format": r["topic_2_format"] or "",
+        "topic_2_outlier_score": r["topic_2_outlier_score"] or 0,
+        "topic_3": r["topic_3"] or "",
+        "topic_3_format": r["topic_3_format"] or "",
+        "topic_3_outlier_score": r["topic_3_outlier_score"] or 0,
+        "status": r["status"] or "draft",
+        "created_at": r["created_at"],
+        "updated_at": r["updated_at"],
+    }
+
+
+@app.route("/api/show-docs", methods=["GET"])
+def list_show_docs():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM show_docs ORDER BY date DESC, id DESC").fetchall()
+    conn.close()
+    return jsonify([showdoc_row_to_dict(r) for r in rows])
+
+
+@app.route("/api/show-docs", methods=["POST"])
+def create_show_doc():
+    if not (_bearer_user_email() or session.get("authenticated")):
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.get_json(force=True)
+    title = (data.get("title") or "").strip()
+    date = (data.get("date") or "").strip()
+    google_doc_id = (data.get("google_doc_id") or "").strip()
+    google_doc_url = (data.get("google_doc_url") or "").strip()
+    if not (title and date and google_doc_id and google_doc_url):
+        return jsonify({"error": "Missing required field (title, date, google_doc_id, google_doc_url)"}), 400
+    status = (data.get("status") or "draft").lower()
+    if status not in SHOW_DOC_STATUSES:
+        return jsonify({"error": f"Invalid status. Must be one of {SHOW_DOC_STATUSES}"}), 400
+    conn = get_db()
+    cur = conn.execute(
+        """INSERT INTO show_docs
+           (title, date, google_doc_id, tab_id, google_doc_url,
+            topic_1, topic_1_format, topic_1_outlier_score,
+            topic_2, topic_2_format, topic_2_outlier_score,
+            topic_3, topic_3_format, topic_3_outlier_score,
+            status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            title, date, google_doc_id, data.get("tab_id") or "", google_doc_url,
+            data.get("topic_1") or "", data.get("topic_1_format") or "", data.get("topic_1_outlier_score") or 0,
+            data.get("topic_2") or "", data.get("topic_2_format") or "", data.get("topic_2_outlier_score") or 0,
+            data.get("topic_3") or "", data.get("topic_3_format") or "", data.get("topic_3_outlier_score") or 0,
+            status,
+        ),
+    )
+    conn.commit()
+    new_id = cur.lastrowid
+    row = conn.execute("SELECT * FROM show_docs WHERE id = ?", (new_id,)).fetchone()
+    conn.close()
+    return jsonify(showdoc_row_to_dict(row)), 201
+
+
+@app.route("/api/show-docs/<int:sid>/status", methods=["POST"])
+def update_show_doc_status(sid):
+    if not (_bearer_user_email() or session.get("authenticated")):
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.get_json(force=True)
+    status = (data.get("status") or "").lower()
+    if status not in SHOW_DOC_STATUSES:
+        return jsonify({"error": f"Invalid status. Must be one of {SHOW_DOC_STATUSES}"}), 400
+    conn = get_db()
+    row = conn.execute("SELECT id FROM show_docs WHERE id = ?", (sid,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Not found"}), 404
+    conn.execute(
+        "UPDATE show_docs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (status, sid),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "status": status})
+
+
+@app.route("/api/show-docs/<int:sid>", methods=["DELETE"])
+def delete_show_doc(sid):
+    if not (_bearer_user_email() or session.get("authenticated")):
+        return jsonify({"error": "Unauthorized"}), 401
+    conn = get_db()
+    conn.execute("DELETE FROM show_docs WHERE id = ?", (sid,))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
