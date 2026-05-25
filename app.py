@@ -776,7 +776,7 @@ def mirror_show_docs_into_videos(conn) -> int:
     """Ensure every show_docs row has a matching videos row with video_id='sd_<id>'.
     Idempotent — only INSERTs rows that don't exist yet. New show docs land in status='show'."""
     existing = {r["video_id"][3:] for r in conn.execute(
-        "SELECT video_id FROM videos WHERE video_id LIKE 'sd_%'"
+        "SELECT video_id FROM videos WHERE video_id GLOB 'sd_[0-9]*'"
     ).fetchall()}
     sds = conn.execute(
         "SELECT id, title, date, google_doc_id, google_doc_url, tab_id, "
