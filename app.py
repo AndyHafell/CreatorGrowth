@@ -772,12 +772,93 @@ def index():
     return render_template("index.html", authenticated=session.get("authenticated", False))
 
 
+def mirror_show_docs_into_videos(conn) -> int:
+    """Ensure every show_docs row has a matching videos row with video_id='sd_<id>'.
+    Idempotent — only INSERTs rows that don't exist yet. New show docs land in status='show'."""
+    existing = {r["video_id"][3:] for r in conn.execute(
+        "SELECT video_id FROM videos WHERE video_id LIKE 'sd_%'"
+    ).fetchall()}
+    sds = conn.execute(
+        "SELECT id, title, date, google_doc_id, google_doc_url, tab_id, "
+        "topic_1, topic_1_format, topic_2, topic_2_format, topic_3, topic_3_format "
+        "FROM show_docs"
+    ).fetchall()
+    inserted = 0
+    for sd in sds:
+        sd_id_str = str(sd["id"])
+        if sd_id_str in existing:
+            continue
+        published_at = ""
+        if sd["date"]:
+            published_at = f"{sd['date']}T00:00:00Z"
+        conn.execute(
+            "INSERT INTO videos (video_id, title, channel_title, channel_thumb, thumbnail_url, "
+            "view_count, duration, published_at, status, outlier_score, channel_avg_views) "
+            "VALUES (?, ?, 'Show Doc', '', '', 0, '', ?, 'show', 0, 0)",
+            (f"sd_{sd_id_str}", sd["title"] or f"Show Doc — {sd['date']}", published_at),
+        )
+        new_vid = conn.execute(
+            "SELECT id FROM videos WHERE video_id = ?", (f"sd_{sd_id_str}",)
+        ).fetchone()["id"]
+        topics = []
+        for n in (1, 2, 3):
+            text = sd[f"topic_{n}"]
+            if not text:
+                continue
+            topics.append({"n": n, "text": text, "format": sd[f"topic_{n}_format"] or ""})
+        doc_url = sd["google_doc_url"] or (
+            f"https://docs.google.com/document/d/{sd['google_doc_id']}/edit"
+            + (f"?tab={sd['tab_id']}" if sd["tab_id"] else "")
+        )
+        meta_payload = json.dumps({"source": {
+            "platform": "showdoc",
+            "doc_url": doc_url,
+            "topics": topics,
+            "date": sd["date"] or "",
+        }})
+        conn.execute(
+            "INSERT INTO video_details (video_id, meta) VALUES (?, ?)",
+            (new_vid, meta_payload),
+        )
+        inserted += 1
+    if inserted:
+        conn.commit()
+    return inserted
+
+
 @app.route("/api/videos", methods=["GET"])
 def list_videos():
     conn = get_db()
+    mirror_show_docs_into_videos(conn)
     rows = conn.execute("SELECT * FROM videos ORDER BY added_at DESC").fetchall()
+    # Batch-load show_docs so sd_ rows can ship topics inline (avoids per-card fetch from the frontend).
+    sd_rows = {
+        str(r["id"]): r for r in conn.execute(
+            "SELECT id, date, topic_1, topic_1_format, topic_2, topic_2_format, "
+            "topic_3, topic_3_format, google_doc_url, google_doc_id, tab_id FROM show_docs"
+        ).fetchall()
+    }
     conn.close()
-    return jsonify([row_to_dict(r) for r in rows])
+    out = []
+    for r in rows:
+        d = row_to_dict(r)
+        vid_str = d.get("video_id") or ""
+        if vid_str.startswith("sd_"):
+            sd = sd_rows.get(vid_str[3:])
+            if sd:
+                topics = []
+                for n in (1, 2, 3):
+                    text = sd[f"topic_{n}"]
+                    if not text:
+                        continue
+                    topics.append({"n": n, "text": text, "format": sd[f"topic_{n}_format"] or ""})
+                doc_url = sd["google_doc_url"] or (
+                    f"https://docs.google.com/document/d/{sd['google_doc_id']}/edit"
+                    + (f"?tab={sd['tab_id']}" if sd["tab_id"] else "")
+                )
+                d["showdoc"] = {"topics": topics, "doc_url": doc_url, "date": sd["date"] or ""}
+        out.append(d)
+    return jsonify(out)
 
 
 @app.route("/api/videos", methods=["POST"])
@@ -834,7 +915,7 @@ def add_video():
 def update_status(vid):
     data = request.get_json(force=True)
     new_status = data.get("status", "options")
-    if new_status not in ("options", "best", "brief", "packaging", "script", "edited", "archived", "published"):
+    if new_status not in ("options", "show", "best", "brief", "packaging", "script", "edited", "archived", "published"):
         return jsonify({"error": "Invalid status"}), 400
     conn = get_db()
     conn.execute("UPDATE videos SET status = ? WHERE id = ?", (new_status, vid))
