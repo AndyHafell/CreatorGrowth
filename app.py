@@ -28,7 +28,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 app.permanent_session_lifetime = timedelta(days=30)
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "contentmate2026")
-DB_PATH = Path(__file__).resolve().parent / "videos.db"
+DB_PATH = Path(os.environ.get("DB_PATH", str(Path(__file__).resolve().parent / "videos.db")))
 UPLOAD_DIR = Path(__file__).resolve().parent / "static" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 BLOTATO_API_KEY = os.environ.get("BLOTATO_API_KEY", "")
@@ -368,7 +368,63 @@ def init_db():
     conn.close()
 
 
+def migrate_schema():
+    """Idempotent column/index additions layered on top of init_db().
+
+    Each ALTER runs in its own try/except — sqlite raises OperationalError
+    'duplicate column name: X' when the column already exists, which is the
+    expected steady-state after first deploy. Keeping each statement isolated
+    means a partial migration on a new table doesn't block the rest.
+    """
+    conn = get_db()
+    user_cols = [
+        ("skool_handle",     "TEXT"),
+        ("skool_member_id",  "TEXT"),
+        ("access_token",     "TEXT"),
+        ("token_expires_at", "TEXT"),
+    ]
+    for name, typ in user_cols:
+        try:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {name} {typ}")
+        except sqlite3.OperationalError:
+            pass
+    scoped_tables = ("videos", "show_docs", "channels", "keywords",
+                     "my_channel_videos", "tweets")
+    for tbl in scoped_tables:
+        try:
+            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN user_id INTEGER REFERENCES users(id)")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{tbl}_user_id ON {tbl}(user_id)")
+        except sqlite3.OperationalError:
+            pass
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_skool_handle ON users(skool_handle)")
+    except sqlite3.OperationalError:
+        pass
+    # Backfill existing rows to Andy (single-user baseline). Safe to re-run:
+    # only touches rows where user_id IS NULL.
+    conn.execute(
+        "INSERT INTO users (email, last_login) VALUES (?, CURRENT_TIMESTAMP) "
+        "ON CONFLICT(email) DO NOTHING",
+        ("andhaf94@gmail.com",),
+    )
+    andy = conn.execute("SELECT id FROM users WHERE email = ?",
+                        ("andhaf94@gmail.com",)).fetchone()
+    if andy:
+        for tbl in scoped_tables:
+            try:
+                conn.execute(f"UPDATE {tbl} SET user_id = ? WHERE user_id IS NULL",
+                             (andy["id"],))
+            except sqlite3.OperationalError:
+                pass
+    conn.commit()
+    conn.close()
+
+
 init_db()
+migrate_schema()
 
 
 # ── Auth ──────────────────────────────────────────────────
@@ -408,9 +464,11 @@ def api_login():
     else:
         conn.execute("INSERT INTO users (email, last_login) VALUES (?, ?)", (email, now))
     conn.commit()
+    row = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
     conn.close()
     session["authenticated"] = True
     session["email"] = email
+    session["user_id"] = row["id"] if row else None
     session.permanent = True
     return jsonify({"ok": True})
 
@@ -423,12 +481,187 @@ def api_logout():
 
 @app.route("/api/auth-status")
 def auth_status():
-    return jsonify({"authenticated": bool(session.get("authenticated")), "email": session.get("email", "")})
+    return jsonify({"authenticated": bool(session.get("authenticated")), "email": session.get("email", ""), "user_id": session.get("user_id")})
+
+
+# ── Skool OAuth (Phase 1 stub) ────────────────────────────
+# Real OAuth requires SKOOL_API_KEY + SKOOL_CLIENT_ID + SKOOL_CLIENT_SECRET in
+# env. Without them, /api/auth/skool/callback accepts a `user_email` field and
+# mocks the Skool member lookup so this branch can be tested end-to-end with
+# curl. See overnight/skool_auth_blockers.md for what's needed to flip to prod.
+SKOOL_API_KEY        = os.environ.get("SKOOL_API_KEY", "")
+SKOOL_CLIENT_ID      = os.environ.get("SKOOL_CLIENT_ID", "")
+SKOOL_CLIENT_SECRET  = os.environ.get("SKOOL_CLIENT_SECRET", "")
+SKOOL_REDIRECT_URI   = os.environ.get("SKOOL_REDIRECT_URI", "")
+SKOOL_AUTH_URL       = os.environ.get("SKOOL_AUTH_URL", "https://www.skool.com/oauth/authorize")
+SKOOL_TOKEN_URL      = os.environ.get("SKOOL_TOKEN_URL", "https://www.skool.com/oauth/token")
+SKOOL_MEMBER_URL     = os.environ.get("SKOOL_MEMBER_URL", "https://www.skool.com/api/v1/member/me")
+
+
+def _skool_oauth_configured() -> bool:
+    return bool(SKOOL_API_KEY and SKOOL_CLIENT_ID and SKOOL_CLIENT_SECRET)
+
+
+def _handle_from_email(email: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", email.split("@", 1)[0].lower()).strip("-") or "member"
+
+
+def _upsert_skool_user(email: str, handle: str, member_id: str = "",
+                      access_token: str = "", token_expires_at: str = "") -> int:
+    """UPSERT a user resolved by Skool callback. Returns users.id."""
+    conn = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    existing = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE users SET last_login = ?, skool_handle = COALESCE(NULLIF(?, ''), skool_handle), "
+            "skool_member_id = COALESCE(NULLIF(?, ''), skool_member_id), "
+            "access_token = COALESCE(NULLIF(?, ''), access_token), "
+            "token_expires_at = COALESCE(NULLIF(?, ''), token_expires_at) "
+            "WHERE id = ?",
+            (now, handle, member_id, access_token, token_expires_at, existing["id"]),
+        )
+        uid = existing["id"]
+    else:
+        cur = conn.execute(
+            "INSERT INTO users (email, last_login, skool_handle, skool_member_id, "
+            "access_token, token_expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (email, now, handle, member_id, access_token, token_expires_at),
+        )
+        uid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return uid
+
+
+@app.route("/login", methods=["GET"])
+def login_page():
+    """Minimal landing page that sets the session cookie + advertises auth
+    methods. The SPA at `/` is the real login UI; this route exists so the
+    OAuth flow has a documented start URL and the curl test can prime its
+    cookie jar against a stable path."""
+    return (
+        "<!doctype html><meta charset=utf-8>"
+        "<title>Creator Growth — Sign in</title>"
+        "<p>POST credentials to <code>/api/login</code> or complete Skool OAuth "
+        "via <code>/api/auth/skool/start</code> → <code>/api/auth/skool/callback</code>.</p>",
+        200,
+        {"Content-Type": "text/html; charset=utf-8"},
+    )
+
+
+@app.route("/api/auth/skool/start", methods=["GET"])
+def auth_skool_start():
+    """Issue an OAuth state nonce + return the Skool authorize URL.
+
+    Frontend redirects the browser there. Skool sends the user back to
+    SKOOL_REDIRECT_URI with ?code&state. In stub mode we still issue the state
+    so the contract matches production."""
+    state = secrets.token_urlsafe(24)
+    session["oauth_state"] = state
+    if _skool_oauth_configured():
+        params = (
+            f"client_id={SKOOL_CLIENT_ID}"
+            f"&redirect_uri={SKOOL_REDIRECT_URI}"
+            f"&response_type=code"
+            f"&state={state}"
+        )
+        return jsonify({
+            "auth_url": f"{SKOOL_AUTH_URL}?{params}",
+            "state": state,
+            "mock": False,
+        })
+    return jsonify({
+        "auth_url": "/login?mock=1",
+        "state": state,
+        "mock": True,
+    })
+
+
+@app.route("/api/auth/skool/callback", methods=["POST"])
+def auth_skool_callback():
+    """Exchange the OAuth code for an access token, fetch member identity,
+    UPSERT into users, and start a session.
+
+    Mock mode (SKOOL_API_KEY unset): caller may pass `user_email` instead of
+    relying on a real Skool exchange. The mock derives handle from email and
+    skips token storage. Production mode (SKOOL_API_KEY set): `user_email` is
+    rejected; only `code` is honored and the member identity comes from
+    Skool's /member/me response.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    code = (data.get("code") or "").strip()
+    if not code:
+        return jsonify({"error": "missing code"}), 400
+
+    posted_state = (data.get("state") or "").strip()
+    expected_state = session.pop("oauth_state", None)
+    # In stub usage the curl test doesn't go through /start, so don't fail when
+    # neither side has a state. When start was called, enforce match.
+    if expected_state and posted_state and posted_state != expected_state:
+        return jsonify({"error": "state mismatch"}), 400
+
+    if _skool_oauth_configured():
+        if data.get("user_email"):
+            return jsonify({"error": "user_email forbidden when Skool OAuth is configured"}), 400
+        import urllib.parse
+        from urllib.request import Request, urlopen
+        body = urllib.parse.urlencode({
+            "client_id": SKOOL_CLIENT_ID,
+            "client_secret": SKOOL_CLIENT_SECRET,
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": SKOOL_REDIRECT_URI,
+        }).encode()
+        try:
+            req = Request(SKOOL_TOKEN_URL, data=body,
+                          headers={"Content-Type": "application/x-www-form-urlencoded"})
+            with urlopen(req, timeout=10) as r:
+                tok = json.loads(r.read().decode())
+            access_token = tok.get("access_token", "")
+            if not access_token:
+                return jsonify({"error": "no access_token in Skool response"}), 502
+            mreq = Request(SKOOL_MEMBER_URL, headers={"Authorization": f"Bearer {access_token}"})
+            with urlopen(mreq, timeout=10) as r:
+                member = json.loads(r.read().decode())
+            email = (member.get("email") or "").strip().lower()
+            handle = (member.get("handle") or _handle_from_email(email)).strip().lower()
+            member_id = str(member.get("id") or "")
+            expires_at = tok.get("expires_at") or ""
+        except Exception as e:
+            return jsonify({"error": f"Skool exchange failed: {e}"}), 502
+    else:
+        # MOCK PATH — SKOOL_API_KEY not set
+        email = (data.get("user_email") or "").strip().lower()
+        if not email or "@" not in email:
+            return jsonify({"error": "mock callback requires user_email"}), 400
+        handle = _handle_from_email(email)
+        member_id = f"mock_{code}"
+        access_token = ""
+        expires_at = ""
+
+    uid = _upsert_skool_user(email, handle, member_id, access_token, expires_at)
+    session["authenticated"] = True
+    session["email"] = email
+    session["user_id"] = uid
+    session["skool_handle"] = handle
+    session.permanent = True
+    return jsonify({
+        "ok": True,
+        "user": {"id": uid, "email": email, "handle": handle},
+        "mock": not _skool_oauth_configured(),
+    })
 
 
 @app.before_request
 def require_auth():
-    open_paths = {"/", "/api/login", "/api/auth-status", "/static/", "/image-viewer", "/image-gallery", "/api/current-image", "/api/set-image", "/api/set-gallery"}
+    open_paths = {
+        "/", "/login",
+        "/api/login", "/api/auth-status",
+        "/api/auth/skool/start", "/api/auth/skool/callback",
+        "/static/", "/image-viewer", "/image-gallery",
+        "/api/current-image", "/api/set-image", "/api/set-gallery",
+    }
     path = request.path
     if path == "/" or path.startswith("/static/") or path in open_paths:
         return None
@@ -439,6 +672,24 @@ def require_auth():
         return None
     if not session.get("authenticated"):
         return jsonify({"error": "Unauthorized"}), 401
+
+
+# ── Per-user scoping ──────────────────────────────────────
+
+def current_user_id():
+    """Return the authenticated session's users.id, or None."""
+    return session.get("user_id")
+
+
+def owns_video(conn, vid: int) -> bool:
+    """True iff the current session user owns this videos.id row."""
+    uid = current_user_id()
+    if uid is None:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM videos WHERE id = ? AND user_id = ?", (vid, uid)
+    ).fetchone()
+    return row is not None
 
 
 def extract_video_id(url: str) -> str | None:
@@ -513,6 +764,7 @@ def row_to_dict(r):
         "outlier_score": outlier,
         "transformed": bool(r["transformed"]) if "transformed" in r.keys() else False,
         "tucked": bool(r["tucked"]) if "tucked" in r.keys() else False,
+        "user_id": r["user_id"] if "user_id" in r.keys() else None,
     }
 
 
@@ -773,15 +1025,19 @@ def index():
 
 
 def mirror_show_docs_into_videos(conn) -> int:
-    """Ensure every show_docs row has a matching videos row with video_id='sd_<id>'.
-    Idempotent — only INSERTs rows that don't exist yet. New show docs land in status='show'."""
+    """Ensure every show_docs row for the current user has a matching videos row
+    with video_id='sd_<id>'. Idempotent — only INSERTs rows that don't exist
+    yet. New show docs land in status='show' owned by the same user."""
+    uid = current_user_id()
+    if uid is None:
+        return 0
     existing = {r["video_id"][3:] for r in conn.execute(
-        "SELECT video_id FROM videos WHERE video_id GLOB 'sd_[0-9]*'"
+        "SELECT video_id FROM videos WHERE video_id GLOB 'sd_[0-9]*' AND user_id = ?", (uid,)
     ).fetchall()}
     sds = conn.execute(
         "SELECT id, title, date, google_doc_id, google_doc_url, tab_id, "
         "topic_1, topic_1_format, topic_2, topic_2_format, topic_3, topic_3_format "
-        "FROM show_docs"
+        "FROM show_docs WHERE user_id = ?", (uid,)
     ).fetchall()
     inserted = 0
     for sd in sds:
@@ -793,9 +1049,9 @@ def mirror_show_docs_into_videos(conn) -> int:
             published_at = f"{sd['date']}T00:00:00Z"
         conn.execute(
             "INSERT INTO videos (video_id, title, channel_title, channel_thumb, thumbnail_url, "
-            "view_count, duration, published_at, status, outlier_score, channel_avg_views) "
-            "VALUES (?, ?, 'Show Doc', '', '', 0, '', ?, 'show', 0, 0)",
-            (f"sd_{sd_id_str}", sd["title"] or f"Show Doc — {sd['date']}", published_at),
+            "view_count, duration, published_at, status, outlier_score, channel_avg_views, user_id) "
+            "VALUES (?, ?, 'Show Doc', '', '', 0, '', ?, 'show', 0, 0, ?)",
+            (f"sd_{sd_id_str}", sd["title"] or f"Show Doc — {sd['date']}", published_at, uid),
         )
         new_vid = conn.execute(
             "SELECT id FROM videos WHERE video_id = ?", (f"sd_{sd_id_str}",)
@@ -827,15 +1083,21 @@ def mirror_show_docs_into_videos(conn) -> int:
 
 
 @app.route("/api/videos", methods=["GET"])
+@login_required
 def list_videos():
+    uid = current_user_id()
     conn = get_db()
     mirror_show_docs_into_videos(conn)
-    rows = conn.execute("SELECT * FROM videos ORDER BY added_at DESC").fetchall()
-    # Batch-load show_docs so sd_ rows can ship topics inline (avoids per-card fetch from the frontend).
+    rows = conn.execute(
+        "SELECT * FROM videos WHERE user_id = ? ORDER BY added_at DESC", (uid,)
+    ).fetchall()
+    # Batch-load show_docs (scoped to the same user) so sd_ rows can ship
+    # topics inline without a per-card fetch from the frontend.
     sd_rows = {
         str(r["id"]): r for r in conn.execute(
             "SELECT id, date, topic_1, topic_1_format, topic_2, topic_2_format, "
-            "topic_3, topic_3_format, google_doc_url, google_doc_id, tab_id FROM show_docs"
+            "topic_3, topic_3_format, google_doc_url, google_doc_id, tab_id "
+            "FROM show_docs WHERE user_id = ?", (uid,)
         ).fetchall()
     }
     conn.close()
@@ -862,7 +1124,9 @@ def list_videos():
 
 
 @app.route("/api/videos", methods=["POST"])
+@login_required
 def add_video():
+    uid = current_user_id()
     data = request.get_json(force=True)
     url_input = data.get("url", "").strip()
     if not url_input:
@@ -875,7 +1139,10 @@ def add_video():
 
     lookup_id = f"x_{tweet_id}" if tweet_id else video_id
     conn = get_db()
-    if conn.execute("SELECT id FROM videos WHERE video_id = ?", (lookup_id,)).fetchone():
+    # Dedupe is now per-user — two users can each track the same external video.
+    if conn.execute(
+        "SELECT id FROM videos WHERE video_id = ? AND user_id = ?", (lookup_id, uid)
+    ).fetchone():
         conn.close()
         return jsonify({"error": "Already added"}), 409
 
@@ -891,14 +1158,16 @@ def add_video():
             return jsonify({"error": "Video not found on YouTube"}), 404
 
     conn.execute(
-        """INSERT INTO videos (video_id, title, channel_title, channel_thumb, thumbnail_url, view_count, duration, published_at, status, outlier_score, channel_avg_views)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'options', ?, ?)""",
+        """INSERT INTO videos (video_id, title, channel_title, channel_thumb, thumbnail_url, view_count, duration, published_at, status, outlier_score, channel_avg_views, user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'options', ?, ?, ?)""",
         (meta["video_id"], meta["title"], meta["channel_title"], meta["channel_thumb"],
          meta["thumbnail_url"], meta["view_count"], meta["duration"], meta["published_at"],
-         meta["outlier_score"], meta["channel_avg_views"]),
+         meta["outlier_score"], meta["channel_avg_views"], uid),
     )
     conn.commit()
-    row = conn.execute("SELECT * FROM videos WHERE video_id = ?", (meta["video_id"],)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM videos WHERE video_id = ? AND user_id = ?", (meta["video_id"], uid)
+    ).fetchone()
     # Persist X source bundle to video_details.meta so the modal can render it.
     if tweet_id and meta.get("_source"):
         meta_payload = json.dumps({"source": meta["_source"]})
