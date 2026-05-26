@@ -9106,12 +9106,21 @@
         };
 
         async function captureBlob() {
-            var blob = await htmlToImage.toBlob(cap, CS_CAPTURE_OPTS);
+            // toCanvas + JPEG: html-to-image's toBlob returns PNG (~500-1500KB
+            // per 1920×1080 frame with gradients/blur). 240 frames × 1MB busts
+            // Cloudflare's 100MB POST cap → 502. JPEG @ 0.85 is ~5-10× smaller.
+            var canvas = await htmlToImage.toCanvas(cap, CS_CAPTURE_OPTS);
+            var blob = await new Promise(function(resolve) {
+                canvas.toBlob(function(b) { resolve(b); }, 'image/jpeg', 0.85);
+            });
             if (!blob) {
                 await new Promise(function(r) { setTimeout(r, 50); });
-                blob = await htmlToImage.toBlob(cap, CS_CAPTURE_OPTS);
+                canvas = await htmlToImage.toCanvas(cap, CS_CAPTURE_OPTS);
+                blob = await new Promise(function(resolve) {
+                    canvas.toBlob(function(b) { resolve(b); }, 'image/jpeg', 0.85);
+                });
             }
-            if (!blob) throw new Error('htmlToImage.toBlob returned null');
+            if (!blob) throw new Error('captureBlob: canvas.toBlob returned null');
             return blob;
         }
 
@@ -9142,7 +9151,7 @@
                     await new Promise(function(r) { requestAnimationFrame(function() { setTimeout(r, 10); }); });
                     var blob = await captureBlob();
                     var ff = ('00' + f).slice(-2);
-                    fd.append('clip_' + k + '_frame_' + ff, blob, 'clip_' + k + '_frame_' + ff + '.png');
+                    fd.append('clip_' + k + '_frame_' + ff, blob, 'clip_' + k + '_frame_' + ff + '.jpg');
                 }
                 // Leave active item in clean revealed state for next iteration
                 csClearInline(activeLi);
