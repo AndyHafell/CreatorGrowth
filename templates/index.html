@@ -1023,6 +1023,30 @@
             box-shadow: 0 8px 40px rgba(0,0,0,0.6);
         }
 
+        .modal-nav-arrow {
+            position: fixed;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(20, 20, 30, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: #888;
+            width: 36px;
+            height: 56px;
+            border-radius: 8px;
+            font-size: 18px;
+            cursor: pointer;
+            line-height: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: color 0.12s, background 0.12s, border-color 0.12s;
+            z-index: 10;
+        }
+        .modal-nav-arrow:hover { color: #f1f1f1; background: rgba(40, 40, 60, 0.85); border-color: rgba(255, 255, 255, 0.18); }
+        .modal-nav-arrow:disabled { opacity: 0.25; cursor: default; }
+        .modal-nav-prev { left: 16px; }
+        .modal-nav-next { right: 16px; }
+
         .modal-close {
             position: absolute;
             top: 12px;
@@ -1913,6 +1937,8 @@
     </div>
 
     <div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+        <button class="modal-nav-arrow modal-nav-prev" onclick="navModalCard(-1, event)" title="Previous card (←)" aria-label="Previous card">&#10094;</button>
+        <button class="modal-nav-arrow modal-nav-next" onclick="navModalCard(1, event)" title="Next card (→)" aria-label="Next card">&#10095;</button>
         <div class="modal-card" id="modalCard">
             <button class="modal-close" onclick="closeModal()">&times;</button>
             <div class="modal-header">
@@ -3670,6 +3696,31 @@
         let modalInitialDetails = null;  // snapshot of server state at open — used to detect which slots the user actually changed
 
         // Close on Escape
+        function getModalNavIds() {
+            const cards = Array.from(document.querySelectorAll('#videoGrid .card[data-video-id]'));
+            return cards.map(c => parseInt(c.dataset.videoId, 10)).filter(n => !isNaN(n));
+        }
+
+        function refreshModalNavArrows() {
+            const prev = document.querySelector('.modal-nav-prev');
+            const next = document.querySelector('.modal-nav-next');
+            if (!prev || !next) return;
+            const ids = getModalNavIds();
+            const cur = ids.indexOf(modalVideoId);
+            prev.disabled = cur <= 0;
+            next.disabled = cur === -1 || cur >= ids.length - 1;
+        }
+
+        function navModalCard(dir, event) {
+            if (event) event.stopPropagation();
+            const ids = getModalNavIds();
+            const cur = ids.indexOf(modalVideoId);
+            if (cur === -1) return;
+            const nextIdx = dir > 0 ? Math.min(cur + 1, ids.length - 1) : Math.max(cur - 1, 0);
+            if (nextIdx === cur) return;
+            openModal(ids[nextIdx]);
+        }
+
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') closeModal();
             if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
@@ -3681,15 +3732,8 @@
                 const tag = (ae.tagName || '').toUpperCase();
                 if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || ae.isContentEditable) return;
             }
-            const cards = Array.from(document.querySelectorAll('#videoGrid .card[data-video-id]'));
-            if (!cards.length) return;
-            const ids = cards.map(c => parseInt(c.dataset.videoId, 10)).filter(n => !isNaN(n));
-            const cur = ids.indexOf(modalVideoId);
-            if (cur === -1) return;
-            const nextIdx = e.key === 'ArrowRight' ? Math.min(cur + 1, ids.length - 1) : Math.max(cur - 1, 0);
-            if (nextIdx === cur) return;
             e.preventDefault();
-            openModal(ids[nextIdx]);
+            navModalCard(e.key === 'ArrowRight' ? 1 : -1);
         });
 
         function renderSourcePanel(src) {
@@ -3826,6 +3870,7 @@
 
             document.getElementById('savedIndicator').classList.remove('show');
             document.getElementById('modalOverlay').classList.add('open');
+            refreshModalNavArrows();
         }
 
         async function closeModal() {
