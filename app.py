@@ -5338,12 +5338,19 @@ def chapter_from_doc(vid):
 
 @app.route("/api/videos/<int:vid>/chapter/render", methods=["POST"])
 def chapter_render(vid):
-    """Accept 2N PNGs (before/after for each clip) and assemble N MP4 clips.
+    """Accept a full transition PNG sequence per clip and assemble N MP4 clips.
+
+    The client captures every frame of the reveal animation via html2canvas
+    (active item inline-styled per progress step) so the rendered MP4 is
+    frame-identical to the preview. The previous 2-PNG + ffmpeg xfade path
+    could not reproduce per-item motion because xfade operates on whole frames.
 
     Form fields:
       count: int N
-      clip_K_before, clip_K_after: PNG files for K in 1..N
-    Each clip: 4.5s hold before → 1s xfade → 4.5s hold after = 10s @ 30fps."""
+      frames_per_clip: int F (frames played at F fps → 1s transition)
+      clip_K_frame_FF: PNG file for K in 1..N, FF in 00..(F-1)
+    Each clip: 4.5s hold of first frame + 1s transition + 4.5s hold of last
+    frame = 10s, output at 30fps."""
     import tempfile, subprocess, shutil, zipfile
     try:
         n = int(request.form.get("count", "0"))
@@ -5352,23 +5359,33 @@ def chapter_render(vid):
     if n < 1 or n > 20:
         return jsonify({"error": "count must be between 1 and 20"}), 400
 
-    # Pull the saved reveal_style for this video; default to crossfade.
-    conn = get_db()
-    conn.row_factory = sqlite3.Row
-    crow = conn.execute("SELECT reveal_style FROM chapters WHERE video_id=?", (vid,)).fetchone()
-    conn.close()
-    reveal_style = (crow["reveal_style"] if crow and "reveal_style" in crow.keys() else "blur_fade")
-    xfade_name = _CS_REVEAL_TO_XFADE.get(reveal_style, "fade")
+    try:
+        frames_per_clip = int(request.form.get("frames_per_clip", "30"))
+    except ValueError:
+        return jsonify({"error": "invalid frames_per_clip"}), 400
+    if frames_per_clip < 2 or frames_per_clip > 120:
+        return jsonify({"error": "frames_per_clip must be between 2 and 120"}), 400
 
     work = Path(tempfile.mkdtemp(prefix=f"chapter_render_{vid}_"))
     try:
         # Save uploads, validate
         for k in range(1, n + 1):
-            for phase in ("before", "after"):
-                f = request.files.get(f"clip_{k}_{phase}")
-                if not f:
-                    return jsonify({"error": f"missing clip_{k}_{phase}"}), 400
-                f.save(str(work / f"clip_{k}_{phase}.png"))
+            clip_dir = work / f"clip_{k:02d}"
+            clip_dir.mkdir()
+            for f_idx in range(frames_per_clip):
+                ff = f"{f_idx:02d}"
+                form_key = f"clip_{k}_frame_{ff}"
+                fp = request.files.get(form_key)
+                if not fp:
+                    received_keys = sorted(request.files.keys())
+                    return jsonify({
+                        "error": f"missing {form_key}",
+                        "expected_count": n * frames_per_clip,
+                        "received_count": len(received_keys),
+                        "first_received": received_keys[:3],
+                        "last_received": received_keys[-3:],
+                    }), 400
+                fp.save(str(clip_dir / f"frame_{f_idx:03d}.jpg"))
 
         # Output dir under static
         out_dir = _chapter_video_dir(vid) / "clips"
@@ -5379,26 +5396,25 @@ def chapter_render(vid):
 
         clips = []
         for k in range(1, n + 1):
-            before = work / f"clip_{k}_before.png"
-            after = work / f"clip_{k}_after.png"
+            clip_dir = work / f"clip_{k:02d}"
             out = out_dir / f"chapter_{k:02d}.mp4"
-            # 4.5s hold before, 1s xfade, 4.5s hold after = 10s. Offset of xfade = 4.5.
-            # `xfade` requires both inputs as video streams of equal duration parts; we use
-            # -loop on the still images and -t to clip them.
+            # Read PNG sequence at F fps so the transition runs for 1s, then
+            # tpad clones the first frame for 4.5s at the start and the last
+            # frame for 4.5s at the end. Output normalized to 30fps.
             cmd = [
                 "ffmpeg", "-y",
-                "-loop", "1", "-t", "5.5", "-i", str(before),
-                "-loop", "1", "-t", "5.5", "-i", str(after),
+                "-framerate", str(frames_per_clip),
+                "-i", str(clip_dir / "frame_%03d.jpg"),
                 "-filter_complex",
-                "[0:v]scale=1920:1080,format=yuv420p,fps=30,setsar=1[v0];"
-                "[1:v]scale=1920:1080,format=yuv420p,fps=30,setsar=1[v1];"
-                f"[v0][v1]xfade=transition={xfade_name}:duration=1:offset=4.5,format=yuv420p[v]",
+                "[0:v]scale=1920:1080,setsar=1,"
+                "tpad=start_duration=4.5:start_mode=clone:stop_duration=4.5:stop_mode=clone,"
+                "fps=30,format=yuv420p[v]",
                 "-map", "[v]",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                 str(out),
             ]
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
             if r.returncode != 0:
                 return jsonify({
                     "error": f"ffmpeg failed for clip {k}",
