@@ -300,3 +300,80 @@ collected 12 items
 tests/test_skool_gate.py ............                                    [100%]
 
 ============================== 12 passed in 0.39s ==============================
+To https://github.com/AndyHafell/creatorgrowth.git
+   3678d7f..3670404  skool-auth -> skool-auth
+
+==============================================================
+=== skool-gate session DONE 2026-05-26T17:35:44Z ===
+==============================================================
+
+## Branch state
+skool-auth
+3670404 skool-gate: allowlist + DM-code + scoping sweep (Phase 1+2 stub)
+3678d7f skool-auth: OAuth callback stub + per-user data scoping (Phase 1)
+fd4fa57 chapter render: per-frame capture for true frame-identical MP4s
+
+## main UNTOUCHED — origin/master at:
+e55e4fa7196f622598d1056a99a96e2c12f19f23
+## skool-auth pushed to:
+36704048895e985d8ee321d5670ed0d523fb8368
+
+## pytest
+tests/test_skool_gate.py ............                                    [100%]
+
+============================== 12 passed in 0.41s ==============================
+
+## Goal scorecard (10 done-when items):
+  1. Allowlist of approved Skool handles                              DONE
+     - users.allowlisted column ✓
+     - Manual CLI scripts/skool_allowlist.py ✓
+     - Nightly sync scripts/skool_member_sync.py + skool_cron.sh ✓
+     - Roster source (data path): documented in blockers; needs decision
+       between Chrome ext snapshot vs manual JSON file. Cron is wired
+       either way.
+  2. Login gates on allowlist                                         DONE
+     - POST /api/auth/skool/callback → 403 for non-allowlisted
+     - Mock mode disabled when SKOOL_API_KEY set (test covers it)
+  3. DM-code verification flow                                        DONE (with caveat)
+     - start/poll/admin-verify endpoints ✓
+     - Manual CLI scripts/skool_dm_verify.py for Andy/Mike approval ✓
+     - Chrome-ext auto-detection still TODO (see blockers #3)
+     - Skool has no admin API, so the "backend matches DM via Skool
+       admin API" phrasing in the goal is replaced by "Andy/Mike or
+       Chrome ext POSTs admin-verify". Same contract, different source.
+  4. Nightly cron flips allowlisted=false + live re-check kills sess. DONE
+     - skool_cron.sh wired
+     - @app.before_request re-checks users.allowlisted, 401s on revoke
+     - Test test_live_revocation_kills_session ✓
+  5. Full data-scoping sweep                                          MOSTLY DONE
+     - 68 routes decorated with @*_owner_required
+     - List/insert endpoints scoped via _request_user_id()
+     - High-risk batch endpoints (clear, backfill-*, sync-*, scrape-all,
+       _scrape_channel_into_db) scoped
+     - Helpers: _owns_scoped, _owns_via_video, _request_user_id
+     - Caveat: ~10 routes I didn't manually re-verify (e.g.,
+       /api/upload-content-doc) — final grep in blockers #4 is the
+       canary before launch
+  6. videos.video_id UNIQUE dropped, replaced with composite          DONE
+     - Also dropped channels.url and keywords.keyword UNIQUEs
+     - Verified two users can share video_id, channel url, keyword
+  7. SECRET_KEY pinned in VPS env                                     CODE READY (needs human)
+     - Boot WARNING if missing
+     - .env.example documents
+     - Needs Andy to set the env var on VPS (1Password step)
+  8. pytest suite                                                     DONE — 12/12
+     - User A never sees user B's rows (read + write)
+     - Non-allowlisted handle 403
+     - Cancelled member's session dies on next request
+     - mock-mode rejected when SKOOL_API_KEY set
+  9. Smoke test on prod with Andy + Mike's real handles               RUNBOOK READY
+     - overnight/skool_smoke_test.md is the 9-step runbook
+     - Needs: Mike awake, real handle, interactive DM, VPS backup
+     - Cannot complete autonomously — requires Mike's interaction
+ 10. Branch merged to main only after #9 passes                       NOT DONE (gated on #9)
+     - Branch pushed to origin/skool-auth
+     - origin/master untouched
+     - Merge command in smoke test runbook step 9
+
+## Verbose log:
+   overnight/skool_gate_log.txt (     378 lines)
