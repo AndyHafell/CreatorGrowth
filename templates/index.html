@@ -1692,6 +1692,7 @@
     </style>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/html-to-image@1.11.11/dist/html-to-image.min.js"></script>
     <script>
       document.addEventListener('DOMContentLoaded', function() {
         if (typeof marked !== 'undefined') {
@@ -9091,23 +9092,24 @@
         }
 
         async function captureBlob() {
-            var canvas = await html2canvas(cap, {
+            // html-to-image uses SVG <foreignObject> so the browser's native
+            // rasterizer handles CSS filter:blur and gradients — html2canvas
+            // dropped both, producing a sharp + black-bg image regardless of
+            // the per-frame inline filter we set on the active item.
+            var blob = await htmlToImage.toBlob(cap, {
                 width: 1920, height: 1080,
-                windowWidth: 1920, windowHeight: 1080,
-                scale: 1, backgroundColor: null, logging: false, useCORS: true,
-            });
-            var blob = await new Promise(function(resolve) {
-                canvas.toBlob(function(b) { resolve(b); }, 'image/png');
+                canvasWidth: 1920, canvasHeight: 1080,
+                pixelRatio: 1, cacheBust: false, skipFonts: false,
             });
             if (!blob) {
-                // Retry once with a short wait — toBlob can transiently return
-                // null under memory pressure or before the canvas is composited.
                 await new Promise(function(r) { setTimeout(r, 50); });
-                blob = await new Promise(function(resolve) {
-                    canvas.toBlob(function(b) { resolve(b); }, 'image/png');
+                blob = await htmlToImage.toBlob(cap, {
+                    width: 1920, height: 1080,
+                    canvasWidth: 1920, canvasHeight: 1080,
+                    pixelRatio: 1, cacheBust: false, skipFonts: false,
                 });
             }
-            if (!blob) throw new Error('canvas.toBlob returned null');
+            if (!blob) throw new Error('htmlToImage.toBlob returned null');
             return blob;
         }
 
