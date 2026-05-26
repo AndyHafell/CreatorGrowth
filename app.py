@@ -340,6 +340,30 @@ def init_db():
             refreshed_at TEXT
         )
     """)
+
+    # ── Show Docs — daily livestream doc records (replaces Airtable Show Docs) ──
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS show_docs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            date TEXT NOT NULL,
+            google_doc_id TEXT NOT NULL,
+            tab_id TEXT,
+            google_doc_url TEXT NOT NULL,
+            topic_1 TEXT,
+            topic_1_format TEXT,
+            topic_1_outlier_score REAL,
+            topic_2 TEXT,
+            topic_2_format TEXT,
+            topic_2_outlier_score REAL,
+            topic_3 TEXT,
+            topic_3_format TEXT,
+            topic_3_outlier_score REAL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -410,6 +434,8 @@ def require_auth():
         return None
     # Bearer-authed endpoints handle their own auth in the route
     if path.startswith("/api/thumb-queue"):
+        return None
+    if path.startswith("/api/show-docs"):
         return None
     if not session.get("authenticated"):
         return jsonify({"error": "Unauthorized"}), 401
@@ -672,17 +698,167 @@ def fetch_video_metadata(video_id: str) -> dict | None:
     }
 
 
+def extract_tweet_id(url: str) -> str | None:
+    m = re.search(r"(?:twitter\.com|x\.com|fxtwitter\.com|vxtwitter\.com)/[^/]+/status/(\d+)", url)
+    return m.group(1) if m else None
+
+
+def fetch_tweet_metadata(tweet_id: str) -> dict | None:
+    """Fetch tweet metadata via fxtwitter (public, no auth)."""
+    try:
+        req = Request(
+            f"https://api.fxtwitter.com/status/{tweet_id}",
+            headers={"User-Agent": "Mozilla/5.0 creatorgrowth"},
+        )
+        with urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+    if data.get("code") != 200 or "tweet" not in data:
+        return None
+    t = data["tweet"]
+    author = t.get("author") or {}
+
+    title = (t.get("text") or "").strip()
+    if len(title) > 200:
+        title = title[:197] + "..."
+
+    media_all = (t.get("media") or {}).get("all") or []
+    thumbnail_url = ""
+    if media_all:
+        first = media_all[0]
+        thumbnail_url = first.get("thumbnail_url") or first.get("url") or ""
+    if not thumbnail_url:
+        thumbnail_url = (author.get("avatar_url") or "").replace("_200x200", "_400x400")
+
+    published_at = ""
+    ts = t.get("created_timestamp")
+    if isinstance(ts, (int, float)):
+        published_at = datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    screen_name = author.get("screen_name") or ""
+    channel_title = f"@{screen_name}" if screen_name else (author.get("name") or "X")
+    canonical_url = t.get("url") or (f"https://x.com/{screen_name}/status/{tweet_id}" if screen_name else f"https://x.com/i/status/{tweet_id}")
+    full_text = (t.get("text") or "").strip()
+
+    return {
+        "video_id": f"x_{tweet_id}",
+        "title": title or "(tweet)",
+        "channel_title": channel_title,
+        "channel_thumb": author.get("avatar_url") or "",
+        "thumbnail_url": thumbnail_url,
+        "view_count": int(t.get("views") or 0),
+        "duration": "",
+        "published_at": published_at,
+        "outlier_score": 0.0,
+        "channel_avg_views": 0,
+        "_source": {
+            "platform": "x",
+            "url": canonical_url,
+            "text": full_text,
+            "author_name": author.get("name") or "",
+            "author_handle": screen_name,
+            "author_avatar": author.get("avatar_url") or "",
+            "created_at": published_at,
+            "views": int(t.get("views") or 0),
+            "likes": int(t.get("likes") or 0),
+            "media": [{"url": m.get("url"), "thumbnail_url": m.get("thumbnail_url"), "type": m.get("type")} for m in media_all],
+        },
+    }
+
+
 @app.route("/")
 def index():
     return render_template("index.html", authenticated=session.get("authenticated", False))
 
 
+def mirror_show_docs_into_videos(conn) -> int:
+    """Ensure every show_docs row has a matching videos row with video_id='sd_<id>'.
+    Idempotent — only INSERTs rows that don't exist yet. New show docs land in status='show'."""
+    existing = {r["video_id"][3:] for r in conn.execute(
+        "SELECT video_id FROM videos WHERE video_id GLOB 'sd_[0-9]*'"
+    ).fetchall()}
+    sds = conn.execute(
+        "SELECT id, title, date, google_doc_id, google_doc_url, tab_id, "
+        "topic_1, topic_1_format, topic_2, topic_2_format, topic_3, topic_3_format "
+        "FROM show_docs"
+    ).fetchall()
+    inserted = 0
+    for sd in sds:
+        sd_id_str = str(sd["id"])
+        if sd_id_str in existing:
+            continue
+        published_at = ""
+        if sd["date"]:
+            published_at = f"{sd['date']}T00:00:00Z"
+        conn.execute(
+            "INSERT INTO videos (video_id, title, channel_title, channel_thumb, thumbnail_url, "
+            "view_count, duration, published_at, status, outlier_score, channel_avg_views) "
+            "VALUES (?, ?, 'Show Doc', '', '', 0, '', ?, 'show', 0, 0)",
+            (f"sd_{sd_id_str}", sd["title"] or f"Show Doc — {sd['date']}", published_at),
+        )
+        new_vid = conn.execute(
+            "SELECT id FROM videos WHERE video_id = ?", (f"sd_{sd_id_str}",)
+        ).fetchone()["id"]
+        topics = []
+        for n in (1, 2, 3):
+            text = sd[f"topic_{n}"]
+            if not text:
+                continue
+            topics.append({"n": n, "text": text, "format": sd[f"topic_{n}_format"] or ""})
+        doc_url = sd["google_doc_url"] or (
+            f"https://docs.google.com/document/d/{sd['google_doc_id']}/edit"
+            + (f"?tab={sd['tab_id']}" if sd["tab_id"] else "")
+        )
+        meta_payload = json.dumps({"source": {
+            "platform": "showdoc",
+            "doc_url": doc_url,
+            "topics": topics,
+            "date": sd["date"] or "",
+        }})
+        conn.execute(
+            "INSERT INTO video_details (video_id, meta) VALUES (?, ?)",
+            (new_vid, meta_payload),
+        )
+        inserted += 1
+    if inserted:
+        conn.commit()
+    return inserted
+
+
 @app.route("/api/videos", methods=["GET"])
 def list_videos():
     conn = get_db()
+    mirror_show_docs_into_videos(conn)
     rows = conn.execute("SELECT * FROM videos ORDER BY added_at DESC").fetchall()
+    # Batch-load show_docs so sd_ rows can ship topics inline (avoids per-card fetch from the frontend).
+    sd_rows = {
+        str(r["id"]): r for r in conn.execute(
+            "SELECT id, date, topic_1, topic_1_format, topic_2, topic_2_format, "
+            "topic_3, topic_3_format, google_doc_url, google_doc_id, tab_id FROM show_docs"
+        ).fetchall()
+    }
     conn.close()
-    return jsonify([row_to_dict(r) for r in rows])
+    out = []
+    for r in rows:
+        d = row_to_dict(r)
+        vid_str = d.get("video_id") or ""
+        if vid_str.startswith("sd_"):
+            sd = sd_rows.get(vid_str[3:])
+            if sd:
+                topics = []
+                for n in (1, 2, 3):
+                    text = sd[f"topic_{n}"]
+                    if not text:
+                        continue
+                    topics.append({"n": n, "text": text, "format": sd[f"topic_{n}_format"] or ""})
+                doc_url = sd["google_doc_url"] or (
+                    f"https://docs.google.com/document/d/{sd['google_doc_id']}/edit"
+                    + (f"?tab={sd['tab_id']}" if sd["tab_id"] else "")
+                )
+                d["showdoc"] = {"topics": topics, "doc_url": doc_url, "date": sd["date"] or ""}
+        out.append(d)
+    return jsonify(out)
 
 
 @app.route("/api/videos", methods=["POST"])
@@ -692,19 +868,27 @@ def add_video():
     if not url_input:
         return jsonify({"error": "No URL provided"}), 400
 
-    video_id = extract_video_id(url_input)
-    if not video_id:
-        return jsonify({"error": "Could not extract video ID from URL"}), 400
+    tweet_id = extract_tweet_id(url_input)
+    video_id = None if tweet_id else extract_video_id(url_input)
+    if not tweet_id and not video_id:
+        return jsonify({"error": "Could not extract video or tweet ID from URL"}), 400
 
+    lookup_id = f"x_{tweet_id}" if tweet_id else video_id
     conn = get_db()
-    if conn.execute("SELECT id FROM videos WHERE video_id = ?", (video_id,)).fetchone():
+    if conn.execute("SELECT id FROM videos WHERE video_id = ?", (lookup_id,)).fetchone():
         conn.close()
-        return jsonify({"error": "Video already added"}), 409
+        return jsonify({"error": "Already added"}), 409
 
-    meta = fetch_video_metadata(video_id)
-    if not meta:
-        conn.close()
-        return jsonify({"error": "Video not found on YouTube"}), 404
+    if tweet_id:
+        meta = fetch_tweet_metadata(tweet_id)
+        if not meta:
+            conn.close()
+            return jsonify({"error": "Tweet not found"}), 404
+    else:
+        meta = fetch_video_metadata(video_id)
+        if not meta:
+            conn.close()
+            return jsonify({"error": "Video not found on YouTube"}), 404
 
     conn.execute(
         """INSERT INTO videos (video_id, title, channel_title, channel_thumb, thumbnail_url, view_count, duration, published_at, status, outlier_score, channel_avg_views)
@@ -714,7 +898,15 @@ def add_video():
          meta["outlier_score"], meta["channel_avg_views"]),
     )
     conn.commit()
-    row = conn.execute("SELECT * FROM videos WHERE video_id = ?", (video_id,)).fetchone()
+    row = conn.execute("SELECT * FROM videos WHERE video_id = ?", (meta["video_id"],)).fetchone()
+    # Persist X source bundle to video_details.meta so the modal can render it.
+    if tweet_id and meta.get("_source"):
+        meta_payload = json.dumps({"source": meta["_source"]})
+        conn.execute(
+            "INSERT INTO video_details (video_id, meta) VALUES (?, ?)",
+            (row["id"], meta_payload),
+        )
+        conn.commit()
     conn.close()
     return jsonify(row_to_dict(row)), 201
 
@@ -723,7 +915,7 @@ def add_video():
 def update_status(vid):
     data = request.get_json(force=True)
     new_status = data.get("status", "options")
-    if new_status not in ("options", "best", "brief", "packaging", "script", "edited", "archived", "published"):
+    if new_status not in ("options", "show", "best", "brief", "packaging", "script", "edited", "archived", "published"):
         return jsonify({"error": "Invalid status"}), 400
     conn = get_db()
     conn.execute("UPDATE videos SET status = ? WHERE id = ?", (new_status, vid))
@@ -752,8 +944,6 @@ def update_thumbnail(vid):
     data = request.get_json(force=True)
     url = (data.get("url") or "").strip()
     title = (data.get("title") or "").strip()
-    if not url:
-        return jsonify({"error": "Missing url"}), 400
     conn = get_db()
     if title:
         conn.execute("UPDATE videos SET thumbnail_url = ?, title = ? WHERE id = ?", (url, title, vid))
@@ -886,6 +1076,113 @@ def delete_video(vid):
 def clear_videos():
     conn = get_db()
     conn.execute("DELETE FROM videos")
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True})
+
+
+# ── Show Docs routes ──────────────────────────────────────────
+
+SHOW_DOC_STATUSES = ("draft", "ready", "filmed", "published")
+
+
+def showdoc_row_to_dict(r):
+    return {
+        "id": r["id"],
+        "title": r["title"],
+        "date": r["date"],
+        "google_doc_id": r["google_doc_id"],
+        "tab_id": r["tab_id"] or "",
+        "google_doc_url": r["google_doc_url"],
+        "topic_1": r["topic_1"] or "",
+        "topic_1_format": r["topic_1_format"] or "",
+        "topic_1_outlier_score": r["topic_1_outlier_score"] or 0,
+        "topic_2": r["topic_2"] or "",
+        "topic_2_format": r["topic_2_format"] or "",
+        "topic_2_outlier_score": r["topic_2_outlier_score"] or 0,
+        "topic_3": r["topic_3"] or "",
+        "topic_3_format": r["topic_3_format"] or "",
+        "topic_3_outlier_score": r["topic_3_outlier_score"] or 0,
+        "status": r["status"] or "draft",
+        "created_at": r["created_at"],
+        "updated_at": r["updated_at"],
+    }
+
+
+@app.route("/api/show-docs", methods=["GET"])
+def list_show_docs():
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM show_docs ORDER BY date DESC, id DESC").fetchall()
+    conn.close()
+    return jsonify([showdoc_row_to_dict(r) for r in rows])
+
+
+@app.route("/api/show-docs", methods=["POST"])
+def create_show_doc():
+    if not (_bearer_user_email() or session.get("authenticated")):
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.get_json(force=True)
+    title = (data.get("title") or "").strip()
+    date = (data.get("date") or "").strip()
+    google_doc_id = (data.get("google_doc_id") or "").strip()
+    google_doc_url = (data.get("google_doc_url") or "").strip()
+    if not (title and date and google_doc_id and google_doc_url):
+        return jsonify({"error": "Missing required field (title, date, google_doc_id, google_doc_url)"}), 400
+    status = (data.get("status") or "draft").lower()
+    if status not in SHOW_DOC_STATUSES:
+        return jsonify({"error": f"Invalid status. Must be one of {SHOW_DOC_STATUSES}"}), 400
+    conn = get_db()
+    cur = conn.execute(
+        """INSERT INTO show_docs
+           (title, date, google_doc_id, tab_id, google_doc_url,
+            topic_1, topic_1_format, topic_1_outlier_score,
+            topic_2, topic_2_format, topic_2_outlier_score,
+            topic_3, topic_3_format, topic_3_outlier_score,
+            status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            title, date, google_doc_id, data.get("tab_id") or "", google_doc_url,
+            data.get("topic_1") or "", data.get("topic_1_format") or "", data.get("topic_1_outlier_score") or 0,
+            data.get("topic_2") or "", data.get("topic_2_format") or "", data.get("topic_2_outlier_score") or 0,
+            data.get("topic_3") or "", data.get("topic_3_format") or "", data.get("topic_3_outlier_score") or 0,
+            status,
+        ),
+    )
+    conn.commit()
+    new_id = cur.lastrowid
+    row = conn.execute("SELECT * FROM show_docs WHERE id = ?", (new_id,)).fetchone()
+    conn.close()
+    return jsonify(showdoc_row_to_dict(row)), 201
+
+
+@app.route("/api/show-docs/<int:sid>/status", methods=["POST"])
+def update_show_doc_status(sid):
+    if not (_bearer_user_email() or session.get("authenticated")):
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.get_json(force=True)
+    status = (data.get("status") or "").lower()
+    if status not in SHOW_DOC_STATUSES:
+        return jsonify({"error": f"Invalid status. Must be one of {SHOW_DOC_STATUSES}"}), 400
+    conn = get_db()
+    row = conn.execute("SELECT id FROM show_docs WHERE id = ?", (sid,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "Not found"}), 404
+    conn.execute(
+        "UPDATE show_docs SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (status, sid),
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"ok": True, "status": status})
+
+
+@app.route("/api/show-docs/<int:sid>", methods=["DELETE"])
+def delete_show_doc(sid):
+    if not (_bearer_user_email() or session.get("authenticated")):
+        return jsonify({"error": "Unauthorized"}), 401
+    conn = get_db()
+    conn.execute("DELETE FROM show_docs WHERE id = ?", (sid,))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -1387,6 +1684,67 @@ def sync_published():
     return jsonify({"updated": updated, "total": len(ids)})
 
 
+@app.route("/api/videos/sync-ids", methods=["POST"])
+def sync_ids():
+    """Refresh view_count + published_at for a specific list of YouTube video_ids
+    (the ones visible in the current frontend filter)."""
+    if not YOUTUBE_API_KEY:
+        return jsonify({"error": "YOUTUBE_API_KEY not configured"}), 500
+    body = request.get_json(silent=True) or {}
+    requested_ids = [vid for vid in (body.get("video_ids") or []) if vid]
+    if not requested_ids:
+        return jsonify({"updated": 0, "total": 0})
+
+    conn = get_db()
+    placeholders = ",".join("?" * len(requested_ids))
+    rows = conn.execute(
+        f"SELECT id, video_id FROM videos WHERE video_id IN ({placeholders})",
+        requested_ids,
+    ).fetchall()
+    if not rows:
+        conn.close()
+        return jsonify({"updated": 0, "total": len(requested_ids)})
+
+    id_to_row = {r["video_id"]: r["id"] for r in rows}
+    ids = list(id_to_row.keys())
+    updated = 0
+    channel_avg_cache: dict[str, int] = {}
+    for i in range(0, len(ids), 50):
+        chunk = ids[i:i + 50]
+        try:
+            api_url = (
+                "https://www.googleapis.com/youtube/v3/videos"
+                f"?part=snippet,statistics&id={','.join(chunk)}&key={YOUTUBE_API_KEY}"
+            )
+            with urlopen(api_url, timeout=20) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            continue
+        for item in payload.get("items", []):
+            vid = item.get("id")
+            if not vid or vid not in id_to_row:
+                continue
+            stats = item.get("statistics", {})
+            view_count = int(stats.get("viewCount", 0) or 0)
+            snippet = item.get("snippet", {})
+            channel_id = snippet.get("channelId", "")
+            published_at = snippet.get("publishedAt", "")
+            if channel_id and channel_id not in channel_avg_cache:
+                channel_url = f"https://www.youtube.com/channel/{channel_id}"
+                channel_avg_cache[channel_id] = fetch_channel_avg_views(channel_url)
+            channel_avg = channel_avg_cache.get(channel_id, 0)
+            outlier = round(view_count / channel_avg, 1) if channel_avg > 0 else 0.0
+            conn.execute(
+                "UPDATE videos SET view_count = ?, outlier_score = ?, channel_avg_views = ?, "
+                "published_at = COALESCE(NULLIF(?, ''), published_at) WHERE id = ?",
+                (view_count, outlier, channel_avg, published_at, id_to_row[vid]),
+            )
+            updated += 1
+    conn.commit()
+    conn.close()
+    return jsonify({"updated": updated, "total": len(requested_ids)})
+
+
 # ── Video Details (modal data) ────────────────────────────
 
 @app.route("/api/videos/<int:vid>/details", methods=["GET"])
@@ -1410,6 +1768,23 @@ def get_video_details(vid):
         )
         conn.commit()
         row = conn.execute("SELECT * FROM video_details WHERE video_id = ?", (vid,)).fetchone()
+    # Lazy backfill: if this is an X-sourced card and meta has no source yet, fetch + persist.
+    parent = conn.execute("SELECT video_id FROM videos WHERE id = ?", (vid,)).fetchone()
+    if parent and isinstance(parent["video_id"], str) and parent["video_id"].startswith("x_"):
+        try:
+            existing_meta = json.loads(row["meta"]) if "meta" in row.keys() and row["meta"] else {}
+        except (TypeError, ValueError):
+            existing_meta = {}
+        if not existing_meta.get("source"):
+            tweet_meta = fetch_tweet_metadata(parent["video_id"][2:])
+            if tweet_meta and tweet_meta.get("_source"):
+                existing_meta["source"] = tweet_meta["_source"]
+                conn.execute(
+                    "UPDATE video_details SET meta = ? WHERE video_id = ?",
+                    (json.dumps(existing_meta), vid),
+                )
+                conn.commit()
+                row = conn.execute("SELECT * FROM video_details WHERE video_id = ?", (vid,)).fetchone()
     conn.close()
     def _pad(arr, n):
         return (arr + [""] * n)[:n]
@@ -4179,10 +4554,22 @@ def diagrams_render():
             if mode not in ("reveal", "slideshow"):
                 mode = "reveal"
 
-        # Pre-sample bg-fill color per box rect — used for reveal-mode masking.
+        # Pre-sample bg-fill color per box rect — used for reveal-mode masking +
+        # slideshow per-slide bg. Per-box override (set in the studio) wins over the
+        # ring sample.
+        def _hex_to_rgb(s):
+            if not isinstance(s, str): return None
+            s = s.strip().lower()
+            if not s.startswith("#"): s = "#" + s
+            if len(s) != 7: return None
+            try:
+                return (int(s[1:3], 16), int(s[3:5], 16), int(s[5:7], 16))
+            except ValueError:
+                return None
         fill_for_rect = {}
         for (x, y, w, h, _anim, _bd, _poly) in all_box_records:
-            fill_for_rect[(x, y, w, h)] = _ring_median_color(img, x, y, w, h, pad=8, ring=24)
+            box_override_rgb = _hex_to_rgb(_bd.get("bg_color_override")) if isinstance(_bd, dict) else None
+            fill_for_rect[(x, y, w, h)] = box_override_rgb or _ring_median_color(img, x, y, w, h, pad=8, ring=24)
 
         if mode == "reveal":
             # Reveal mode: bg = image with every box filled with its local bg color.
@@ -4206,7 +4593,10 @@ def diagrams_render():
         bottom_pad = int(min(120, max(60, H * 0.10)))
         bottom_pad -= bottom_pad % 2
         # Priority: user override (eyedropper / hex) → stored auto → fresh compute.
+        # Override is global — when set, it wins for every slide. Otherwise slideshow
+        # mode uses fill_for_rect[box] per slide so each slide's bg matches its locale.
         canvas_bg_color = None
+        has_bg_override = False
         if diagram_row is not None:
             for col in ("bg_color_override", "bg_color_auto"):
                 try:
@@ -4216,6 +4606,8 @@ def diagrams_render():
                 if v and isinstance(v, str) and v.startswith("#") and len(v) == 7:
                     try:
                         canvas_bg_color = (int(v[1:3], 16), int(v[3:5], 16), int(v[5:7], 16))
+                        if col == "bg_color_override":
+                            has_bg_override = True
                         break
                     except ValueError:
                         continue
@@ -4447,10 +4839,21 @@ def diagrams_render():
                     zoom_frame_counts[i] = nf
             else:
                 # SLIDESHOW: the box content becomes a full 16:9 slide.
+                # Priority: per-box override > diagram-global override > ring sample.
+                # fill_for_rect already encodes (per-box override OR ring sample); we
+                # only fall back to the diagram-global override when neither is set.
+                ridx = reveal_indices[i]
+                bd_slide = all_box_records[ridx][5]
+                has_box_override = (isinstance(bd_slide, dict) and
+                                    _hex_to_rgb(bd_slide.get("bg_color_override")) is not None)
+                if has_bg_override and not has_box_override:
+                    slide_bg = canvas_bg_color
+                else:
+                    slide_bg = fill_for_rect.get((x, y, w, h), canvas_bg_color)
                 box_crop = img.crop((x, y, x + w, y + h))
                 # Remove isolated bright pixels (stars) before upscaling — otherwise
                 # a 1-2px star becomes a 5-10px dot in the slide.
-                box_crop = _despeckle_stars(box_crop, canvas_bg_color)
+                box_crop = _despeckle_stars(box_crop, slide_bg)
                 # Mask is applied AFTER despeckle (despeckle needs RGB).
                 if mask_l is not None:
                     box_crop = _apply_alpha_mask(box_crop.convert("RGBA"), mask_l)
@@ -4461,7 +4864,7 @@ def diagrams_render():
                 nw = max(2, int(w * s)); nh = max(2, int(h * s))
                 nw -= nw % 2; nh -= nh % 2
                 scaled = box_crop.resize((nw, nh), Image.LANCZOS)
-                slide = Image.new("RGB", (canvas_w, canvas_h), canvas_bg_color)
+                slide = Image.new("RGB", (canvas_w, canvas_h), slide_bg)
                 ox = (canvas_w - nw) // 2
                 oy = (H - nh) // 2   # vertical center within top H, leaves bottom_pad clear
                 # Use the scaled image as its own mask so polygon-transparent pixels
@@ -8100,7 +8503,20 @@ _DEFAULT_BRAND = {
 }
 
 
-def _build_pixel_face_prompt(video_title, brand=None):
+def _wrap_with_nudge(prompt, nudge):
+    """Prepend a high-priority directive that overrides defaults, and echo at end."""
+    if not nudge:
+        return prompt
+    return (
+        f"PRIORITY DIRECTION FROM ANDY (apply to this variant; "
+        f"override defaults in the SOP where they conflict): {nudge}\n\n"
+        + prompt
+        + f"\n\nFinal reminder: Andy's priority direction was: {nudge}. "
+          f"The output MUST reflect it."
+    )
+
+
+def _build_pixel_face_prompt(video_title, brand=None, nudge=""):
     """Return (prompt_text, [(mime,bytes), ...]) for the pixel-face direct call.
     Substitutes the locked SOP template with brand info + tells Gemini to
     pick its own 2-4 word [TITLE TEXT] from the full video title."""
@@ -8121,7 +8537,7 @@ def _build_pixel_face_prompt(video_title, brand=None):
     logo = _load_logo(brand["logo_name"])
     if logo:
         image_refs.append(logo)
-    return template, image_refs
+    return _wrap_with_nudge(template, nudge), image_refs
 
 
 def _allocate_thumb_slots(thumbs, titles, n):
@@ -8199,6 +8615,7 @@ def _gemini_thumb_direct(vid, *, kind, prompt_builder, slug):
     except (TypeError, ValueError):
         n = 3
     n = max(1, min(n, 6))
+    nudge = (body.get("nudge") or "").strip()
 
     conn = get_db()
     state = _read_video_thumb_state(conn, vid)
@@ -8212,7 +8629,7 @@ def _gemini_thumb_direct(vid, *, kind, prompt_builder, slug):
 
     empty_slots = _allocate_thumb_slots(thumbs, titles, n)
 
-    prompt, image_refs = prompt_builder(title)
+    prompt, image_refs = prompt_builder(title, nudge=nudge)
 
     image_parts = [
         {"inline_data": {
@@ -8296,7 +8713,7 @@ def _gemini_thumb_direct(vid, *, kind, prompt_builder, slug):
     })
 
 
-def _faceless_prompt_builder(video_title):
+def _faceless_prompt_builder(video_title, nudge=""):
     """Build the faceless prompt — embeds the full faceless SOP since it's
     layout-pattern-driven (Gemini picks one of the 6)."""
     sop_text = _FACELESS_SOP_PATH.read_text() if _FACELESS_SOP_PATH.exists() else ""
@@ -8307,7 +8724,7 @@ def _faceless_prompt_builder(video_title):
         f"that best fits the title. Output 16:9, 1920x1080.\n\n"
         f"=== SOP START ===\n{sop_text}\n=== SOP END ==="
     )
-    return prompt, []
+    return _wrap_with_nudge(prompt, nudge), []
 
 
 @app.route("/api/videos/<int:vid>/gemini-faceless", methods=["POST"])
@@ -8442,6 +8859,73 @@ def thumb_slot_save(vid, slot):
         "url": rel_url,
         "original_thumbs": thumbs,
     })
+
+
+@app.route("/api/thumb/change-text", methods=["POST"])
+@login_required
+def thumb_change_text():
+    """Take a PNG crop of a thumbnail region + a new text string, ask Nano Banana
+    Pro to re-render the same crop with the text replaced — preserving font,
+    color/gradient, outline, shadow, pixel-art treatment, and exact dimensions.
+    Returns the edited PNG bytes so the caller can paste it back at the same
+    coordinates."""
+    import base64
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
+    f = request.files.get("crop")
+    new_text = (request.form.get("new_text") or "").strip()
+    if not f:
+        return jsonify({"error": "no crop in multipart upload"}), 400
+    if not new_text:
+        return jsonify({"error": "missing new_text"}), 400
+    crop_bytes = f.read()
+    if not crop_bytes:
+        return jsonify({"error": "empty crop"}), 400
+
+    prompt = (
+        f"This image is a cropped region from a YouTube thumbnail. Replace the "
+        f"text currently shown with the new text: \"{new_text}\"\n\n"
+        f"CRITICAL — preserve EVERYTHING else exactly:\n"
+        f"- EXACT same font family, weight, letter spacing, and line breaks "
+        f"(re-break the new text across the same number of lines if it's long).\n"
+        f"- MATCH THE LETTER-CASE CONVENTION of the original text. If the "
+        f"original is ALL CAPS, render the new text in ALL CAPS regardless of "
+        f"how it was typed. If the original is Title Case, use Title Case. If "
+        f"lowercase, use lowercase. The new text I provided ('{new_text}') is "
+        f"only the WORDING — you decide the casing by mirroring the source.\n"
+        f"- EXACT same color, vertical gradient, outline, drop shadow, glow.\n"
+        f"- EXACT same pixel-art / 16-bit chunky treatment (or whatever style "
+        f"the original uses — match it pixel for pixel).\n"
+        f"- EXACT same background behind the text (do not change the background).\n"
+        f"- EXACT same image dimensions as the input (width × height unchanged).\n"
+        f"- EXACT same positioning of the text block within the crop.\n\n"
+        f"Only the text CHARACTERS change to read the new wording. Everything "
+        f"else is identical. Output the crop with the swapped text."
+    )
+
+    parts_payload = [
+        {"inline_data": {
+            "mime_type": "image/png",
+            "data": base64.b64encode(crop_bytes).decode("ascii"),
+        }},
+        {"text": prompt},
+    ]
+
+    # Single attempt + 1 retry on failure (Nano Banana Pro occasionally
+    # returns IMAGE_OTHER on weird crops; one retry resolves most of those).
+    png, err = _gemini_image_call_detail(
+        parts_payload, api_key, "gemini-3-pro-image-preview", "thumb.change-text.a1"
+    )
+    if not png:
+        png, err2 = _gemini_image_call_detail(
+            parts_payload, api_key, "gemini-3-pro-image-preview", "thumb.change-text.a2"
+        )
+        if not png:
+            return jsonify({"error": f"gemini failed: {err2 or err}"}), 502
+
+    from flask import Response
+    return Response(png, mimetype="image/png")
 
 
 @app.route("/api/videos/<int:vid>/editor-bootstrap", methods=["GET"])
