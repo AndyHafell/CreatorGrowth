@@ -8978,7 +8978,72 @@
         }
     }
 
-    // ─── RENDER: capture before/after PNGs for each clip, POST to server ───
+    // ─── RENDER: capture per-frame PNGs of the actual CSS reveal animation,
+    //     POST to server. The active item is animated by inline-styling each
+    //     frame to the interpolated value matching its preview CSS rule, so
+    //     the rendered MP4 is frame-identical to what the preview shows.
+    var CS_TRANSITION_FRAMES = 30;     // 30 frames played @ 30fps = 1s transition
+    var CS_BLUR_PX = 14;               // matches .cs-style-blue-glass li.cs-blur
+    var CS_PIXELIZE_BLUR_PX = 22;      // matches .cs-reveal-pixelize active-reveal
+    var CS_SLIDE_PX = 120;             // matches .cs-reveal-slide_* active-reveal
+
+    function csEaseOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+    function csApplyTransitionState(li, style, progress) {
+        // progress: 0 = pre-reveal (item invisible/blurred), 1 = fully revealed.
+        // Mirrors the per-style CSS rules in the .cs-reveal-* blocks.
+        li.style.filter = '';
+        li.style.opacity = '';
+        li.style.transform = '';
+        li.style.clipPath = '';
+
+        if (style === 'pixelize') {
+            var step = progress >= 1 ? 1 : Math.floor(progress * 8) / 8;
+            var pInv = 1 - step;
+            if (pInv > 0) {
+                li.style.filter = 'blur(' + (CS_PIXELIZE_BLUR_PX * pInv) + 'px) contrast(' + (1 + 0.4 * pInv) + ')';
+            }
+            return;
+        }
+
+        var e = csEaseOutCubic(progress);
+        var inv = 1 - e;
+        var blur = 'blur(' + (CS_BLUR_PX * inv) + 'px)';
+
+        if (style === 'blur_fade') {
+            li.style.filter = blur;
+        } else if (style === 'dissolve') {
+            li.style.opacity = String(e);
+            li.style.filter = blur;
+        } else if (style === 'wipe_lr') {
+            li.style.clipPath = 'inset(0 ' + (100 * inv) + '% 0 0)';
+            li.style.filter = blur;
+        } else if (style === 'wipe_rl') {
+            li.style.clipPath = 'inset(0 0 0 ' + (100 * inv) + '%)';
+            li.style.filter = blur;
+        } else if (style === 'slide_left') {
+            li.style.transform = 'translateX(' + (-CS_SLIDE_PX * inv) + 'px)';
+            li.style.opacity = String(e);
+            li.style.filter = blur;
+        } else if (style === 'slide_right') {
+            li.style.transform = 'translateX(' + (CS_SLIDE_PX * inv) + 'px)';
+            li.style.opacity = String(e);
+            li.style.filter = blur;
+        } else if (style === 'circle_open') {
+            li.style.clipPath = 'circle(' + (100 * e) + '% at 0% 50%)';
+            li.style.filter = blur;
+        } else {
+            li.style.filter = blur;
+        }
+    }
+
+    function csClearInline(li) {
+        li.style.filter = '';
+        li.style.opacity = '';
+        li.style.transform = '';
+        li.style.clipPath = '';
+    }
+
     async function csRenderClips() {
         if (!_csVid) return;
         var items = csState.items.filter(function(x) { return x.trim(); });
@@ -9026,7 +9091,6 @@
         }
 
         async function captureBlob() {
-            // html2canvas options: scale=1 keeps native 1920×1080
             var canvas = await html2canvas(cap, {
                 width: 1920, height: 1080,
                 windowWidth: 1920, windowHeight: 1080,
@@ -9040,21 +9104,37 @@
         try {
             var fd = new FormData();
             fd.append('count', String(N));
+            fd.append('frames_per_clip', String(CS_TRANSITION_FRAMES));
+
+            var revealStyle = csState.reveal_style || 'blur_fade';
+
             for (var k = 1; k <= N; k++) {
                 var activeIdx = k - 1;
-                statusEl.textContent = 'Capturing clip ' + k + '/' + N + ' (before)…';
-                applyBlurState(k - 1, activeIdx); // items 0..k-2 crisp, k-1 active-blur, rest blur
-                await new Promise(function(r) { requestAnimationFrame(function() { setTimeout(r, 30); }); });
-                var beforeBlob = await captureBlob();
-                fd.append('clip_' + k + '_before', beforeBlob, 'before_' + k + '.png');
+                // Items 0..k-2 = fully revealed (no classes, no inline).
+                // Active item (k-1) = we own its styling via inline per frame.
+                // Items k..N-1 = passive blur via .cs-blur class.
+                capLis.forEach(function(li, i) {
+                    li.classList.remove('cs-active-reveal');
+                    csClearInline(li);
+                    if (i === activeIdx || i < activeIdx) li.classList.remove('cs-blur');
+                    else li.classList.add('cs-blur');
+                });
+                var activeLi = capLis[activeIdx];
 
-                statusEl.textContent = 'Capturing clip ' + k + '/' + N + ' (after)…';
-                applyBlurState(k, -1); // items 0..k-1 crisp, k..N-1 blurred, no active
-                await new Promise(function(r) { requestAnimationFrame(function() { setTimeout(r, 30); }); });
-                var afterBlob = await captureBlob();
-                fd.append('clip_' + k + '_after', afterBlob, 'after_' + k + '.png');
+                for (var f = 0; f < CS_TRANSITION_FRAMES; f++) {
+                    var progress = CS_TRANSITION_FRAMES === 1 ? 1 : (f / (CS_TRANSITION_FRAMES - 1));
+                    csApplyTransitionState(activeLi, revealStyle, progress);
+                    statusEl.textContent = 'Clip ' + k + '/' + N + ' frame ' + (f + 1) + '/' + CS_TRANSITION_FRAMES + '…';
+                    await new Promise(function(r) { requestAnimationFrame(function() { setTimeout(r, 10); }); });
+                    var blob = await captureBlob();
+                    var ff = ('00' + f).slice(-2);
+                    fd.append('clip_' + k + '_frame_' + ff, blob, 'clip_' + k + '_frame_' + ff + '.png');
+                }
+                // Leave active item in clean revealed state for next iteration
+                csClearInline(activeLi);
             }
             // Reset capture div state
+            capLis.forEach(csClearInline);
             applyBlurState(N, -1);
 
             statusEl.textContent = 'Rendering ' + N + ' clips on server…';
