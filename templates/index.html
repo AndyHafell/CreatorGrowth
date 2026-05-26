@@ -1027,27 +1027,28 @@
             position: fixed;
             top: 50%;
             transform: translateY(-50%);
-            background: none;
+            background: rgba(20, 20, 30, 0.45);
             border: none;
-            color: #444;
-            width: 28px;
-            height: 40px;
-            font-size: 14px;
+            color: #888;
+            width: 32px;
+            height: 48px;
+            border-radius: 6px;
+            font-size: 16px;
             cursor: pointer;
             line-height: 1;
             padding: 0;
             display: flex;
             align-items: center;
             justify-content: center;
-            opacity: 0.5;
-            transition: color 0.12s, opacity 0.12s;
+            opacity: 0.75;
+            transition: color 0.12s, opacity 0.12s, background 0.12s;
             z-index: 10;
         }
-        .modal-nav-arrow:hover { color: #aaa; opacity: 1; }
-        .modal-nav-arrow:disabled { opacity: 0.15; cursor: default; }
-        .modal-nav-arrow:disabled:hover { color: #444; opacity: 0.15; }
-        .modal-nav-prev { left: 8px; }
-        .modal-nav-next { right: 8px; }
+        .modal-nav-arrow:hover { color: #f1f1f1; background: rgba(35, 35, 50, 0.75); opacity: 1; }
+        .modal-nav-arrow:disabled { opacity: 0.2; cursor: default; }
+        .modal-nav-arrow:disabled:hover { color: #888; background: rgba(20, 20, 30, 0.45); opacity: 0.2; }
+        .modal-nav-prev { left: 12px; }
+        .modal-nav-next { right: 12px; }
 
         .modal-close {
             position: absolute;
