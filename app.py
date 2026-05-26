@@ -5377,7 +5377,14 @@ def chapter_render(vid):
                 form_key = f"clip_{k}_frame_{ff}"
                 fp = request.files.get(form_key)
                 if not fp:
-                    return jsonify({"error": f"missing {form_key}"}), 400
+                    received_keys = sorted(request.files.keys())
+                    return jsonify({
+                        "error": f"missing {form_key}",
+                        "expected_count": n * frames_per_clip,
+                        "received_count": len(received_keys),
+                        "first_received": received_keys[:3],
+                        "last_received": received_keys[-3:],
+                    }), 400
                 fp.save(str(clip_dir / f"frame_{f_idx:03d}.png"))
 
         # Output dir under static

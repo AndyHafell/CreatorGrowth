@@ -9096,9 +9096,19 @@
                 windowWidth: 1920, windowHeight: 1080,
                 scale: 1, backgroundColor: null, logging: false, useCORS: true,
             });
-            return await new Promise(function(resolve) {
+            var blob = await new Promise(function(resolve) {
                 canvas.toBlob(function(b) { resolve(b); }, 'image/png');
             });
+            if (!blob) {
+                // Retry once with a short wait — toBlob can transiently return
+                // null under memory pressure or before the canvas is composited.
+                await new Promise(function(r) { setTimeout(r, 50); });
+                blob = await new Promise(function(resolve) {
+                    canvas.toBlob(function(b) { resolve(b); }, 'image/png');
+                });
+            }
+            if (!blob) throw new Error('canvas.toBlob returned null');
+            return blob;
         }
 
         try {
@@ -9145,7 +9155,12 @@
             var d = await resp.json();
             if (!resp.ok || !d.ok) {
                 statusEl.style.color = '#e07070';
-                statusEl.textContent = 'Render failed: ' + (d.error || resp.statusText) + (d.stderr ? ' — ' + d.stderr.slice(0, 200) : '');
+                var diag = '';
+                if (typeof d.received_count !== 'undefined') {
+                    diag = ' (got ' + d.received_count + '/' + d.expected_count + ' files; first=' + JSON.stringify(d.first_received) + ' last=' + JSON.stringify(d.last_received) + ')';
+                }
+                statusEl.textContent = 'Render failed: ' + (d.error || resp.statusText) + diag + (d.stderr ? ' — ' + d.stderr.slice(0, 200) : '');
+                console.error('Chapter render failed:', d);
                 return;
             }
             statusEl.style.color = '#4caf50';
