@@ -3672,6 +3672,24 @@
         // Close on Escape
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') closeModal();
+            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+            const overlay = document.getElementById('modalOverlay');
+            if (!overlay || !overlay.classList.contains('open')) return;
+            // Don't hijack arrows while typing in an input, textarea, or contenteditable.
+            const ae = document.activeElement;
+            if (ae) {
+                const tag = (ae.tagName || '').toUpperCase();
+                if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || ae.isContentEditable) return;
+            }
+            const cards = Array.from(document.querySelectorAll('#videoGrid .card[data-video-id]'));
+            if (!cards.length) return;
+            const ids = cards.map(c => parseInt(c.dataset.videoId, 10)).filter(n => !isNaN(n));
+            const cur = ids.indexOf(modalVideoId);
+            if (cur === -1) return;
+            const nextIdx = e.key === 'ArrowRight' ? Math.min(cur + 1, ids.length - 1) : Math.max(cur - 1, 0);
+            if (nextIdx === cur) return;
+            e.preventDefault();
+            openModal(ids[nextIdx]);
         });
 
         function renderSourcePanel(src) {
