@@ -23,6 +23,7 @@
     <div class="title">THUMB EDITOR</div>
     <div class="meta">slot {{ slot_label }} · {{ video_title }}</div>
     <span id="status" class="status">Loading miniPaint…</span>
+    <button id="changeTextBtn" onclick="changeTextInSelection()" disabled title="Select a region containing text first, then click to replace the text while preserving font/style. ~$0.04 + ~20s." style="background:#1a1410; border-color:#f5b942; color:#f5b942;">CHANGE TEXT…</button>
     <button id="downloadBtn" onclick="saveAsDownload()" disabled title="Download a copy to your Downloads folder (does not touch the card)">SAVE AS…</button>
     <button id="saveBtn" class="primary" onclick="saveToSlot()" disabled>SAVE TO SLOT {{ slot_label }}</button>
     <button onclick="goBackToCard()">CLOSE</button>
@@ -66,7 +67,6 @@ frame.addEventListener('load', function() {
     if (W && W.Layers && typeof W.Layers.insert === 'function') {
       loadThumbAsLayer();
       installScrollZoomDampener();
-      installChangeTextButton();
       return;
     }
     if (Date.now() - start > 15000) {
@@ -105,6 +105,7 @@ function installScrollZoomDampener() {
 function enableSaveButtons() {
   document.getElementById('saveBtn').disabled = false;
   document.getElementById('downloadBtn').disabled = false;
+  document.getElementById('changeTextBtn').disabled = false;
 }
 
 function loadThumbAsLayer() {
@@ -159,52 +160,6 @@ function _exportCanvas(cb) {
   tmp.toBlob(cb, 'image/png');
 }
 
-// Inject a "Change text…" button into miniPaint's own #action_attributes bar
-// (next to REMOVE BG / PATCH / FILL…). MutationObserver re-injects after
-// miniPaint rebuilds the bar on tool switches.
-function installChangeTextButton() {
-  try {
-    const doc = frame.contentDocument;
-    if (!doc) return;
-    const bar = doc.getElementById('action_attributes');
-    if (!bar) return;
-    const W = frame.contentWindow;
-
-    function isSelectTool() {
-      try { return W.AppConfig && W.AppConfig.TOOL && W.AppConfig.TOOL.name === 'select'; }
-      catch (e) { return false; }
-    }
-
-    function injectButton() {
-      if (!isSelectTool()) return;
-      if (bar.querySelector('[data-cg-change-text]')) return;
-      const btn = doc.createElement('button');
-      btn.setAttribute('data-cg-change-text', '1');
-      btn.textContent = 'CHANGE TEXT…';
-      btn.title = 'AI: re-render the text in the current selection (~$0.04, ~20s). Preserves font, color, outline, shadow.';
-      btn.style.cssText = 'background:#1a1410; border:1px solid #f5b942; color:#f5b942; padding:5px 12px; border-radius:6px; font-size:13px; font-weight:700; cursor:pointer; margin-left:6px; font-family:inherit;';
-      btn.addEventListener('click', function(ev) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        changeTextInSelection();
-      });
-      bar.appendChild(btn);
-    }
-
-    injectButton();
-    const obs = new MutationObserver(injectButton);
-    obs.observe(bar, { childList: true, subtree: false });
-    // Tool change might not trigger childList immediately; poll lightly for first few seconds
-    let polls = 0;
-    const poll = setInterval(function() {
-      injectButton();
-      if (++polls > 30) clearInterval(poll);
-    }, 300);
-  } catch (e) {
-    console.warn('change-text injector install failed:', e);
-  }
-}
-
 // Crop the current full-canvas composite to (x, y, w, h) and hand a PNG Blob to cb.
 function _cropCanvasRegion(x, y, w, h, cb) {
   const W = frame.contentWindow;
@@ -240,9 +195,8 @@ function changeTextInSelection() {
   const trimmed = newText.trim();
   if (!trimmed) { setStatus('Empty text — nothing to do.', '#e07070'); return; }
 
-  // The button now lives inside miniPaint's #action_attributes; find it there.
-  const btn = (frame.contentDocument || document).querySelector('[data-cg-change-text]');
-  if (btn) btn.disabled = true;
+  const btn = document.getElementById('changeTextBtn');
+  btn.disabled = true;
   const x = Math.round(sel.x), y = Math.round(sel.y);
   const w = Math.round(sel.width), h = Math.round(sel.height);
   setStatus('Exporting ' + w + '×' + h + ' crop…', '#f5b942');
@@ -279,12 +233,12 @@ function changeTextInSelection() {
           } catch (e) {
             setStatus('Paste failed: ' + e.message, '#e07070');
           }
-          if (btn) btn.disabled = false;
+          btn.disabled = false;
           setTimeout(function() { URL.revokeObjectURL(url); }, 60000);
         };
         img.onerror = function() {
           setStatus('Returned PNG could not be loaded', '#e07070');
-          if (btn) btn.disabled = false;
+          btn.disabled = false;
         };
         img.src = url;
       })
