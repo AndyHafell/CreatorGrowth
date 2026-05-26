@@ -1,2 +1,8 @@
 .pyc
 __pycache__/
+.DS_Store
+videos_test.db
+videos_test.db-journal
+videos_test.db-wal
+videos_test.db-shm
+overnight/_selects_raw.txt
