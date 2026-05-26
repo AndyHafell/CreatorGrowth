@@ -23,8 +23,9 @@
     <div class="title">THUMB EDITOR</div>
     <div class="meta">slot {{ slot_label }} · {{ video_title }}</div>
     <span id="status" class="status">Loading miniPaint…</span>
+    <button id="downloadBtn" onclick="saveAsDownload()" disabled title="Download a copy to your Downloads folder (does not touch the card)">SAVE AS…</button>
     <button id="saveBtn" class="primary" onclick="saveToSlot()" disabled>SAVE TO SLOT {{ slot_label }}</button>
-    <button onclick="window.close()">CLOSE</button>
+    <button onclick="goBackToCard()">CLOSE</button>
   </div>
   <div class="frame-wrap">
     <iframe id="mp" src="/static/minipaint/index.html" allow="camera"></iframe>
@@ -34,6 +35,20 @@
 const VID = {{ vid }};
 const SLOT = {{ slot }};
 const THUMB_URL = {{ thumb_url|tojson }};
+
+function goBackToCard() {
+  // If this tab was script-opened (window.opener exists), close it — the
+  // opener still has the card open. Otherwise navigate to the card deep-link.
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.close();
+      // Some browsers refuse to close even script-opened tabs; fall through.
+      setTimeout(function(){ window.location.href = '/?card=' + VID; }, 100);
+      return;
+    }
+  } catch (e) {}
+  window.location.href = '/?card=' + VID;
+}
 
 function setStatus(msg, color) {
   const el = document.getElementById('status');
@@ -50,6 +65,8 @@ frame.addEventListener('load', function() {
     const W = frame.contentWindow;
     if (W && W.Layers && typeof W.Layers.insert === 'function') {
       loadThumbAsLayer();
+      installScrollZoomDampener();
+      installChangeTextButton();
       return;
     }
     if (Date.now() - start > 15000) {
@@ -60,10 +77,40 @@ frame.addEventListener('load', function() {
   })();
 });
 
+// Halve miniPaint's scroll-zoom step by swallowing every other wheel event
+// on the canvas viewport. Capture-phase listener runs before miniPaint's own
+// handler. We only touch wheel events with ctrlKey OR over #middle_area, so
+// scrolling the layers panel / tool sidebar stays at normal speed.
+function installScrollZoomDampener() {
+  try {
+    const doc = frame.contentDocument;
+    if (!doc) return;
+    const middle = doc.getElementById('middle_area');
+    if (!middle) return;
+    let count = 0;
+    middle.addEventListener('wheel', function(ev) {
+      count++;
+      // Pass every other event through; swallow the rest before miniPaint sees them.
+      if (count % 2 === 0) {
+        ev.stopImmediatePropagation();
+        ev.preventDefault();
+      }
+    }, { capture: true, passive: false });
+  } catch (e) {
+    // Cross-origin would block this, but iframe is same-origin so should never hit.
+    console.warn('scroll-zoom dampener install failed:', e);
+  }
+}
+
+function enableSaveButtons() {
+  document.getElementById('saveBtn').disabled = false;
+  document.getElementById('downloadBtn').disabled = false;
+}
+
 function loadThumbAsLayer() {
   if (!THUMB_URL) {
     setStatus('Ready (no source thumb — start from blank)', '#4caf50');
-    document.getElementById('saveBtn').disabled = false;
+    enableSaveButtons();
     return;
   }
   setStatus('Loading thumbnail…', '#f5b942');
@@ -82,7 +129,7 @@ function loadThumbAsLayer() {
         height_original: img.naturalHeight,
       });
       setStatus('Loaded ' + img.naturalWidth + '×' + img.naturalHeight, '#4caf50');
-      document.getElementById('saveBtn').disabled = false;
+      enableSaveButtons();
     } catch (e) {
       setStatus('Layers.insert failed: ' + e.message, '#e07070');
     }
@@ -91,6 +138,179 @@ function loadThumbAsLayer() {
     setStatus('Could not load thumbnail at ' + THUMB_URL, '#e07070');
   };
   img.src = THUMB_URL;
+}
+
+// Slugify the video title for a sensible download filename
+function _filenameSlug(s) {
+  return (s || 'thumb')
+    .replace(/[^a-z0-9\-_]+/gi, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 60) || 'thumb';
+}
+
+function _exportCanvas(cb) {
+  const W = frame.contentWindow;
+  if (!W || !W.Layers) { setStatus('miniPaint not ready', '#e07070'); return; }
+  const dim = W.Layers.get_dimensions();
+  const tmp = document.createElement('canvas');
+  tmp.width = dim.width;
+  tmp.height = dim.height;
+  W.Layers.convert_layers_to_canvas(tmp.getContext('2d'));
+  tmp.toBlob(cb, 'image/png');
+}
+
+// Inject a "Change text…" button into miniPaint's own #action_attributes bar
+// (next to REMOVE BG / PATCH / FILL…). MutationObserver re-injects after
+// miniPaint rebuilds the bar on tool switches.
+function installChangeTextButton() {
+  try {
+    const doc = frame.contentDocument;
+    if (!doc) return;
+    const bar = doc.getElementById('action_attributes');
+    if (!bar) return;
+    const W = frame.contentWindow;
+
+    function isSelectTool() {
+      try { return W.AppConfig && W.AppConfig.TOOL && W.AppConfig.TOOL.name === 'select'; }
+      catch (e) { return false; }
+    }
+
+    function injectButton() {
+      if (!isSelectTool()) return;
+      if (bar.querySelector('[data-cg-change-text]')) return;
+      const btn = doc.createElement('button');
+      btn.setAttribute('data-cg-change-text', '1');
+      btn.textContent = 'CHANGE TEXT…';
+      btn.title = 'AI: re-render the text in the current selection (~$0.04, ~20s). Preserves font, color, outline, shadow.';
+      btn.style.cssText = 'background:#1a1410; border:1px solid #f5b942; color:#f5b942; padding:5px 12px; border-radius:6px; font-size:13px; font-weight:700; cursor:pointer; margin-left:6px; font-family:inherit;';
+      btn.addEventListener('click', function(ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        changeTextInSelection();
+      });
+      bar.appendChild(btn);
+    }
+
+    injectButton();
+    const obs = new MutationObserver(injectButton);
+    obs.observe(bar, { childList: true, subtree: false });
+    // Tool change might not trigger childList immediately; poll lightly for first few seconds
+    let polls = 0;
+    const poll = setInterval(function() {
+      injectButton();
+      if (++polls > 30) clearInterval(poll);
+    }, 300);
+  } catch (e) {
+    console.warn('change-text injector install failed:', e);
+  }
+}
+
+// Crop the current full-canvas composite to (x, y, w, h) and hand a PNG Blob to cb.
+function _cropCanvasRegion(x, y, w, h, cb) {
+  const W = frame.contentWindow;
+  if (!W || !W.Layers) { cb(null, 'miniPaint not ready'); return; }
+  const dim = W.Layers.get_dimensions();
+  const full = document.createElement('canvas');
+  full.width = dim.width;
+  full.height = dim.height;
+  W.Layers.convert_layers_to_canvas(full.getContext('2d'));
+  const crop = document.createElement('canvas');
+  crop.width = w;
+  crop.height = h;
+  crop.getContext('2d').drawImage(full, x, y, w, h, 0, 0, w, h);
+  crop.toBlob(function(blob) {
+    if (!blob) { cb(null, 'crop export failed'); return; }
+    cb(blob, null);
+  }, 'image/png');
+}
+
+function changeTextInSelection() {
+  const W = frame.contentWindow;
+  if (!W || !W.Layers || !W.Layers.Base_selection) {
+    setStatus('miniPaint not ready', '#e07070');
+    return;
+  }
+  const sel = W.Layers.Base_selection.get_selection();
+  if (!sel || sel.x == null || sel.y == null || !sel.width || !sel.height) {
+    setStatus('Select a region containing the text first (use the rectangle-select tool).', '#e07070');
+    return;
+  }
+  const newText = window.prompt('Replace the text in the selection with:', '');
+  if (newText == null) return;
+  const trimmed = newText.trim();
+  if (!trimmed) { setStatus('Empty text — nothing to do.', '#e07070'); return; }
+
+  // The button now lives inside miniPaint's #action_attributes; find it there.
+  const btn = (frame.contentDocument || document).querySelector('[data-cg-change-text]');
+  if (btn) btn.disabled = true;
+  const x = Math.round(sel.x), y = Math.round(sel.y);
+  const w = Math.round(sel.width), h = Math.round(sel.height);
+  setStatus('Exporting ' + w + '×' + h + ' crop…', '#f5b942');
+
+  _cropCanvasRegion(x, y, w, h, function(cropBlob, err) {
+    if (err) { setStatus(err, '#e07070'); btn.disabled = false; return; }
+    setStatus('Calling Gemini (~20s)…', '#f5b942');
+    const fd = new FormData();
+    fd.append('crop', cropBlob, 'crop.png');
+    fd.append('new_text', trimmed);
+    fetch('/api/thumb/change-text', { method: 'POST', body: fd })
+      .then(function(r) {
+        if (!r.ok) return r.json().then(function(j) { throw new Error(j.error || ('http ' + r.status)); });
+        return r.blob();
+      })
+      .then(function(pngBlob) {
+        // Paste the returned PNG back at the selection's original coords as a new layer
+        const url = URL.createObjectURL(pngBlob);
+        const img = new Image();
+        img.onload = function() {
+          try {
+            W.Layers.insert({
+              name: 'text→ ' + trimmed.slice(0, 20),
+              type: 'image',
+              data: img,
+              x: x,
+              y: y,
+              width: w,
+              height: h,
+              width_original: img.naturalWidth,
+              height_original: img.naturalHeight,
+            });
+            setStatus('Text replaced — pasted as new layer at (' + x + ',' + y + ')', '#4caf50');
+          } catch (e) {
+            setStatus('Paste failed: ' + e.message, '#e07070');
+          }
+          if (btn) btn.disabled = false;
+          setTimeout(function() { URL.revokeObjectURL(url); }, 60000);
+        };
+        img.onerror = function() {
+          setStatus('Returned PNG could not be loaded', '#e07070');
+          if (btn) btn.disabled = false;
+        };
+        img.src = url;
+      })
+      .catch(function(e) {
+        setStatus('Change-text failed: ' + e.message, '#e07070');
+        btn.disabled = false;
+      });
+  });
+}
+
+function saveAsDownload() {
+  setStatus('Exporting…', '#f5b942');
+  _exportCanvas(function(blob) {
+    if (!blob) { setStatus('Export failed', '#e07070'); return; }
+    const ts = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 16);
+    const fname = _filenameSlug({{ video_title|tojson }}) + '_slot' + (SLOT + 1) + '_' + ts + '.png';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function() { URL.revokeObjectURL(url); }, 60000);
+    setStatus('Downloaded ' + fname + ' (' + Math.round(blob.size / 1024) + 'KB)', '#4caf50');
+  });
 }
 
 function saveToSlot() {
