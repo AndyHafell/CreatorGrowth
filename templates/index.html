@@ -9091,23 +9091,25 @@
             });
         }
 
+        // html-to-image uses SVG <foreignObject>; the browser's native rasterizer
+        // handles filter:blur + gradients (html2canvas dropped both). It clones
+        // the node and copies inline style — including our `position:fixed; left:-99999px`
+        // off-screen trick — which placed the rendered content outside the SVG
+        // viewport → all-black output. Override position on the clone, and skip
+        // Google-Fonts embedding (slow + can silently fail; the page has Montserrat
+        // already loaded so the browser uses it directly).
+        var CS_CAPTURE_OPTS = {
+            width: 1920, height: 1080,
+            canvasWidth: 1920, canvasHeight: 1080,
+            pixelRatio: 1, cacheBust: false, skipFonts: true,
+            style: { position: 'static', left: '0', top: '0', transform: 'none' },
+        };
+
         async function captureBlob() {
-            // html-to-image uses SVG <foreignObject> so the browser's native
-            // rasterizer handles CSS filter:blur and gradients — html2canvas
-            // dropped both, producing a sharp + black-bg image regardless of
-            // the per-frame inline filter we set on the active item.
-            var blob = await htmlToImage.toBlob(cap, {
-                width: 1920, height: 1080,
-                canvasWidth: 1920, canvasHeight: 1080,
-                pixelRatio: 1, cacheBust: false, skipFonts: false,
-            });
+            var blob = await htmlToImage.toBlob(cap, CS_CAPTURE_OPTS);
             if (!blob) {
                 await new Promise(function(r) { setTimeout(r, 50); });
-                blob = await htmlToImage.toBlob(cap, {
-                    width: 1920, height: 1080,
-                    canvasWidth: 1920, canvasHeight: 1080,
-                    pixelRatio: 1, cacheBust: false, skipFonts: false,
-                });
+                blob = await htmlToImage.toBlob(cap, CS_CAPTURE_OPTS);
             }
             if (!blob) throw new Error('htmlToImage.toBlob returned null');
             return blob;
