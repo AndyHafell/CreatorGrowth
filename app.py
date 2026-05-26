@@ -5385,7 +5385,7 @@ def chapter_render(vid):
                         "first_received": received_keys[:3],
                         "last_received": received_keys[-3:],
                     }), 400
-                fp.save(str(clip_dir / f"frame_{f_idx:03d}.png"))
+                fp.save(str(clip_dir / f"frame_{f_idx:03d}.jpg"))
 
         # Output dir under static
         out_dir = _chapter_video_dir(vid) / "clips"
@@ -5404,7 +5404,7 @@ def chapter_render(vid):
             cmd = [
                 "ffmpeg", "-y",
                 "-framerate", str(frames_per_clip),
-                "-i", str(clip_dir / "frame_%03d.png"),
+                "-i", str(clip_dir / "frame_%03d.jpg"),
                 "-filter_complex",
                 "[0:v]scale=1920:1080,setsar=1,"
                 "tpad=start_duration=4.5:start_mode=clone:stop_duration=4.5:stop_mode=clone,"
