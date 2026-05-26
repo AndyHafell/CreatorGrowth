@@ -682,6 +682,51 @@
         }
         .kw-filter-btn:hover { color: #f1f1f1; border-color: #555; }
         .kw-filter-btn.active { background: #1c62b9; color: #fff; border-color: #1c62b9; }
+        .showdoc-filter-btn {
+            background: transparent; border: 1px solid #333; color: #888;
+            padding: 6px 14px; border-radius: 8px; font-size: 13px; cursor: pointer; transition: all 0.15s;
+        }
+        .showdoc-filter-btn:hover { color: #f1f1f1; border-color: #555; }
+        .showdoc-filter-btn.active { background: #1c62b9; color: #fff; border-color: #1c62b9; }
+        .showdoc-card {
+            background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px;
+            padding: 16px 18px; display: grid;
+            grid-template-columns: 90px 1fr auto; gap: 16px; align-items: start;
+            transition: border-color 0.15s;
+        }
+        .showdoc-card:hover { border-color: #444; }
+        .showdoc-date {
+            color: #888; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+        }
+        .showdoc-body { min-width: 0; }
+        .showdoc-title {
+            color: #f1f1f1; font-size: 15px; font-weight: 600; margin-bottom: 8px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .showdoc-topics { display: flex; flex-direction: column; gap: 4px; }
+        .showdoc-topic { display: flex; gap: 8px; align-items: baseline; font-size: 13px; color: #aaa; }
+        .showdoc-topic-num { color: #555; font-weight: 600; width: 16px; flex-shrink: 0; }
+        .showdoc-topic-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+        .showdoc-topic-fmt { color: #1c62b9; font-size: 11px; text-transform: uppercase; letter-spacing: 0.3px; flex-shrink: 0; }
+        .showdoc-actions { display: flex; flex-direction: column; gap: 6px; align-items: stretch; min-width: 140px; }
+        .showdoc-status-badge {
+            display: inline-block; padding: 4px 10px; border-radius: 6px;
+            font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; text-align: center;
+            cursor: pointer; transition: opacity 0.15s; border: none;
+        }
+        .showdoc-status-badge:hover { opacity: 0.85; }
+        .showdoc-status-draft { background: #3a3a3a; color: #ccc; }
+        .showdoc-status-ready { background: #b78600; color: #fff; }
+        .showdoc-status-filmed { background: #1c62b9; color: #fff; }
+        .showdoc-status-published { background: #1e8e3e; color: #fff; }
+        .showdoc-doc-btn {
+            background: transparent; border: 1px solid #444; color: #aaa;
+            padding: 5px 10px; border-radius: 6px; font-size: 12px; cursor: pointer; text-decoration: none; text-align: center;
+        }
+        .showdoc-doc-btn:hover { color: #fff; border-color: #666; }
+        .showdoc-empty { color: #666; text-align: center; padding: 60px 20px; font-size: 14px; }
+        #showDocsContainer { display: none; padding: 20px; max-width: 980px; margin: 0 auto; }
+        #showDocsContainer.visible { display: block !important; }
         .kw-table-wrap {
             overflow-x: auto;
             border-radius: 12px;
@@ -977,6 +1022,33 @@
             position: relative;
             box-shadow: 0 8px 40px rgba(0,0,0,0.6);
         }
+
+        .modal-nav-arrow {
+            position: fixed;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(20, 20, 30, 0.45);
+            border: none;
+            color: #888;
+            width: 32px;
+            height: 48px;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            line-height: 1;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.75;
+            transition: color 0.12s, opacity 0.12s, background 0.12s;
+            z-index: 10;
+        }
+        .modal-nav-arrow:hover { color: #f1f1f1; background: rgba(35, 35, 50, 0.75); opacity: 1; }
+        .modal-nav-arrow:disabled { opacity: 0.2; cursor: default; }
+        .modal-nav-arrow:disabled:hover { color: #888; background: rgba(20, 20, 30, 0.45); opacity: 0.2; }
+        .modal-nav-prev { left: 12px; }
+        .modal-nav-next { right: 12px; }
 
         .modal-close {
             position: absolute;
@@ -1520,7 +1592,7 @@
         .modal-doc-editor p { margin:14px 0; }
         .modal-doc-editor ul, .modal-doc-editor ol { margin:6px 0 6px 20px; }
         .modal-doc-editor li { margin:3px 0; }
-        .modal-doc-editor li::marker { color:#555; }
+        .modal-doc-editor li::marker { color:#fff; }
         .modal-doc-editor code { background:rgba(255,255,255,0.06); padding:2px 5px; border-radius:3px; font-size:12px; font-family:'SF Mono',Monaco,monospace; color:#e8a0bf; }
         .modal-doc-editor pre { background:#0a0a14; padding:12px 16px; border-radius:6px; margin:10px 0; border:1px solid rgba(255,255,255,0.05); }
         .modal-doc-editor pre code { background:none; padding:0; color:#b8d4e8; }
@@ -1601,7 +1673,7 @@
         .notion-editor p { margin:6px 0; }
         .notion-editor ul, .notion-editor ol { margin:8px 0 8px 24px; }
         .notion-editor li { margin:4px 0; }
-        .notion-editor li::marker { color:#555; }
+        .notion-editor li::marker { color:#fff; }
         .notion-editor code { background:rgba(255,255,255,0.06); padding:2px 6px; border-radius:4px; font-size:13px; font-family:'SF Mono',Monaco,monospace; color:#e8a0bf; }
         .notion-editor pre { background:#0a0a14; padding:16px 20px; border-radius:8px; overflow-x:auto; margin:14px 0; border:1px solid rgba(255,255,255,0.05); }
         .notion-editor pre code { background:none; padding:0; color:#b8d4e8; }
@@ -1658,7 +1730,7 @@
         </div>
         <div class="search-bar">
             <input type="text" class="search-input" id="urlInput"
-                   placeholder="Paste YouTube URL"
+                   placeholder="Paste YouTube or X URL"
                    autocomplete="off">
             <button class="search-btn" onclick="addVideo()">
                 <svg viewBox="0 0 24 24"><path d="M19 11h-6V5h-2v6H5v2h6v6h2v-6h6z"/></svg>
@@ -1672,6 +1744,9 @@
     <div class="tabs-bar" id="tabsBar">
         <button class="tab active" data-tab="options" onclick="setTab('options')" ondragover="tabDragOver(event, 'options')" ondragleave="tabDragLeave(event)" ondrop="tabDrop(event, 'options')">
             Ideas <span class="tab-count" id="countOptions">0</span>
+        </button>
+        <button class="tab" data-tab="show" onclick="setTab('show')" ondragover="tabDragOver(event, 'show')" ondragleave="tabDragLeave(event)" ondrop="tabDrop(event, 'show')">
+            Show <span class="tab-count" id="countShow">0</span>
         </button>
         <button class="tab" data-tab="best" onclick="setTab('best')" ondragover="tabDragOver(event, 'best')" ondragleave="tabDragLeave(event)" ondrop="tabDrop(event, 'best')">
             Best <span class="tab-count" id="countBest">0</span>
@@ -1725,6 +1800,7 @@
         <button class="filter-btn" data-recency="30" onclick="setRecency('30')">30 days</button>
         <button class="filter-btn" data-recency="60" onclick="setRecency('60')">60 days</button>
         <button class="filter-btn" data-recency="90" onclick="setRecency('90')">90 days</button>
+        <button class="sort-btn" id="syncVisibleBtn" onclick="syncVisible()" style="margin-left:auto;">Sync visible</button>
         <button class="sort-btn" id="syncPublishedBtn" onclick="syncPublished()" style="display:none; margin-left:auto;">Sync</button>
     </div>
 
@@ -1864,6 +1940,8 @@
     </div>
 
     <div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+        <button class="modal-nav-arrow modal-nav-prev" onclick="navModalCard(-1, event)" title="Previous card (←)" aria-label="Previous card">&#10094;</button>
+        <button class="modal-nav-arrow modal-nav-next" onclick="navModalCard(1, event)" title="Next card (→)" aria-label="Next card">&#10095;</button>
         <div class="modal-card" id="modalCard">
             <button class="modal-close" onclick="closeModal()">&times;</button>
             <div class="modal-header">
@@ -1871,6 +1949,9 @@
                 <div class="modal-meta" id="modalMeta"></div>
             </div>
             <hr class="modal-divider">
+
+            <!-- Source panel (rendered only for non-YouTube sources like X) -->
+            <div id="modalSourcePanel" style="display:none; background:#0d0d1a; border:1px solid #2a2a4a; border-radius:8px; padding:14px 16px; margin-bottom:18px;"></div>
 
             <!-- Studios row (whole-video assets) — top placement -->
             <div class="studios-section" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px;">
@@ -2051,6 +2132,7 @@
                             <input id="diagramsBgHex" type="text" placeholder="auto" maxlength="7" spellcheck="false" style="width:88px; background:transparent; border:1px solid #2a2a4a; color:#ddd; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; padding:4px 8px; border-radius:4px;" onchange="onBgHexInputChange()" title="Override the background color used for slideshow slides & padded bars">
                             <button onclick="toggleEyedropperMode()" id="diagramsBgEyeBtn" title="Eyedropper — click then sample a pixel" style="background:none; border:1px solid #2a2a4a; color:#aaa; border-radius:4px; padding:5px 10px; font-size:11px; cursor:pointer;">Pick from image</button>
                             <button id="diagramsBgReset" onclick="resetBgColor()" title="Clear override — use auto-detected color" style="display:none; background:none; border:1px solid #2a2a4a; color:#888; border-radius:4px; padding:5px 10px; font-size:11px; cursor:pointer;">Reset to auto</button>
+                            <span id="diagramsBgOverrideBadge" style="display:none; color:#f5b942; font-size:10px; letter-spacing:0.8px; font-family:ui-monospace,Menlo,Consolas,monospace; padding:3px 7px; border:1px solid #3a2d10; border-radius:3px; background:rgba(245,185,66,0.06);"></span>
                             <span style="color:#444; font-size:11px;">&middot; sets the fill behind slideshow slides &amp; padded bars</span>
                         </div>
                         <div id="diagramsCropToolbar" style="display:none; margin-top:10px; gap:10px; align-items:center; flex-wrap:wrap;">
@@ -2125,7 +2207,8 @@
                     <span style="color:#666;">Q/E</span> &nbsp;zoom in / out<br>
                     <span style="color:#666;">C</span> &nbsp;crossfade &middot; <span style="color:#666;">H</span> &nbsp;hide<br>
                     <span style="color:#666;">1-9</span> &nbsp;move selected to that slot<br>
-                    <span style="color:#666;">↑↓</span> &nbsp;nav between boxes
+                    <span style="color:#666;">↑↓</span> &nbsp;nav between boxes<br>
+                    <span style="color:#666;">B</span> &nbsp;pick bg color → auto-advances
                 </div>
             </div>
         </div>
@@ -2294,7 +2377,12 @@
             <div style="font-weight:700; letter-spacing:2px; color:#e87a5b; font-size:12px;">THUMBNAIL STUDIO</div>
             <div id="tsVideoTitle" style="color:#666; font-size:12px; border-left:1px solid #2a2a4a; padding-left:14px;"></div>
             <div style="flex:1;"></div>
-            <span id="tsStatus" style="color:#555; font-size:11px;"></span>
+            <div style="display:flex; flex-direction:column; gap:3px; min-width:300px; align-items:stretch;">
+                <span id="tsStatus" style="color:#555; font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; text-align:right;"></span>
+                <div id="tsProgress" style="height:3px; width:100%; background:#1f1f30; border-radius:2px; overflow:hidden; opacity:0; transition:opacity 0.25s;">
+                    <div id="tsProgressFill" style="height:100%; width:0%; background:linear-gradient(90deg, #e87a5b, #f5b942); border-radius:2px;"></div>
+                </div>
+            </div>
             <button onclick="closeThumbnailsStudio()" style="background:none; border:1px solid #2a2a4a; color:#888; padding:6px 14px; border-radius:4px; font-size:11px; letter-spacing:0.5px; cursor:pointer;">CLOSE</button>
         </div>
 
@@ -2748,6 +2836,40 @@
             }
         }
 
+        async function syncVisible() {
+            const btn = document.getElementById('syncVisibleBtn');
+            if (btn.disabled) return;
+            const visible = sortVideos(videos.filter(v => v.status === currentTab && !v.tucked));
+            const ids = visible.map(v => v.video_id).filter(Boolean);
+            if (ids.length === 0) {
+                showToast('Nothing visible to sync');
+                return;
+            }
+            const originalText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = `Syncing ${ids.length}…`;
+            showToast(`Syncing ${ids.length} visible videos…`);
+            try {
+                const resp = await fetch('/api/videos/sync-ids', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ video_ids: ids })
+                });
+                const data = await resp.json();
+                if (!resp.ok) {
+                    showToast(data.error || 'Sync failed', true);
+                } else {
+                    showToast(`Synced ${data.updated}/${data.total} videos`);
+                    await loadVideos();
+                }
+            } catch (e) {
+                showToast('Sync failed', true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = originalText;
+            }
+        }
+
         async function syncPublished() {
             const btn = document.getElementById('syncPublishedBtn');
             if (btn.disabled) return;
@@ -2807,6 +2929,7 @@
             document.getElementById('channelsBar').style.display = isSpecial ? 'none' : '';
             document.querySelector('.sort-bar').style.display = isSpecial ? 'none' : '';
             document.getElementById('syncPublishedBtn').style.display = tab === 'published' ? '' : 'none';
+            document.getElementById('syncVisibleBtn').style.display = (tab === 'options' || tab === 'best') ? '' : 'none';
             // (batch-brief button removed — briefs are per-card now)
             if (isCreators) {
                 renderCreatorList();
@@ -2865,9 +2988,11 @@
         }
 
         function updateCounts() {
-            const counts = { options: 0, best: 0, brief: 0, packaging: 0, script: 0, edited: 0, published: 0, archived: 0 };
+            const counts = { options: 0, show: 0, best: 0, brief: 0, packaging: 0, script: 0, edited: 0, published: 0, archived: 0 };
             videos.forEach(v => { if (!v.tucked) counts[v.status] = (counts[v.status] || 0) + 1; });
             document.getElementById('countOptions').textContent = counts.options;
+            const showEl = document.getElementById('countShow');
+            if (showEl) showEl.textContent = counts.show;
             document.getElementById('countBest').textContent = counts.best;
             document.getElementById('countBrief').textContent = counts.brief;
             document.getElementById('countPackaging').textContent = counts.packaging;
@@ -2933,7 +3058,7 @@
         }
 
         // ── Drag & drop cards between tabs ───────────────────
-        const DROPPABLE_TABS = new Set(['options','best','brief','packaging','script','edited','published','archived']);
+        const DROPPABLE_TABS = new Set(['options','show','best','brief','packaging','script','edited','published','archived']);
         let _dragVideoId = null;
         let _dragFollower = null;
 
@@ -3050,7 +3175,7 @@
         }
 
         function getActionButtons(v) {
-            if (v.status === 'options') {
+            if (v.status === 'options' || v.status === 'show') {
                 return `
                     <button class="action-btn move-best" onclick="moveVideo(${v.id}, 'best', event)">Best</button>
                     <button class="action-btn move-progress" onclick="moveVideo(${v.id}, 'packaging', event)">Packaging</button>
@@ -3156,17 +3281,46 @@
 
         function cardHtml(v) {
             const isTransformed = v.transformed;
-            const avatarUrl = isTransformed ? '/static/andy_avatar.png' : v.channel_thumb;
+            const isShowDoc = typeof v.video_id === 'string' && v.video_id.startsWith('sd_');
+            // Once a show doc has a thumbnail Set, it graduates to the normal card layout.
+            const showDocTopicMode = isShowDoc && !v.thumbnail_url;
+            const avatarUrl = isTransformed ? '/static/andy_avatar.png' : (isShowDoc ? '/static/logo.png' : v.channel_thumb);
             const channelName = isTransformed ? 'AI Andy' : v.channel_title;
             const tuckTitle = v.tucked ? 'Bring back to top' : 'Tuck away';
             const tuckIcon = v.tucked ? '&#9650;' : '&#9660;';
+            let thumbInner;
+            if (showDocTopicMode && v.showdoc) {
+                const sd = v.showdoc;
+                const dateDisplay = sd.date ? new Date(sd.date + 'T12:00:00').toLocaleDateString('en-US', {month:'short', day:'numeric'}).toUpperCase() : '';
+                const yr = sd.date ? sd.date.slice(0,4) : '';
+                const topicsHtml = (sd.topics || []).map(t => `
+                    <div style="display:flex; align-items:flex-start; gap:6px; margin-bottom:6px; font-size:11px; line-height:1.3;">
+                        <span style="color:#888; flex-shrink:0;">${t.n}.</span>
+                        <span style="color:#f1f1f1; flex:1; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;">${esc(t.text)}</span>
+                        ${t.format ? `<span style="color:#5b9bd5; font-size:9px; font-weight:600; letter-spacing:0.5px; text-transform:uppercase; flex-shrink:0; max-width:80px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(t.format)}</span>` : ''}
+                    </div>`).join('');
+                thumbInner = `
+                    <div style="position:absolute; inset:0; background:#0d0d1a; display:flex; flex-direction:column; padding:14px; box-sizing:border-box;">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">
+                            <div>
+                                <div style="color:#f5b942; font-size:11px; font-weight:700; letter-spacing:1px;">${esc(dateDisplay)}</div>
+                                <div style="color:#555; font-size:10px;">${esc(yr)}</div>
+                            </div>
+                            <span style="background:#1a1a2e; color:#f5b942; font-size:9px; padding:3px 8px; border-radius:3px; letter-spacing:0.5px; text-transform:uppercase; font-weight:700;">Show Doc</span>
+                        </div>
+                        <div style="flex:1; overflow:hidden;">${topicsHtml}</div>
+                    </div>`;
+            } else {
+                thumbInner = `
+                    <img src="${v.thumbnail_url}" alt="" loading="lazy">
+                    ${v.duration ? `<span class="duration-badge">${v.duration}</span>` : ''}`;
+            }
             return `
             <div class="card${isTransformed ? ' transformed' : ''}${v.tucked ? ' is-tucked' : ''}" data-video-id="${v.id}" draggable="true" ondragstart="cardDragStart(event, ${v.id})" ondragend="cardDragEnd(event)" onclick="openModal(${v.id})" style="cursor:pointer;">
                 <button class="tuck-btn" title="${tuckTitle}" onclick="toggleTuck(${v.id}, event)">${tuckIcon}</button>
                 ${v.status === 'brief' ? `<button class="brief-chip brief-chip-regen" onclick="quickBrief(${v.id}, event)" title="Regenerate brief in background">↻ Brief</button>` : ''}
                 <div class="thumb-wrap">
-                    <img src="${v.thumbnail_url}" alt="" loading="lazy">
-                    ${v.duration ? `<span class="duration-badge">${v.duration}</span>` : ''}
+                    ${thumbInner}
                     <div class="card-actions">${getActionButtons(v)}</div>
                 </div>
                 <div class="card-info">
@@ -3176,7 +3330,7 @@
                     <div class="card-text">
                         <div class="card-title">${esc(v.title)}</div>
                         <div class="card-channel">${esc(channelName)}</div>
-                        <div class="card-stats">${v.view_count_formatted}${v.time_ago ? ' &middot; ' + v.time_ago : ''}${outlierBadge(v.outlier_score)}</div>
+                        <div class="card-stats">${(isShowDoc && !v.view_count) ? (v.time_ago || '') : (v.view_count_formatted + (v.time_ago ? ' &middot; ' + v.time_ago : '') + outlierBadge(v.outlier_score))}</div>
                     </div>
                 </div>
             </div>
@@ -3192,6 +3346,7 @@
             if (all.length === 0) {
                 const msgs = {
                     options: { icon: '&#127909;', title: 'No ideas yet', sub: 'Paste a YouTube URL above to start' },
+                    show: { icon: '&#127908;', title: 'No show docs yet', sub: 'Run the morning show doc automation' },
                     best: { icon: '&#11088;', title: 'No best picks yet', sub: 'Move your top ideas here from Ideas' },
                     brief: { icon: '&#128221;', title: 'No briefs yet', sub: 'Click + Create Brief on a Best card to validate it here' },
                     packaging: { icon: '&#127919;', title: 'Nothing in packaging', sub: 'Move ideas here when picking thumbnail + title' },
@@ -3544,9 +3699,99 @@
         let modalInitialDetails = null;  // snapshot of server state at open — used to detect which slots the user actually changed
 
         // Close on Escape
+        function getModalNavIds() {
+            const cards = Array.from(document.querySelectorAll('#videoGrid .card[data-video-id]'));
+            return cards.map(c => parseInt(c.dataset.videoId, 10)).filter(n => !isNaN(n));
+        }
+
+        function refreshModalNavArrows() {
+            const prev = document.querySelector('.modal-nav-prev');
+            const next = document.querySelector('.modal-nav-next');
+            if (!prev || !next) return;
+            const ids = getModalNavIds();
+            const cur = ids.indexOf(modalVideoId);
+            prev.disabled = cur <= 0;
+            next.disabled = cur === -1 || cur >= ids.length - 1;
+        }
+
+        function navModalCard(dir, event) {
+            if (event) event.stopPropagation();
+            const ids = getModalNavIds();
+            const cur = ids.indexOf(modalVideoId);
+            if (cur === -1) return;
+            const nextIdx = dir > 0 ? Math.min(cur + 1, ids.length - 1) : Math.max(cur - 1, 0);
+            if (nextIdx === cur) return;
+            openModal(ids[nextIdx]);
+        }
+
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') closeModal();
+            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+            const overlay = document.getElementById('modalOverlay');
+            if (!overlay || !overlay.classList.contains('open')) return;
+            // Don't hijack arrows while typing in an input, textarea, or contenteditable.
+            const ae = document.activeElement;
+            if (ae) {
+                const tag = (ae.tagName || '').toUpperCase();
+                if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || ae.isContentEditable) return;
+            }
+            e.preventDefault();
+            navModalCard(e.key === 'ArrowRight' ? 1 : -1);
         });
+
+        function renderSourcePanel(src) {
+            const panel = document.getElementById('modalSourcePanel');
+            if (!panel) return;
+            if (!src) {
+                panel.style.display = 'none';
+                panel.innerHTML = '';
+                return;
+            }
+            if (src.platform === 'x') {
+                const text = (src.text || '').trim();
+                const textHtml = esc(text).replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" style="color:#7ab3ff;">$1</a>');
+                const handle = src.author_handle ? '@' + src.author_handle : '';
+                const name = src.author_name || '';
+                const avatar = src.author_avatar ? `<img src="${esc(src.author_avatar)}" alt="" style="width:32px;height:32px;border-radius:50%;flex-shrink:0;">` : '';
+                const stats = [];
+                if (src.views) stats.push(src.views.toLocaleString() + ' views');
+                if (src.likes) stats.push(src.likes.toLocaleString() + ' likes');
+                panel.innerHTML = `
+                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+                        ${avatar}
+                        <div style="flex:1; min-width:0;">
+                            <div style="color:#f1f1f1; font-weight:600; font-size:13px;">${esc(name)}</div>
+                            <div style="color:#888; font-size:12px;">${esc(handle)}${stats.length ? ' · ' + esc(stats.join(' · ')) : ''}</div>
+                        </div>
+                        <a href="${esc(src.url || '#')}" target="_blank" onclick="event.stopPropagation()" style="background:#000; color:#fff; padding:6px 12px; border-radius:6px; font-size:11px; text-decoration:none; letter-spacing:0.5px; text-transform:uppercase; font-weight:600;">View on X</a>
+                    </div>
+                    <div style="color:#ddd; font-size:14px; line-height:1.5; white-space:normal; word-wrap:break-word;">${textHtml}</div>
+                `;
+                panel.style.display = 'block';
+                return;
+            }
+            if (src.platform === 'showdoc') {
+                const topics = src.topics || [];
+                const topicsHtml = topics.map(t => `
+                    <div style="display:flex; align-items:flex-start; gap:10px; padding:10px 0; border-bottom:1px solid #1a1a2e;">
+                        <span style="color:#888; flex-shrink:0; font-size:13px;">${t.n}.</span>
+                        <span style="color:#f1f1f1; flex:1; font-size:14px; line-height:1.4;">${esc(t.text)}</span>
+                        ${t.format ? `<span style="color:#5b9bd5; font-size:10px; font-weight:600; letter-spacing:0.5px; text-transform:uppercase; flex-shrink:0;">${esc(t.format)}</span>` : ''}
+                    </div>`).join('');
+                const dateLabel = src.date ? new Date(src.date + 'T12:00:00').toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric', year:'numeric'}) : '';
+                panel.innerHTML = `
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <div style="color:#888; font-size:12px; text-transform:uppercase; letter-spacing:1px; font-weight:600;">Show Doc${dateLabel ? ' · ' + esc(dateLabel) : ''}</div>
+                        <a href="${esc(src.doc_url || '#')}" target="_blank" onclick="event.stopPropagation()" style="background:#1a73e8; color:#fff; padding:6px 12px; border-radius:6px; font-size:11px; text-decoration:none; letter-spacing:0.5px; text-transform:uppercase; font-weight:600;">Open Doc</a>
+                    </div>
+                    <div>${topicsHtml}</div>
+                `;
+                panel.style.display = 'block';
+                return;
+            }
+            panel.style.display = 'none';
+            panel.innerHTML = '';
+        }
 
         async function openModal(videoId) {
             modalVideoId = videoId;
@@ -3556,15 +3801,34 @@
 
             // Populate header
             document.getElementById('modalTitle').textContent = v.title;
+            const isX = typeof v.video_id === 'string' && v.video_id.startsWith('x_');
+            const isShowDoc = typeof v.video_id === 'string' && v.video_id.startsWith('sd_');
+            const tweetId = isX ? v.video_id.slice(2) : '';
+            const xHandle = isX ? (v.channel_title || '').replace(/^@/, '') : '';
+            const showDocUrl = (isShowDoc && v.showdoc) ? v.showdoc.doc_url : '';
+            let openBtn;
+            if (isX) {
+                openBtn = `<a class="modal-yt-btn" href="https://x.com/${esc(xHandle || 'i')}/status/${esc(tweetId)}" target="_blank" onclick="event.stopPropagation()" style="background:#000;">
+                       <svg viewBox="0 0 24 24" style="fill:#fff;"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                       Open on X
+                   </a>`;
+            } else if (isShowDoc) {
+                openBtn = `<a class="modal-yt-btn" href="${esc(showDocUrl || '#')}" target="_blank" onclick="event.stopPropagation()" style="background:#1a73e8;">
+                       <svg viewBox="0 0 24 24" style="fill:#fff;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6" fill="#1a73e8" stroke="#fff" stroke-width="1"/></svg>
+                       Open Doc
+                   </a>`;
+            } else {
+                openBtn = `<a class="modal-yt-btn" href="https://youtube.com/watch?v=${v.video_id}" target="_blank" onclick="event.stopPropagation()">
+                       <svg viewBox="0 0 24 24"><path d="M23.5 6.2c-.3-1-1-1.8-2-2.1C19.6 3.5 12 3.5 12 3.5s-7.6 0-9.5.6c-1 .3-1.7 1.1-2 2.1C0 8.1 0 12 0 12s0 3.9.5 5.8c.3 1 1 1.8 2 2.1 1.9.6 9.5.6 9.5.6s7.6 0 9.5-.6c1-.3 1.7-1.1 2-2.1.5-1.9.5-5.8.5-5.8s0-3.9-.5-5.8zM9.5 15.6V8.4l6.3 3.6-6.3 3.6z"/></svg>
+                       Open on YouTube
+                   </a>`;
+            }
             document.getElementById('modalMeta').innerHTML = `
                 <span class="modal-meta-item">${esc(v.channel_title)}</span>
                 <span class="modal-meta-item">${v.view_count_formatted}</span>
                 ${v.time_ago ? `<span class="modal-meta-item">${v.time_ago}</span>` : ''}
                 ${v.outlier_score > 0 ? `<span class="modal-meta-item">${outlierBadge(v.outlier_score)}</span>` : ''}
-                <a class="modal-yt-btn" href="https://youtube.com/watch?v=${v.video_id}" target="_blank" onclick="event.stopPropagation()">
-                    <svg viewBox="0 0 24 24"><path d="M23.5 6.2c-.3-1-1-1.8-2-2.1C19.6 3.5 12 3.5 12 3.5s-7.6 0-9.5.6c-1 .3-1.7 1.1-2 2.1C0 8.1 0 12 0 12s0 3.9.5 5.8c.3 1 1 1.8 2 2.1 1.9.6 9.5.6 9.5.6s7.6 0 9.5-.6c1-.3 1.7-1.1 2-2.1.5-1.9.5-5.8.5-5.8s0-3.9-.5-5.8zM9.5 15.6V8.4l6.3 3.6-6.3 3.6z"/></svg>
-                    Open on YouTube
-                </a>
+                ${openBtn}
                 <button class="modal-thumb-btn" onclick="queueThumb(${v.id}, event)">Thumb</button>
                 <button class="modal-thumb-btn" onclick="createBrief(); event.stopPropagation();" style="background:linear-gradient(135deg,#1a1a3a 0%,#2a2a5a 100%); border-color:#3a3a5e; color:#9fb3ff;">Brief</button>
             `;
@@ -3585,6 +3849,8 @@
             }
             if (!Array.isArray(modalDetails.abc_choices)) modalDetails.abc_choices = [];
             modalInitialDetails = JSON.parse(JSON.stringify(modalDetails));
+
+            renderSourcePanel(modalDetails.meta && modalDetails.meta.source);
 
             renderThumbs('inspo', modalDetails.inspo_thumbs);
             renderTitles('inspo', modalDetails.inspo_titles);
@@ -3607,6 +3873,7 @@
 
             document.getElementById('savedIndicator').classList.remove('show');
             document.getElementById('modalOverlay').classList.add('open');
+            refreshModalNavArrows();
         }
 
         async function closeModal() {
@@ -3875,12 +4142,27 @@
             input.click();
         }
 
-        function removeThumb(prefix, index, event) {
+        async function removeThumb(prefix, index, event) {
             event.stopPropagation();
             const arr = prefix === 'inspo' ? modalDetails.inspo_thumbs : modalDetails.original_thumbs;
+            const removedUrl = arr[index] || '';
             arr[index] = '';
             renderThumbs(prefix, arr);
             saveModalData();
+            // If the removed thumb was the one Set as the card thumbnail, clear it
+            // so the card reverts to its default render (topic block for show docs).
+            const v = videos.find(x => x.id === modalVideoId);
+            if (v && removedUrl && v.thumbnail_url === removedUrl) {
+                try {
+                    await fetch(`/api/videos/${modalVideoId}/thumbnail`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ url: '' }),
+                    });
+                    v.thumbnail_url = '';
+                    renderGrid();
+                } catch (_) {}
+            }
         }
 
         function updateTitle(prefix, index, value) {
@@ -5991,11 +6273,59 @@
     function closeThumbnailsStudio() {
         document.getElementById('thumbnailsStudio').style.display = 'none';
     }
-    function tsSetStatus(msg, color) {
+    function tsSetStatus(msg, color, withCounter) {
         var el = document.getElementById('tsStatus');
         if (!el) return;
         el.textContent = msg;
         el.style.color = color || '#555';
+        if (withCounter) el.dataset.baseMsg = msg;
+        else delete el.dataset.baseMsg;
+    }
+    // Progress bar driver — animates 0% → 95% over estSec seconds, then
+    // completeProgress() jumps to 100% / failProgress() turns red.
+    function tsStartProgress(estSec) {
+        var bar = document.getElementById('tsProgress');
+        var fill = document.getElementById('tsProgressFill');
+        if (!bar || !fill) return;
+        if (bar._tick) clearInterval(bar._tick);
+        fill.style.transition = 'none';
+        fill.style.width = '0%';
+        fill.style.background = 'linear-gradient(90deg, #e87a5b, #f5b942)';
+        bar.style.opacity = '1';
+        // Force reflow so the transition starts cleanly
+        void fill.offsetWidth;
+        fill.style.transition = 'width ' + estSec + 's cubic-bezier(0.15, 0.8, 0.3, 0.95), background 0.3s';
+        fill.style.width = '95%';
+        bar._startTime = Date.now();
+        bar._tick = setInterval(function() {
+            var el = document.getElementById('tsStatus');
+            if (!el || !el.dataset.baseMsg) return;
+            var s = Math.round((Date.now() - bar._startTime) / 1000);
+            el.textContent = el.dataset.baseMsg + ' · ' + s + 's';
+        }, 500);
+    }
+    function _tsStopTick() {
+        var bar = document.getElementById('tsProgress');
+        if (bar && bar._tick) { clearInterval(bar._tick); bar._tick = null; }
+    }
+    function tsCompleteProgress() {
+        var bar = document.getElementById('tsProgress');
+        var fill = document.getElementById('tsProgressFill');
+        if (!bar || !fill) return;
+        _tsStopTick();
+        fill.style.transition = 'width 0.35s ease-out, background 0.3s';
+        fill.style.background = 'linear-gradient(90deg, #7ad17a, #7ad17a)';
+        fill.style.width = '100%';
+        setTimeout(function() { bar.style.opacity = '0'; }, 900);
+    }
+    function tsFailProgress() {
+        var bar = document.getElementById('tsProgress');
+        var fill = document.getElementById('tsProgressFill');
+        if (!bar || !fill) return;
+        _tsStopTick();
+        fill.style.transition = 'background 0.3s';
+        fill.style.background = '#e07070';
+        setTimeout(function() { bar.style.opacity = '0'; }, 1500);
     }
     function tsGenerate(kind) {
         var vid = _getStudioVideoId();
@@ -6029,11 +6359,15 @@
             tsSetStatus('Unknown variant: ' + variant, '#e07070');
             return;
         }
-        tsSetStatus('Gemini direct (' + variant + ') — generating 3 in parallel (~30s)…', '#f5b942');
+        var nudge = (document.getElementById('tsNudge').value || '').trim();
+        var statusMsg = 'Generating 3 ' + variant + ' in parallel';
+        if (nudge) statusMsg += ' [nudge: ' + nudge.slice(0, 50) + (nudge.length > 50 ? '…' : '') + ']';
+        tsSetStatus(statusMsg, '#f5b942', true);
+        tsStartProgress(30);
         fetch('/api/videos/' + vid + '/gemini-' + variant, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({count: 3})
+            body: JSON.stringify({count: 3, nudge: nudge})
         }).then(function(r) { return r.json(); })
           .then(function(j) {
               if (j.error) {
@@ -6044,11 +6378,12 @@
                   throw new Error(failMsg);
               }
               var slots = (j.thumbs || []).map(function(t) { return t.slot_label; }).join(', ');
-              var msg = 'Gemini direct → ' + j.count + '/' + j.requested + ' thumbs in slots ' + slots;
+              var msg = 'Done → ' + j.count + '/' + j.requested + ' in slots ' + slots;
               if (j.failures && j.failures.length) {
                   msg += ' (failed: ' + j.failures.map(function(f) { return 'slot ' + f.slot_label + ' [' + f.error + ']'; }).join(', ') + ')';
                   console.warn('Gemini direct partial failures:', j.failures);
               }
+              tsCompleteProgress();
               tsSetStatus(msg, j.failures && j.failures.length ? '#f5b942' : '#4caf50');
               tsAppendBatch('gemini', 'gemini_' + variant, 'slots ' + slots, false);
               if (typeof modalDetails !== 'undefined' && modalDetails) {
@@ -6058,7 +6393,7 @@
                   if (typeof renderTitles === 'function') renderTitles('original', modalDetails.original_titles || []);
               }
           })
-          .catch(function(err) { tsSetStatus('Gemini direct failed: ' + err.message, '#e07070'); });
+          .catch(function(err) { tsFailProgress(); tsSetStatus('Failed: ' + err.message, '#e07070'); });
     }
 
     // Listener: thumb editor (separate tab) posts back after Save → re-render
@@ -6608,31 +6943,124 @@
         if (!/^#[0-9a-f]{6}$/.test(s)) return '';
         return s;
     }
+    // Cached offscreen full-image canvas for per-box bg sampling.
+    var _bgSamplerCanvas = null;
+    var _bgSamplerSrc = '';
+    function _getBgSampler() {
+        var img = document.getElementById('diagramsImage');
+        if (!img || !img.naturalWidth) return null;
+        if (_bgSamplerCanvas && _bgSamplerSrc === img.src) return _bgSamplerCanvas;
+        try {
+            var c = document.createElement('canvas');
+            c.width = img.naturalWidth;
+            c.height = img.naturalHeight;
+            c.getContext('2d').drawImage(img, 0, 0);
+            _bgSamplerCanvas = c;
+            _bgSamplerSrc = img.src;
+            return c;
+        } catch (e) { return null; }
+    }
+    // Sample a ring of pixels just outside `b`'s bbox and return the median color hex.
+    // Median over R/G/B is robust against the box border itself bleeding into the ring.
+    function _sampleBgForBox(b) {
+        if (!b) return '';
+        var rectKey = [Math.round((b.x||0)*1e4), Math.round((b.y||0)*1e4),
+                       Math.round((b.w||0)*1e4), Math.round((b.h||0)*1e4)].join(',');
+        if (b._bgAutoCached && b._bgAutoCachedKey === rectKey) return b._bgAutoCached;
+        var canvas = _getBgSampler();
+        if (!canvas) return '';
+        var W = canvas.width, H = canvas.height;
+        var ctx = canvas.getContext('2d');
+        var bx = Math.round((b.x||0) * W);
+        var by = Math.round((b.y||0) * H);
+        var bw = Math.round((b.w||0) * W);
+        var bh = Math.round((b.h||0) * H);
+        var off = Math.max(8, Math.round(Math.min(W, H) * 0.012)); // ring offset outside box
+        var pts = [];
+        var N_SIDE = 7; // samples per edge
+        function pushSample(px, py) {
+            px = Math.max(0, Math.min(W - 1, px));
+            py = Math.max(0, Math.min(H - 1, py));
+            try {
+                var d = ctx.getImageData(px, py, 1, 1).data;
+                pts.push([d[0], d[1], d[2]]);
+            } catch (e) {}
+        }
+        for (var i = 0; i < N_SIDE; i++) {
+            var f = (i + 0.5) / N_SIDE;
+            pushSample(bx + Math.round(f * bw), by - off);            // top
+            pushSample(bx + Math.round(f * bw), by + bh + off);       // bottom
+            pushSample(bx - off,                by + Math.round(f * bh)); // left
+            pushSample(bx + bw + off,           by + Math.round(f * bh)); // right
+        }
+        if (!pts.length) return '';
+        function med(idx) {
+            var arr = pts.map(function(p) { return p[idx]; }).sort(function(a, c) { return a - c; });
+            return arr[Math.floor(arr.length / 2)];
+        }
+        var r = med(0), g = med(1), bl = med(2);
+        var hex = '#' + [r, g, bl].map(function(v) {
+            var h = v.toString(16); return h.length === 1 ? '0' + h : h;
+        }).join('');
+        b._bgAutoCached = hex;
+        b._bgAutoCachedKey = rectKey;
+        return hex;
+    }
     function updateBgUI() {
         var d = diagramsList[activeDiagramIdx];
         var swatch = document.getElementById('diagramsBgSwatch');
         var input = document.getElementById('diagramsBgHex');
         var resetBtn = document.getElementById('diagramsBgReset');
+        var badge = document.getElementById('diagramsBgOverrideBadge');
         if (!swatch || !input) return;
-        var override = d && d.bg_color_override ? _normalizeHex(d.bg_color_override) : '';
-        var auto = d && d.bg_color_auto ? _normalizeHex(d.bg_color_auto) : '';
-        var effective = override || auto;
-        swatch.style.background = effective || '#0a0a14';
+        var diagramOverride = d && d.bg_color_override ? _normalizeHex(d.bg_color_override) : '';
+        var diagramAuto = d && d.bg_color_auto ? _normalizeHex(d.bg_color_auto) : '';
+        var slideSelected = (typeof selectedBoxIdx !== 'undefined' && selectedBoxIdx >= 0 &&
+                             typeof diagramBoxes !== 'undefined' && diagramBoxes[selectedBoxIdx]);
+        // Per-slide override (saved on the box) wins over the per-slide auto sample.
+        var perSlideOverride = '';
+        var perSlideAuto = '';
+        if (slideSelected) {
+            perSlideOverride = _normalizeHex(diagramBoxes[selectedBoxIdx].bg_color_override);
+            perSlideAuto = _normalizeHex(_sampleBgForBox(diagramBoxes[selectedBoxIdx]));
+        }
+        // Display priority:
+        //   row selected → per-slide override (gold) || per-slide auto (dim)
+        //   nothing selected → diagram-global override (gold) || diagram auto (dim)
+        var displayValue, displayIsOverride;
+        if (slideSelected) {
+            displayValue = perSlideOverride || perSlideAuto;
+            displayIsOverride = !!perSlideOverride;
+        } else {
+            displayValue = diagramOverride || diagramAuto;
+            displayIsOverride = !!diagramOverride;
+        }
+        swatch.style.background = displayValue || '#0a0a14';
         swatch.style.borderColor = diagramEyedropperMode ? '#f5b942' : '#2a2a4a';
+        var slideLabel = slideSelected ? ' (slide ' + (selectedBoxIdx + 1) + ')' : '';
+        var hoverLabel = displayIsOverride
+            ? 'Override' + slideLabel + ': ' + displayValue
+            : (displayValue ? 'Auto' + slideLabel + ': ' + displayValue : '');
         swatch.title = diagramEyedropperMode
             ? 'Eyedropper active — click on the image to sample a color. Click swatch again to cancel.'
-            : (override
-                ? 'Override: ' + override + ' (click to re-sample)'
-                : (auto ? 'Auto: ' + auto + ' (click to override via eyedropper)' : 'Click to sample a bg color from the image'));
-        if (override) {
-            input.value = override;
-            input.style.color = '#f5b942';
-        } else {
-            input.value = auto || '';
-            input.placeholder = 'auto';
-            input.style.color = '#666';
+            : (hoverLabel ? hoverLabel + ' (click swatch + image to override)' : 'Click to sample a bg color from the image');
+        input.value = displayValue || '';
+        input.placeholder = 'auto';
+        input.style.color = displayIsOverride ? '#f5b942' : '#666';
+        // Reset button shows when the CURRENT scope has an override to clear.
+        var currentScopeHasOverride = slideSelected ? !!perSlideOverride : !!diagramOverride;
+        if (resetBtn) resetBtn.style.display = currentScopeHasOverride ? 'inline-block' : 'none';
+        // Badge: when viewing a slide, show the diagram-global override if one exists,
+        // so the user knows there's still a fallback color at the diagram level.
+        if (badge) {
+            if (diagramOverride && slideSelected) {
+                badge.textContent = 'diagram override ' + diagramOverride;
+                badge.title = 'Diagram-level override (applies to slides without their own pick). Deselect the row to edit it.';
+                badge.style.display = 'inline-block';
+            } else {
+                badge.style.display = 'none';
+            }
         }
-        if (resetBtn) resetBtn.style.display = override ? 'inline-block' : 'none';
     }
     function toggleEyedropperMode() {
         var d = diagramsList[activeDiagramIdx];
@@ -6666,8 +7094,19 @@
                 return h.length === 1 ? '0' + h : h;
             }).join('');
             _setBgOverride(hex);
-            // One-shot sample — exit eyedropper after a successful pick.
-            if (diagramEyedropperMode) toggleEyedropperMode();
+            // Auto-advance: if a row is selected and there's a next box, jump to it
+            // and KEEP eyedropper active so the user can sample slide-after-slide.
+            // No next box → exit eyedropper as before.
+            var nextIdx = selectedBoxIdx + 1;
+            if (selectedBoxIdx >= 0 && nextIdx < diagramBoxes.length) {
+                setSelectedBox(nextIdx);
+                // setSelectedBox does not toggle eyedropper; keep current cell cursor.
+                var layer = document.getElementById('diagramsBoxLayer');
+                if (layer) layer.style.cursor = 'cell';
+                setStudioStatus('Slide ' + (nextIdx + 1) + ' — sample next pixel (Esc to stop)', '#f5b942');
+            } else {
+                if (diagramEyedropperMode) toggleEyedropperMode();
+            }
         } catch (err) {
             setStudioStatus('Could not sample pixel: ' + err.message, '#e07070');
         }
@@ -6688,20 +7127,39 @@
     function _setBgOverride(hex) {
         var d = diagramsList[activeDiagramIdx];
         if (!d) return;
-        d.bg_color_override = hex;
-        updateBgUI();
-        _apiPatch(d.id, { bg_color_override: hex })
-            .then(function() { setStudioStatus('BG color → ' + hex, '#4caf50'); })
-            .catch(function(err) { setStudioStatus('BG save failed: ' + err, '#e07070'); });
+        // Row selected → save on the box. Else → diagram-global override.
+        if (typeof selectedBoxIdx !== 'undefined' && selectedBoxIdx >= 0 &&
+            typeof diagramBoxes !== 'undefined' && diagramBoxes[selectedBoxIdx]) {
+            diagramBoxes[selectedBoxIdx].bg_color_override = hex;
+            updateBgUI();
+            _apiPatch(d.id, { boxes: diagramBoxes })
+                .then(function() { setStudioStatus('Slide ' + (selectedBoxIdx + 1) + ' bg → ' + hex, '#4caf50'); })
+                .catch(function(err) { setStudioStatus('BG save failed: ' + err, '#e07070'); });
+        } else {
+            d.bg_color_override = hex;
+            updateBgUI();
+            _apiPatch(d.id, { bg_color_override: hex })
+                .then(function() { setStudioStatus('Diagram bg → ' + hex, '#4caf50'); })
+                .catch(function(err) { setStudioStatus('BG save failed: ' + err, '#e07070'); });
+        }
     }
     function resetBgColor() {
         var d = diagramsList[activeDiagramIdx];
         if (!d) return;
-        d.bg_color_override = null;
-        updateBgUI();
-        _apiPatch(d.id, { bg_color_override: '' })
-            .then(function() { setStudioStatus('BG color → auto', '#4caf50'); })
-            .catch(function(err) { setStudioStatus('BG reset failed: ' + err, '#e07070'); });
+        if (typeof selectedBoxIdx !== 'undefined' && selectedBoxIdx >= 0 &&
+            typeof diagramBoxes !== 'undefined' && diagramBoxes[selectedBoxIdx]) {
+            delete diagramBoxes[selectedBoxIdx].bg_color_override;
+            updateBgUI();
+            _apiPatch(d.id, { boxes: diagramBoxes })
+                .then(function() { setStudioStatus('Slide ' + (selectedBoxIdx + 1) + ' bg → auto', '#4caf50'); })
+                .catch(function(err) { setStudioStatus('BG reset failed: ' + err, '#e07070'); });
+        } else {
+            d.bg_color_override = null;
+            updateBgUI();
+            _apiPatch(d.id, { bg_color_override: '' })
+                .then(function() { setStudioStatus('Diagram bg → auto', '#4caf50'); })
+                .catch(function(err) { setStudioStatus('BG reset failed: ' + err, '#e07070'); });
+        }
     }
 
     // ---- lasso (polygon shape) mode ----
@@ -7302,6 +7760,7 @@
             if (typeof renderBoxAnimList === 'function') renderBoxAnimList();
         }
         if (typeof renderBoxes === 'function') renderBoxes();
+        if (typeof updateBgUI === 'function') updateBgUI();
     }
     // Pop-up action bar anchored under the currently-selected box. Single action:
     // enter Lasso mode targeting this box (rect → poly, or extend existing poly).
@@ -7540,6 +7999,12 @@
             if (selectedBoxIdx < 0) return;
             ev.preventDefault();
             applyAnimToSelected(KEY_TO_ANIM[kLower]);
+            return;
+        }
+        // B = toggle bg-pick eyedropper (per-slide when a row is selected).
+        if (kLower === 'b') {
+            ev.preventDefault();
+            toggleEyedropperMode();
             return;
         }
         if (diagramEyedropperMode && k === 'Escape') {
