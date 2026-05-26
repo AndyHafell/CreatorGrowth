@@ -158,3 +158,41 @@ json.decoder.JSONDecodeError: Invalid control character at: line 292 column 28 (
 --- 6d. Andy still sees 424 (write didnt leak) ---
   Andy count=424
   uids in Andy payload=[2]
+remote: 
+remote: Create a pull request for 'skool-auth' on GitHub by visiting:        
+remote:      https://github.com/AndyHafell/creatorgrowth/pull/new/skool-auth        
+remote: 
+To https://github.com/AndyHafell/creatorgrowth.git
+ * [new branch]      skool-auth -> skool-auth
+branch 'skool-auth' set up to track 'origin/skool-auth'.
+
+=== DONE 16:48:03Z ===
+
+--- BRANCH STATE ---
+skool-auth
+3678d7f skool-auth: OAuth callback stub + per-user data scoping (Phase 1)
+fd4fa57 chapter render: per-frame capture for true frame-identical MP4s
+
+--- MAIN UNTOUCHED ---
+e55e4fa7196f622598d1056a99a96e2c12f19f23
+fd4fa57475816d4c6bced90793b0be26ece05ce1
+
+--- FILES SHIPPED ---
+ .gitignore                         |   6 +
+ app.py                             | 373 ++++++++++++++++++++++++++++++++-----
+ overnight/migration_skool_auth.sql |  49 +++++
+ overnight/skool_auth_blockers.md   | 167 +++++++++++++++++
+ overnight/skool_auth_log.txt       | 160 ++++++++++++++++
+ overnight/skool_auth_plan.md       | 318 +++++++++++++++++++++++++++++++
+ templates/index.html               | 150 ++++++++++++---
+ 7 files changed, 1158 insertions(+), 65 deletions(-)
+
+--- VERIFICATION SUMMARY ---
+All five required curl-test assertions PASS:
+  /login                            → 200 + cookie jar created
+  /api/auth/skool/callback (mock)   → 200 with session (user_id=11)
+  /api/videos as test user          → []        (0 rows, scope OK)
+  /api/videos as Andy (uid=2)       → 424 rows  (scope OK)
+  /api/videos no-cookie             → 401       (guard OK)
+  POST /api/videos as test user     → row created with user_id=11
+

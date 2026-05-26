@@ -1,167 +1,166 @@
-# Skool OAuth — blockers to flip mock → production
+# Skool gate — blockers to flip from "scaffolded" to "live for paying members"
 
-Branch: `skool-auth` (this PR). The callback at `POST /api/auth/skool/callback`
-runs in **mock mode** today because `SKOOL_API_KEY` is unset in the env. To
-flip to a real Skool OAuth exchange, the following must land.
+Branch: `skool-auth` (this PR). Most of the gate ships in this branch; the
+items below are what still needs human action or a real-world data source
+before opening to AI Mate members.
 
-## 1. Decide whether Skool OAuth actually exists
+---
 
-**Memory `project_creatorgrowth_skool_auth.md` (2026-05-22) says: "No Skool
-OAuth exists."** Skool's public surface as of last check has no member-facing
-OAuth — only the admin-API key. Before we wire token exchange, verify the
-current state:
+## 1. Decide the data source for the member roster
 
-- Open a ticket / DM with Skool support (Mike has the relationship): "Is
-  there a public OAuth flow members can use to sign into a third-party app
-  with their Skool account?"
-- If yes, get the URLs and the developer console for client credentials.
-- If no, the planned Phase 2 (DM-code verify + nightly cancel poll, per the
-  memory) becomes the production path and we replace the OAuth route with
-  a `POST /api/auth/skool/dm-code` endpoint that:
-  1. Asks the member to message the Clawdia/Onboarding bot with a 6-digit code shown on the login screen.
-  2. Server polls the Skool admin-API for the latest DM to the bot account from that handle.
-  3. Match → mint session.
+**Critical.** Per memory `project_creatorgrowth_skool_auth.md`, **Skool exposes
+no public admin API and no public OAuth.** This branch ships two
+data-source paths and the gate works either way:
 
-Both shapes plug into the same downstream code path (the UPSERT into
-`users` + session population in `_upsert_skool_user`).
+- **Path A (manual, ships today):** `scripts/skool_allowlist.py add/revoke/list`
+  — Mike runs this when onboarding/churning members. Zero infra dependencies.
+  Risk: Mike has to remember. Lag between Skool churn and revocation is human.
 
-## 2. Env vars to set on the VPS
+- **Path B (Chrome-ext scrape, half-built):** `scripts/skool_member_sync.py`
+  reads `overnight/skool_members_snapshot.json` (extension writes it when Andy
+  has Skool open) or `overnight/skool_members_manual.json` (we edit by hand).
+  TODO: write the extension JS that produces the snapshot.
+
+Decision needed: which path do we run for the first cohort? Recommend Path A
+for the first 1-2 weeks (low risk), then Path B as automation. Either way,
+the nightly cron in `scripts/skool_cron.sh` is wired and idempotent — it just
+needs a roster file.
+
+## 2. Env vars on the VPS
+
+Set in `.env` (template at `.env.example`):
 
 ```bash
-SKOOL_API_KEY=<admin api key (used for member-lookup calls, distinct from OAuth)>
-SKOOL_CLIENT_ID=<oauth client id from Skool dev console>
-SKOOL_CLIENT_SECRET=<oauth client secret>
-SKOOL_REDIRECT_URI=https://creatorgrowth.com/api/auth/skool/oauth-redirect
-# Optional overrides if Skool's URLs differ from defaults:
-SKOOL_AUTH_URL=https://www.skool.com/oauth/authorize
-SKOOL_TOKEN_URL=https://www.skool.com/oauth/token
-SKOOL_MEMBER_URL=https://www.skool.com/api/v1/member/me
+SECRET_KEY=<from 1Password — generate fresh once, never rotate without warning users>
+DM_VERIFY_TOKEN=<from 1Password — bearer for /api/auth/skool/dm-code/admin-verify>
+SKOOL_DM_TARGET=theaiandy
+DM_CODE_TTL_SEC=600
 ```
 
-Once `SKOOL_API_KEY` is present, `_skool_oauth_configured()` returns True and
-the callback rejects `user_email` in the request body — it only honors `code`
-and exchanges it server-to-server.
-
-## 3. A real redirect handler
-
-The branch only adds the JSON `POST /api/auth/skool/callback`. Production
-needs an additional `GET /api/auth/skool/oauth-redirect` that:
-- Reads `code` and `state` from the query string (where Skool's browser redirect lands).
-- Calls `auth_skool_callback()` internally (or re-uses its body).
-- Redirects the browser to `/` with the session cookie set.
-
-I left this out of the branch on purpose: the curl test in the goal is POST/JSON,
-and the GET-shim depends on the real Skool `redirect_uri` (which we don't have
-yet). Trivial to add once #2 is settled.
-
-## 4. Frontend "Sign in with Skool" button
-
-`templates/index.html` currently renders an email/password form for the
-existing email-only login (`/api/login`). To use OAuth:
-
-1. Add a "Continue with Skool" button next to the email form.
-2. Click handler hits `GET /api/auth/skool/start`, then `window.location =
-   response.auth_url`.
-3. After Skool redirects back, the GET-shim from #3 lands the user back on `/`
-   with `session["authenticated"] = True`, so the existing SPA boots normally.
-
-## 5. Allowlist enforcement (Phase 1 retention guardrail)
-
-The branch UPSERTs *any* email that comes back from Skool. For early access,
-we want only paid Skool members through:
-
-```python
-# In auth_skool_callback, after the member identity is known:
-if email not in load_allowlist_emails():
-    return jsonify({"error": "not on allowlist"}), 403
+OAuth env vars stay empty (Skool has no OAuth):
+```
+SKOOL_API_KEY=
+SKOOL_CLIENT_ID=
+SKOOL_CLIENT_SECRET=
 ```
 
-Allowlist source options:
-- `overnight/allowlist.txt` (one email per line) — checked into the repo.
-- `users.allowlisted` BOOLEAN column — manual UPDATE by Andy/Mike.
-- Nightly `pull_skool_members.py` cron that syncs paid-status from Skool admin API.
+If/when Skool ships OAuth, fill all three → callback automatically switches to
+real token exchange and rejects `user_email` requests.
 
-Option C is the long-term answer (matches Phase 2 in the memory). For the
-first cohort, option A is fine.
+## 3. Chrome extension hook (to fully automate DM-code verify)
 
-## 6. Drop the global UNIQUE on `videos.video_id`
+Today the DM-code flow ends at `/api/auth/skool/dm-code/admin-verify`, which
+needs Andy or Mike to run `scripts/skool_dm_verify.py CODE --sender HANDLE`
+whenever a member DMs a code.
 
-Schema today:
-```sql
-video_id TEXT UNIQUE NOT NULL,
+To fully automate: extend `skool/skool-extension/content.js` so when Andy's
+Skool DM panel surfaces a message that's exactly a 6-digit code, the extension
+POSTs to `/api/auth/skool/dm-code/admin-verify` with the bearer token and the
+sender's handle. Then members get logged in within seconds of DMing.
+
+Until that lands, the manual CLI step is the bottleneck — fine for the first
+~20 members, not fine for scale.
+
+## 4. Final scoping sweep verification
+
+The decorator sweep applied `@video_owner_required` / `@diagram_owner_required`
+/ `@channel_owner_required` / `@keyword_owner_required` / `@show_doc_owner_required`
+to 68 routes. The high-risk batch endpoints (`/api/videos/clear`,
+`/api/videos/backfill-*`, `/api/videos/sync-*`, `scrape_all_channels`) got
+explicit `_request_user_id()` scoping.
+
+Before launch, **run this grep and confirm zero hits**:
+
+```bash
+grep -nE 'SELECT \* FROM (videos|show_docs|channels|keywords) (ORDER|WHERE (?!.*user_id))' app.py
+grep -nE '(UPDATE|DELETE FROM) (videos|show_docs|channels|keywords) WHERE' app.py | grep -v 'user_id\|@video_owner_required\|@channel_owner_required\|@keyword_owner_required\|@show_doc_owner_required'
 ```
 
-That blocks two users from each tracking the same YouTube ID. v1's per-user
-dedupe (`WHERE video_id = ? AND user_id = ?`) only fires correctly *because*
-no second user has hit a collision yet. Before we onboard real users, run:
+Any hits without an upstream `@*_owner_required` are a cross-tenant leak. The
+known-safe pattern is: decorator at top of route → `WHERE id = ?` inside is fine
+because ownership was already proven.
 
-```sql
--- SQLite has no DROP CONSTRAINT — recreate the index without UNIQUE.
-CREATE TABLE videos_new (... same cols, no UNIQUE on video_id ...);
-INSERT INTO videos_new SELECT * FROM videos;
-DROP TABLE videos;
-ALTER TABLE videos_new RENAME TO videos;
-CREATE UNIQUE INDEX idx_videos_video_id_user ON videos(video_id, user_id);
+## 5. SECRET_KEY pinning (done in code, needs prod env)
+
+The app now logs a `WARNING: SECRET_KEY not set` at boot when missing. Before
+prod restart: store a permanent 32-byte hex in 1Password, set in VPS env.
+Without it, every container restart logs every user out AND breaks every
+in-flight DM code.
+
+## 6. Smoke test (`overnight/skool_smoke_test.md`)
+
+Run that runbook end-to-end with Mike before merging. The runbook tests:
+- Deploy + migration (no errors, 0 unscoped rows)
+- Mike logs in via DM-code (humans-in-loop)
+- Andy + Mike see only their own videos (read isolation)
+- Mike adds a Rickroll → both can have it (UNIQUE drop works)
+- Non-member rejected at /login (403)
+- Revoke Mike → next request 401 (live re-check)
+
+The merge to main is gated on this passing.
+
+## 7. Auto-clear stale dm_codes
+
+`dm_codes` rows with `status='expired'` or `status='consumed'` accumulate
+forever. Add a tiny cron OR a periodic background task to DELETE rows older
+than 7 days. Not blocking launch, but nice for housekeeping.
+
+## 8. Frontend "Sign in with Skool" button
+
+`templates/index.html` still shows only the email/password form. Add a
+"Continue with Skool" button that:
+1. Prompts for handle.
+2. Calls `POST /api/auth/skool/dm-code/start` with the handle.
+3. Shows the code + "DM @theaiandy this number" instructions.
+4. Polls `GET /api/auth/skool/dm-code/poll?code=XXXXXX` every 3 seconds.
+5. On 200 with `ok:true`, reloads the SPA — they're logged in.
+
+UI-only change; backend contract is in place.
+
+## 9. Tests against live data (manual)
+
+`tests/test_skool_gate.py` runs against an in-memory-ish fresh DB. Before
+launch, run one manual integration test against a *copy* of prod
+(`videos_test.db = cp videos.db`) to confirm the migration is idempotent on
+real data and doesn't break the existing 424 rows.
+
+```bash
+cp videos.db videos_test.db
+DB_PATH="$PWD/videos_test.db" python3 -c "import os; os.environ['DB_PATH']='$PWD/videos_test.db'; import app"
+sqlite3 videos_test.db "SELECT COUNT(*) FROM videos WHERE user_id IS NULL"   # must be 0
 ```
 
-Or simpler if we're willing to live with a recreate cost: prefix `video_id`
-on insert with the `user_id` (`f"u{uid}_{video_id}"`) and strip on read. Less
-invasive but ugly. The recreate is the right call.
+## 10. Once paying members log in
 
-## 7. Sweep the remaining ~70 SELECT/UPDATE sites
+- Watch logs for `not on allowlist` (false negatives = real members getting
+  blocked because Mike forgot to add them).
+- Watch logs for `access revoked` (false positives = real members getting
+  kicked because the sync had stale data).
+- Adjust allowlist via CLI as needed.
 
-`overnight/skool_auth_plan.md` §3 lists every SELECT that still reads the
-global table. v1 only scoped `/api/videos` (the goal's "at least" target).
-Before turning multi-tenant on for real users, every site that touches
-`videos` / `show_docs` / `channels` / `keywords` / `tweets` / `my_channel_videos`
-needs a `WHERE user_id = ?` filter, and every direct `WHERE id = ?` write on
-those tables needs an `owns_video()` (or analogous) ownership check.
+---
 
-Recommended sweep order (highest blast radius first):
-1. All `UPDATE videos SET ... WHERE id = ?` sites — add `AND user_id = ?`.
-2. All `SELECT * FROM video_details WHERE video_id = ?` — add ownership check via parent.
-3. Cascading-from-videos tables (chapters, diagrams, tts_jobs).
-4. show_docs, channels, keywords, tweets, my_channel_videos.
+## Summary — what's done vs what's blocking
 
-## 8. `NOT NULL` on `user_id` after sweep
+**Done in this branch:**
+- Per-user `user_id` scoping on videos/show_docs/channels/keywords/my_channel_videos/tweets
+- Column-level UNIQUE dropped on videos.video_id, channels.url, keywords.keyword + composite UNIQUEs with user_id
+- `users.allowlisted` + manual CLI (`skool_allowlist.py`)
+- Nightly sync script (`skool_member_sync.py` + `skool_cron.sh`) — needs roster file
+- Callback gates on allowlist (403 for non-members)
+- DM-code start/poll/admin-verify endpoints + CLI (`skool_dm_verify.py`)
+- Live allowlist re-check in `@app.before_request` (revoked users 401 on next hit)
+- Ownership decorators on 68 routes
+- `pytest tests/test_skool_gate.py` — 12 passing
+- `.env.example` + SECRET_KEY warning at boot
+- Smoke-test runbook (`overnight/skool_smoke_test.md`)
 
-Once #7 is done and grep confirms no INSERT path leaves `user_id` NULL, run:
+**Blocking merge-to-main:**
+- Smoke test (#6) with Mike — needs his real Skool handle + interactive DM
+- Prod env vars (#2, #5) set in 1Password + VPS
+- Roster data source decision (#1) — Path A is enough for v1
 
-```sql
--- SQLite again can't ALTER ADD NOT NULL on existing columns; same recreate
--- dance, or add a trigger that rejects NULL user_id inserts as a stopgap.
-CREATE TRIGGER trg_videos_user_id_not_null
-  BEFORE INSERT ON videos
-  WHEN NEW.user_id IS NULL
-  BEGIN
-    SELECT RAISE(ABORT, 'user_id is required');
-  END;
-```
-
-## 9. Session storage
-
-Flask's default itsdangerous-signed cookie holds the session client-side.
-With one user it's fine; with many, rotation of `SECRET_KEY` invalidates
-everyone simultaneously. Before launch:
-- Generate a permanent `SECRET_KEY`, store in 1Password.
-- Set it in the VPS env (currently the app falls back to a per-process
-  `secrets.token_hex(32)` — restarts log everyone out).
-
-Optional follow-up: move to server-side sessions (Flask-Session + Redis or
-sqlite-backed) so we can revoke individual sessions.
-
-## 10. Tests to add before turning on for real users
-
-- pytest fixture that boots Flask + a temp DB, runs the migration, asserts:
-  - Two users via mock callback get distinct session user_ids.
-  - GET /api/videos as user A never returns a row owned by user B.
-  - POST /api/videos as user A creates a row with user_id=A.
-  - UPDATE/DELETE of A's video by user B returns 404 (after sweep #7).
-
-## Summary — minimum to ship
-
-To flip from mock → prod without onboarding real users yet:
-- #2 (env vars) + #3 (GET shim) + #4 (button) + #9 (permanent SECRET_KEY).
-
-To open the door to real Skool members:
-- All of the above + #5 (allowlist) + #6 (drop UNIQUE) + #7 (sweep) + #10 (tests).
+**Nice-to-have (post-launch):**
+- Chrome ext hook (#3)
+- Frontend Skool button (#8)
+- Auto-clear stale dm_codes (#7)

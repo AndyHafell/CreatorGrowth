@@ -6,3 +6,6 @@ videos_test.db-journal
 videos_test.db-wal
 videos_test.db-shm
 overnight/_selects_raw.txt
+overnight/skool_members_manual.json
+overnight/skool_members_snapshot.json
+.env
