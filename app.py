@@ -1284,6 +1284,8 @@ def auth_dm_code_admin_verify():
 ADMIN_LOGIN_PASSWORD = os.environ.get("ADMIN_LOGIN_PASSWORD", "").strip()
 LOGIN_CODE_TTL_SEC = int(os.environ.get("LOGIN_CODE_TTL_SEC", "600"))
 SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
+RESEND_FROM = os.environ.get("RESEND_FROM", "CreatorGrowth <login@creatorgrowth.com>").strip()
 
 
 def _mint_login_code(conn, email: str) -> str:
@@ -1299,18 +1301,67 @@ def _mint_login_code(conn, email: str) -> str:
 
 
 def _send_login_email(email: str, code: str) -> bool:
-    """Send the login code to the user. Currently a stub:
-    - Always logs the code to stderr (dev convenience + audit trail).
-    - If SMTP_HOST is configured, would send via SMTP (hook for later).
-    Returns True if sent (or stubbed); False on hard failure."""
+    """Send a 6-digit login code to `email`. Provider order:
+      1. Resend HTTP API (if RESEND_API_KEY set) — production path.
+      2. stderr log only — dev fallback when nothing's configured.
+    Always returns True for the dev fallback (caller treats as 'sent').
+    Returns False only when a configured provider explicitly fails."""
+    # Always log to stderr — provides an audit trail + dev convenience.
     print(f"[login-code] email={email} code={code}  "
-          f"(SMTP {'configured' if SMTP_HOST else 'not configured — code visible in logs only'})",
+          f"(provider={'resend' if RESEND_API_KEY else 'stderr-only'})",
           file=sys.stderr, flush=True)
-    if not SMTP_HOST:
-        return True  # dev mode: stub is "sent"
-    # TODO: real SMTP send when SMTP_HOST/SMTP_USER/SMTP_PASS are set.
-    # Keeping this as a placeholder; current callers don't depend on it yet.
-    return True
+
+    if not RESEND_API_KEY:
+        return True  # dev mode: log is "sent"
+
+    import urllib.request
+    import urllib.error
+    payload = json.dumps({
+        "from": RESEND_FROM,
+        "to": [email],
+        "subject": f"Your CreatorGrowth login code: {code}",
+        "text": (
+            f"Your CreatorGrowth login code is:\n\n"
+            f"    {code}\n\n"
+            f"This code expires in {LOGIN_CODE_TTL_SEC // 60} minutes. "
+            f"If you didn't request this, you can ignore the email."
+        ),
+        "html": (
+            f"<p>Your CreatorGrowth login code is:</p>"
+            f"<p style=\"font-family:monospace;font-size:28px;letter-spacing:6px;"
+            f"background:#f4f4f4;padding:16px 20px;border-radius:8px;display:inline-block\">"
+            f"{code}</p>"
+            f"<p style=\"color:#666;font-size:13px\">This code expires in "
+            f"{LOGIN_CODE_TTL_SEC // 60} minutes. If you didn't request this, "
+            f"you can ignore the email.</p>"
+        ),
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            ok = 200 <= resp.status < 300
+            if not ok:
+                print(f"[login-code] resend non-2xx: {resp.status}", file=sys.stderr, flush=True)
+            return ok
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        print(f"[login-code] resend HTTPError {e.code}: {body}", file=sys.stderr, flush=True)
+        return False
+    except Exception as e:
+        print(f"[login-code] resend error: {e}", file=sys.stderr, flush=True)
+        return False
 
 
 @app.route("/api/auth/skool/request-code", methods=["POST"])
