@@ -1148,8 +1148,18 @@ def require_auth():
         return None
     if not session.get("authenticated"):
         return jsonify({"error": "Unauthorized"}), 401
-    # Live allowlist re-check — cancelled member's session dies on next request.
+    # Stale-session check: pre-deploy cookies passed `authenticated=True` but
+    # don't carry a `user_id`. Without a user_id the data-scoping queries all
+    # return empty (matching `WHERE user_id = NULL` matches nothing) and the
+    # tabs render as 0. Force such sessions to re-login via the new typeahead.
     uid = session.get("user_id")
+    if uid is None:
+        session.clear()
+        return jsonify({
+            "error": "stale session",
+            "detail": "Please sign in again via the new Skool handle flow.",
+        }), 401
+    # Live allowlist re-check — cancelled member's session dies on next request.
     if uid is not None:
         conn = get_db()
         try:
