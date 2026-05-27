@@ -616,6 +616,28 @@ def migrate_schema():
     except sqlite3.OperationalError:
         pass
 
+    # ── Uploads (S3-backed object metadata) ──
+    # Browser uploads via presigned PUT direct to S3 (bypasses VPS for big files).
+    # We only store the metadata row (owner, key, size, kind).
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS uploads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id),
+                key TEXT NOT NULL UNIQUE,
+                original_filename TEXT,
+                kind TEXT,                      -- 'feedback_video' | 'thumbnail' | 'attachment' | 'generic'
+                content_type TEXT,
+                size_bytes INTEGER,
+                uploaded INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                finalized_at TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_uploads_user_id ON uploads(user_id)")
+    except sqlite3.OperationalError:
+        pass
+
     # ── Login codes (email-based magic-link/code auth) ──
     # Email enters /request-code → 6-digit code stored here → user submits code
     # to /activate → status flips to 'consumed' and they get a session.
@@ -1442,6 +1464,176 @@ def admin_paid_members():
         return jsonify({"ok": True, "email": email})
     finally:
         conn.close()
+
+
+# ── S3 presigned uploads ──────────────────────────────────────────────
+#
+# Big files (3GB feedback videos, thumbnails, attachments) go to S3 not to
+# the VPS. Cloudflare's free tier 100MB POST cap makes uploads through CG
+# impossible anyway; presigned PUT URLs let the browser talk directly to S3.
+#
+# Flow:
+#   1. POST /api/uploads/presign {filename, kind?, content_type?}
+#      → 200 { upload_id, key, upload_url, expires_in }
+#   2. Browser does PUT upload_url with the file bytes (CORS on the bucket).
+#   3. POST /api/uploads/<id>/finalize {size_bytes?}
+#      → marks the row as uploaded so list/download knows it's real.
+#   4. GET  /api/uploads/<id>/download → 1h presigned GET URL.
+#   5. DELETE /api/uploads/<id> → removes from S3 and DB.
+#
+# Keys: creatorgrowth/uploads/u<uid>/<uuid>_<safe_filename>
+# Bucket: env S3_BUCKET (shared with the rest of Andy's AWS stuff).
+
+S3_BUCKET = os.environ.get("S3_BUCKET", "").strip()
+AWS_REGION_DEFAULT = os.environ.get("AWS_REGION", "us-east-2").strip()
+
+
+def _s3_client():
+    """Lazy boto3 client. Importing here keeps boto3 optional in dev/tests."""
+    import boto3
+    return boto3.client("s3", region_name=AWS_REGION_DEFAULT)
+
+
+def _safe_filename(name: str) -> str:
+    base = name.split("/")[-1].split("\\")[-1]
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:200]
+    return safe or "upload.bin"
+
+
+@app.route("/api/uploads/presign", methods=["POST"])
+def uploads_presign():
+    if not S3_BUCKET:
+        return jsonify({"error": "S3 not configured on server"}), 503
+    uid = current_user_id()
+    data = request.get_json(force=True, silent=True) or {}
+    filename = (data.get("filename") or "").strip()
+    kind = (data.get("kind") or "generic").strip()[:32]
+    content_type = (data.get("content_type") or "application/octet-stream").strip()[:128]
+    if not filename:
+        return jsonify({"error": "filename required"}), 400
+    safe_name = _safe_filename(filename)
+    import uuid as _uuid
+    key = f"creatorgrowth/uploads/u{uid}/{_uuid.uuid4().hex}_{safe_name}"
+    try:
+        url = _s3_client().generate_presigned_url(
+            "put_object",
+            Params={"Bucket": S3_BUCKET, "Key": key, "ContentType": content_type},
+            ExpiresIn=900,
+            HttpMethod="PUT",
+        )
+    except Exception as e:
+        return jsonify({"error": "S3 sign failed", "detail": str(e)}), 502
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO uploads (user_id, key, original_filename, kind, content_type) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (uid, key, safe_name, kind, content_type),
+        )
+        conn.commit()
+        upload_id = conn.execute(
+            "SELECT id FROM uploads WHERE key = ?", (key,)
+        ).fetchone()["id"]
+    finally:
+        conn.close()
+    return jsonify({
+        "ok": True,
+        "upload_id": upload_id,
+        "key": key,
+        "upload_url": url,
+        "expires_in": 900,
+    })
+
+
+@app.route("/api/uploads/<int:upload_id>/finalize", methods=["POST"])
+def uploads_finalize(upload_id):
+    uid = current_user_id()
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        size_bytes = int(data.get("size_bytes") or 0)
+    except (TypeError, ValueError):
+        size_bytes = 0
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT user_id FROM uploads WHERE id = ?", (upload_id,)
+        ).fetchone()
+        if row is None or row["user_id"] != uid:
+            return jsonify({"error": "Not found"}), 404
+        conn.execute(
+            "UPDATE uploads SET uploaded = 1, size_bytes = ?, "
+            "finalized_at = datetime('now') WHERE id = ?",
+            (size_bytes, upload_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/uploads", methods=["GET"])
+def uploads_list():
+    uid = current_user_id()
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, original_filename, kind, content_type, size_bytes, "
+            "uploaded, created_at, finalized_at FROM uploads "
+            "WHERE user_id = ? ORDER BY created_at DESC LIMIT 200",
+            (uid,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/uploads/<int:upload_id>/download", methods=["GET"])
+def uploads_download(upload_id):
+    if not S3_BUCKET:
+        return jsonify({"error": "S3 not configured on server"}), 503
+    uid = current_user_id()
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT user_id, key FROM uploads WHERE id = ?", (upload_id,)
+        ).fetchone()
+        if row is None or row["user_id"] != uid:
+            return jsonify({"error": "Not found"}), 404
+        key = row["key"]
+    finally:
+        conn.close()
+    try:
+        url = _s3_client().generate_presigned_url(
+            "get_object",
+            Params={"Bucket": S3_BUCKET, "Key": key},
+            ExpiresIn=3600,
+        )
+    except Exception as e:
+        return jsonify({"error": "S3 sign failed", "detail": str(e)}), 502
+    return jsonify({"ok": True, "download_url": url, "expires_in": 3600})
+
+
+@app.route("/api/uploads/<int:upload_id>", methods=["DELETE"])
+def uploads_delete(upload_id):
+    uid = current_user_id()
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT user_id, key FROM uploads WHERE id = ?", (upload_id,)
+        ).fetchone()
+        if row is None or row["user_id"] != uid:
+            return jsonify({"error": "Not found"}), 404
+        key = row["key"]
+        if S3_BUCKET:
+            try:
+                _s3_client().delete_object(Bucket=S3_BUCKET, Key=key)
+            except Exception:
+                pass
+        conn.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
 
 
 @app.before_request
