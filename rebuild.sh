@@ -1,5 +1,8 @@
 #!/bin/bash
-# Safe rebuild: commits current state before rebuilding the container.
+# Safe rebuild: commits current code state before rebuilding the container.
+# Live DBs (videos.db, ideas.db, dashboard.db) are excluded via .gitignore so
+# `git reset --hard` during deploys can't clobber prod data with a stale copy.
+#
 # Usage: ./rebuild.sh [optional commit message]
 
 set -e
@@ -7,7 +10,7 @@ cd /opt/idea_dashboard
 
 MSG="${1:-auto-save before rebuild}"
 
-# Commit any changes
+# Commit code changes only — never the live DB files.
 if [ -n "$(git status --porcelain)" ]; then
     git add -A
     git commit -m "$MSG"
