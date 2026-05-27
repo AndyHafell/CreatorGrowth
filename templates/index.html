@@ -258,6 +258,68 @@
         }
         .profile-menu-item:hover { background: #2a2a2a; color: #fff; }
 
+        .settings-overlay {
+            position: fixed; inset: 0;
+            background: rgba(0,0,0,0.65);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+        }
+        .settings-overlay.open { display: flex; }
+        .settings-card {
+            background: #161616;
+            border: 1px solid #2a2a2a;
+            border-radius: 12px;
+            min-width: 420px;
+            max-width: 520px;
+            padding: 24px;
+            box-shadow: 0 24px 60px rgba(0,0,0,0.6);
+        }
+        .settings-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        .settings-header h3 { margin: 0; color: #fff; font-size: 18px; font-weight: 600; }
+        .settings-close {
+            background: transparent;
+            border: none;
+            color: #888;
+            font-size: 22px;
+            cursor: pointer;
+            padding: 0 6px;
+        }
+        .settings-close:hover { color: #fff; }
+        .settings-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 0;
+            border-bottom: 1px solid #232323;
+        }
+        .settings-row:last-child { border-bottom: none; }
+        .settings-row-label {
+            color: #ddd;
+            font-size: 14px;
+        }
+        .settings-row-sub {
+            color: #888;
+            font-size: 12px;
+            margin-top: 2px;
+        }
+        .settings-row-action {
+            background: #272727;
+            color: #aaa;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 12px;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+
         /* ---- Tabs (YouTube chip style) ---- */
         .tabs-bar {
             max-width: 1800px;
@@ -1812,6 +1874,29 @@
         </div>
     </div>
 
+    <!-- Settings Modal -->
+    <div class="settings-overlay" id="settingsOverlay" onclick="if (event.target === this) closeSettings()">
+        <div class="settings-card">
+            <div class="settings-header">
+                <h3>Settings</h3>
+                <button class="settings-close" onclick="closeSettings()" title="Close">×</button>
+            </div>
+            <div class="settings-row">
+                <div>
+                    <div class="settings-row-label">Profile picture</div>
+                    <div class="settings-row-sub">Upload a custom avatar for your account.</div>
+                </div>
+                <button class="settings-row-action" disabled>Coming soon</button>
+            </div>
+            <div class="settings-row">
+                <div>
+                    <div class="settings-row-label">Email</div>
+                    <div class="settings-row-sub" id="settingsEmail">…</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="header">
         <div class="logo">
             <img src="/static/logo.png" alt="Creator Growth">
@@ -1833,6 +1918,7 @@
                 </button>
                 <div class="profile-menu" id="profileMenu">
                     <div class="profile-menu-email" id="profileMenuEmail">…</div>
+                    <button class="profile-menu-item" onclick="openSettings()">Settings</button>
                     <button class="profile-menu-item" onclick="signOut()">Sign out</button>
                 </div>
             </div>
@@ -5537,6 +5623,18 @@
             } catch (e) { /* still reload to drop session client-side */ }
             window.location.href = '/';
         }
+        function openSettings() {
+            document.getElementById('profileMenu').classList.remove('open');
+            const email = document.getElementById('profileMenuEmail').textContent;
+            document.getElementById('settingsEmail').textContent = email || '';
+            document.getElementById('settingsOverlay').classList.add('open');
+        }
+        function closeSettings() {
+            document.getElementById('settingsOverlay').classList.remove('open');
+        }
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Escape') closeSettings();
+        });
         // Close menu on outside click
         document.addEventListener('click', e => {
             const wrap = document.getElementById('profileWrap');
