@@ -28,6 +28,7 @@ def app_module(tmp_path, monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "pytest-secret-key")
     monkeypatch.setenv("DM_VERIFY_TOKEN", "pytest-dm-token")
     monkeypatch.setenv("PAID_WEBHOOK_TOKEN", "pytest-paid-token")
+    monkeypatch.setenv("ADMIN_LOGIN_PASSWORD", "admin")
     # Clear any prior import so module-level init runs fresh against this DB.
     for mod in [m for m in list(sys.modules) if m == "app"]:
         del sys.modules[mod]

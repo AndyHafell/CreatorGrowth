@@ -1712,33 +1712,39 @@
         <div class="auth-card">
             <img src="/static/logo.png" alt="Creator Growth">
             <h2>Creator Growth</h2>
-            <p id="authPrompt">Type your name and click yourself in the list</p>
+            <p id="authPrompt">Enter your Skool email to get started</p>
             <div class="auth-error" id="authError"></div>
 
-            <!-- Step 1: name typeahead → click to pick -->
-            <div id="authStepHandle">
-                <input type="text" class="auth-input" id="authName"
-                       placeholder="Your name"
-                       autocomplete="off"
+            <!-- Step 1: email → send code -->
+            <div id="authStepEmail">
+                <input type="email" class="auth-input" id="authEmail"
+                       placeholder="you@example.com"
+                       autocomplete="email"
                        spellcheck="false"
                        autocapitalize="off">
-                <div id="authResults" style="margin: 8px 0; max-height: 240px; overflow-y: auto;"></div>
-                <div id="authResultsEmpty" style="display:none; font-size:12px; color:#888; text-align:center; padding:12px 0;">
-                    No matching members. Ask Mike to add you to AI Mate.
-                </div>
+                <button class="auth-btn" id="authSendBtn" onclick="requestLoginCode()" style="margin-top: 8px; width: 100%;">Send code</button>
             </div>
 
-            <!-- Step 2: code shown, waiting for DM -->
+            <!-- Step 2: code field → verify -->
             <div id="authStepCode" style="display:none;">
-                <div style="font-size: 13px; color: #aaa; margin-bottom: 8px;">Signing in as <strong id="authPickedName"></strong>. DM this code to <strong id="authDmTarget">@theaiandy</strong> on Skool:</div>
-                <div id="authCodeDisplay" style="font-family: monospace; font-size: 36px; letter-spacing: 8px; text-align: center; background: #1a1a1a; padding: 16px; border-radius: 8px; margin: 12px 0; color: #FFD700;"></div>
-                <div id="authCodeStatus" style="font-size: 12px; color: #888; text-align: center; min-height: 16px;">Waiting for verification…</div>
-                <button class="auth-btn" id="authBackBtn" style="background:#333; margin-top: 8px;" onclick="resetAuthForm()">← Back</button>
+                <div style="font-size: 13px; color: #aaa; margin-bottom: 12px;">
+                    Code sent to <strong id="authSentEmail"></strong>.
+                    Check your inbox and paste the 6-digit code below.
+                </div>
+                <input type="text" class="auth-input" id="authCodeInput"
+                       placeholder="6-digit code"
+                       autocomplete="one-time-code"
+                       inputmode="numeric"
+                       maxlength="20"
+                       spellcheck="false">
+                <button class="auth-btn" id="authVerifyBtn" onclick="verifyLoginCode()" style="margin-top: 8px; width: 100%;">Verify</button>
+                <button class="auth-btn" id="authBackBtn" style="background:#333; margin-top: 8px; width: 100%;" onclick="resetAuthForm()">← Use a different email</button>
+                <div id="authCodeStatus" style="font-size: 12px; color: #888; text-align: center; min-height: 16px; margin-top: 10px;"></div>
             </div>
 
             <div class="auth-divider"></div>
             <div class="auth-cta">
-                Don't have access? <a href="https://skool.com/Ai-mate" target="_blank">Join the free community</a>
+                Don't have access? <a href="https://skool.com/Ai-mate" target="_blank">Join AI Mate</a>
             </div>
         </div>
     </div>
@@ -5326,130 +5332,116 @@
             btn.textContent = 'Import from Airtable';
         }
 
-        // ── Auth: Skool name typeahead → click → DM-code ─────
-        let authPollTimer = null;
-        let authSearchTimer = null;
-        let authSearchAbort = null;
-
-        function renderAuthResults(rows) {
-            const listEl = document.getElementById('authResults');
-            const emptyEl = document.getElementById('authResultsEmpty');
-            listEl.innerHTML = '';
-            if (!rows || !rows.length) {
-                emptyEl.style.display = 'block';
-                return;
-            }
-            emptyEl.style.display = 'none';
-            rows.forEach(row => {
-                const btn = document.createElement('button');
-                btn.style.cssText = 'display:flex; justify-content:space-between; align-items:center; width:100%; text-align:left; padding:10px 14px; margin:3px 0; background:#1a1a1a; color:#ddd; border:1px solid #2a2a2a; border-radius:6px; cursor:pointer; font-size:14px;';
-                btn.onmouseover = () => btn.style.background = '#262626';
-                btn.onmouseout  = () => btn.style.background = '#1a1a1a';
-                const nameSpan = document.createElement('span');
-                nameSpan.textContent = row.name;
-                nameSpan.style.fontWeight = '500';
-                const handleSpan = document.createElement('span');
-                handleSpan.textContent = '@' + row.handle;
-                handleSpan.style.cssText = 'color:#888; font-size:12px;';
-                btn.appendChild(nameSpan);
-                btn.appendChild(handleSpan);
-                btn.onclick = () => pickAuthMember(row);
-                listEl.appendChild(btn);
-            });
-        }
-
-        async function runAuthSearch(q) {
-            if (authSearchAbort) { authSearchAbort.abort(); }
-            authSearchAbort = new AbortController();
-            try {
-                const url = '/api/auth/skool/search' + (q ? ('?q=' + encodeURIComponent(q)) : '');
-                const res = await fetch(url, { signal: authSearchAbort.signal });
-                if (!res.ok) return;
-                renderAuthResults(await res.json());
-            } catch (e) {
-                if (e.name !== 'AbortError') {
-                    document.getElementById('authError').textContent = 'Connection error';
-                }
-            }
-        }
+        // ── Auth: email → 6-digit code (or admin override) ─────
+        let authPendingEmail = null;
 
         function resetAuthForm() {
-            if (authPollTimer) { clearInterval(authPollTimer); authPollTimer = null; }
-            document.getElementById('authStepHandle').style.display = '';
+            authPendingEmail = null;
+            document.getElementById('authStepEmail').style.display = '';
             document.getElementById('authStepCode').style.display = 'none';
             document.getElementById('authError').textContent = '';
-            document.getElementById('authPrompt').textContent = 'Type your name and click yourself in the list';
-            document.getElementById('authName').value = '';
-            runAuthSearch('');
-            document.getElementById('authName').focus();
+            document.getElementById('authPrompt').textContent = 'Enter your Skool email to get started';
+            document.getElementById('authEmail').value = '';
+            document.getElementById('authCodeInput').value = '';
+            document.getElementById('authCodeStatus').textContent = '';
+            document.getElementById('authCodeStatus').style.color = '#888';
+            document.getElementById('authSendBtn').disabled = false;
+            document.getElementById('authSendBtn').textContent = 'Send code';
+            document.getElementById('authEmail').focus();
         }
 
-        async function pickAuthMember(row) {
+        async function requestLoginCode() {
             const errEl = document.getElementById('authError');
+            const sendBtn = document.getElementById('authSendBtn');
             errEl.textContent = '';
+            const email = document.getElementById('authEmail').value.trim().toLowerCase();
+            if (!email || !email.includes('@') || !email.includes('.')) {
+                errEl.textContent = 'Please enter a valid email address';
+                return;
+            }
+            sendBtn.disabled = true;
+            sendBtn.textContent = 'Sending…';
             try {
-                const res = await fetch('/api/auth/skool/dm-code/start', {
+                const res = await fetch('/api/auth/skool/request-code', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ handle: row.handle })
+                    body: JSON.stringify({ email })
                 });
                 const data = await res.json();
                 if (!res.ok) {
-                    errEl.textContent = data.detail || data.error || 'Could not start login';
+                    errEl.textContent = data.detail || data.error || 'Could not send code';
+                    sendBtn.disabled = false;
+                    sendBtn.textContent = 'Send code';
                     return;
                 }
-                document.getElementById('authStepHandle').style.display = 'none';
+                authPendingEmail = email;
+                document.getElementById('authStepEmail').style.display = 'none';
                 document.getElementById('authStepCode').style.display = '';
-                document.getElementById('authCodeDisplay').textContent = data.code;
-                document.getElementById('authDmTarget').textContent = '@' + (data.dm_target || 'theaiandy');
-                document.getElementById('authPickedName').textContent = row.name;
-                document.getElementById('authPrompt').textContent = 'Almost there — DM the code below';
-                pollForVerify(data.code);
+                document.getElementById('authSentEmail').textContent = email;
+                document.getElementById('authPrompt').textContent = 'Check your inbox';
+                if (data.throttled) {
+                    document.getElementById('authCodeStatus').textContent = data.detail || '';
+                }
+                document.getElementById('authCodeInput').focus();
             } catch (e) {
                 errEl.textContent = 'Connection error';
+                sendBtn.disabled = false;
+                sendBtn.textContent = 'Send code';
             }
         }
 
-        function pollForVerify(code) {
+        async function verifyLoginCode() {
+            const errEl = document.getElementById('authError');
             const statusEl = document.getElementById('authCodeStatus');
-            let attempts = 0;
-            if (authPollTimer) clearInterval(authPollTimer);
-            authPollTimer = setInterval(async () => {
-                attempts++;
-                try {
-                    const res = await fetch(`/api/auth/skool/dm-code/poll?code=${code}`);
-                    if (res.status === 410) {
-                        statusEl.textContent = 'Code expired — start over';
-                        statusEl.style.color = '#e55';
-                        clearInterval(authPollTimer); authPollTimer = null;
-                        return;
+            const verifyBtn = document.getElementById('authVerifyBtn');
+            errEl.textContent = '';
+            statusEl.textContent = '';
+            statusEl.style.color = '#888';
+            const code = document.getElementById('authCodeInput').value.trim();
+            if (!code) {
+                errEl.textContent = 'Enter the code from your email';
+                return;
+            }
+            if (!authPendingEmail) {
+                errEl.textContent = 'Session lost — please start over';
+                return;
+            }
+            verifyBtn.disabled = true;
+            verifyBtn.textContent = 'Verifying…';
+            try {
+                const res = await fetch('/api/auth/skool/activate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: authPendingEmail, code })
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                    errEl.textContent = data.detail || data.error || 'Code rejected';
+                    if (data.join_url) {
+                        errEl.innerHTML += ' <a href="' + data.join_url + '" target="_blank">Join AI Mate →</a>';
                     }
-                    if (!res.ok) return;
-                    const data = await res.json();
-                    if (data.ok && data.status === 'verified') {
-                        clearInterval(authPollTimer); authPollTimer = null;
-                        statusEl.textContent = 'Verified — loading…';
-                        statusEl.style.color = '#5e5';
-                        document.getElementById('authOverlay').classList.add('hidden');
-                        if (typeof loadVideos === 'function') loadVideos();
-                    } else if (data.status === 'pending') {
-                        statusEl.textContent = `Waiting for DM… (checked ${attempts}×)`;
-                    }
-                } catch (e) {
-                    statusEl.textContent = 'Connection error — retrying';
+                    verifyBtn.disabled = false;
+                    verifyBtn.textContent = 'Verify';
+                    return;
                 }
-            }, 3000);
+                statusEl.textContent = 'Signed in — loading…';
+                statusEl.style.color = '#5e5';
+                document.getElementById('authOverlay').classList.add('hidden');
+                if (typeof loadVideos === 'function') loadVideos();
+            } catch (e) {
+                errEl.textContent = 'Connection error';
+                verifyBtn.disabled = false;
+                verifyBtn.textContent = 'Verify';
+            }
         }
 
-        // Debounced search as user types
-        document.getElementById('authName').addEventListener('input', e => {
-            const q = e.target.value.trim();
-            if (authSearchTimer) clearTimeout(authSearchTimer);
-            authSearchTimer = setTimeout(() => runAuthSearch(q), 180);
+        // Enter-key handlers for both steps
+        document.getElementById('authEmail').addEventListener('keydown', e => {
+            if (e.key === 'Enter') { e.preventDefault(); requestLoginCode(); }
         });
-
-        // Render the first page of members the moment the modal is in view
-        runAuthSearch('');
+        document.getElementById('authCodeInput').addEventListener('keydown', e => {
+            if (e.key === 'Enter') { e.preventDefault(); verifyLoginCode(); }
+        });
     
         // --- Content Tab ---
         let contentCurrentPath = '';

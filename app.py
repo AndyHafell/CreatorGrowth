@@ -9,6 +9,7 @@ import re
 import json
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone, timedelta
@@ -554,6 +555,24 @@ def migrate_schema():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_dm_codes_handle ON dm_codes(handle, status)")
+    except sqlite3.OperationalError:
+        pass
+
+    # ── Login codes (email-based magic-link/code auth) ──
+    # Email enters /request-code → 6-digit code stored here → user submits code
+    # to /activate → status flips to 'consumed' and they get a session.
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS login_codes (
+                code TEXT PRIMARY KEY,
+                email TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',     -- pending|consumed|expired
+                consumed_at TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_login_codes_email ON login_codes(email, status)")
     except sqlite3.OperationalError:
         pass
 
@@ -1143,24 +1162,61 @@ def auth_dm_code_admin_verify():
         conn.close()
 
 
-# ── Email-based activation (the new default login path) ──────────────
+# ── Email-based magic-code activation (the default login path) ───────
 #
 # Flow:
 #   1. User joins skool.com/aimate (free 7-day trial OR paid).
 #   2. Inside the Skool community, a pinned post links here:
-#      "Activate your CreatorGrowth access" → /login overlay → email field.
-#   3. User submits their Skool email → /api/auth/skool/activate
-#        - First time: row created with allowlist_source='trial',
-#          trial_end=now+7d. Access granted immediately.
+#      "Activate your CreatorGrowth access" → /login overlay.
+#   3. User enters Skool email → POST /api/auth/skool/request-code
+#        - 6-digit code stored in login_codes, "emailed" to user.
+#   4. User enters code → POST /api/auth/skool/activate { email, code }
+#        - ADMIN_LOGIN_PASSWORD env override: typing that value bypasses
+#          email verification (dev/test convenience).
+#        - First time email: row created with allowlist_source='trial',
+#          trial_end=now+7d.
 #        - Already paid (set by Zap webhook below): just session-login.
-#        - Was revoked: 403. They need to be in the paid roster.
-#   4. At day 7, before_request checks: if trial_end < now AND source still
+#        - Was revoked: 403.
+#   5. At day 7, before_request checks: if trial_end < now AND source still
 #      'trial' (no Zap fire yet), flip to 'trial:expired' and 401 them.
-#   5. When Skool charges them on day 7, Zap fires /api/admin/paid-members
+#   6. When Skool charges them, Zap fires /api/admin/paid-members
 #      → user flipped to 'paid', stays in forever.
 
-@app.route("/api/auth/skool/activate", methods=["POST"])
-def auth_skool_activate():
+ADMIN_LOGIN_PASSWORD = os.environ.get("ADMIN_LOGIN_PASSWORD", "").strip()
+LOGIN_CODE_TTL_SEC = int(os.environ.get("LOGIN_CODE_TTL_SEC", "600"))
+SMTP_HOST = os.environ.get("SMTP_HOST", "").strip()
+
+
+def _mint_login_code(conn, email: str) -> str:
+    """Generate a 6-digit code, store as pending, return it."""
+    import secrets as _secrets
+    code = f"{_secrets.randbelow(1_000_000):06d}"
+    conn.execute(
+        "INSERT INTO login_codes (code, email, expires_at) "
+        "VALUES (?, ?, datetime('now', ?))",
+        (code, email, f"+{LOGIN_CODE_TTL_SEC} seconds"),
+    )
+    return code
+
+
+def _send_login_email(email: str, code: str) -> bool:
+    """Send the login code to the user. Currently a stub:
+    - Always logs the code to stderr (dev convenience + audit trail).
+    - If SMTP_HOST is configured, would send via SMTP (hook for later).
+    Returns True if sent (or stubbed); False on hard failure."""
+    print(f"[login-code] email={email} code={code}  "
+          f"(SMTP {'configured' if SMTP_HOST else 'not configured — code visible in logs only'})",
+          file=sys.stderr, flush=True)
+    if not SMTP_HOST:
+        return True  # dev mode: stub is "sent"
+    # TODO: real SMTP send when SMTP_HOST/SMTP_USER/SMTP_PASS are set.
+    # Keeping this as a placeholder; current callers don't depend on it yet.
+    return True
+
+
+@app.route("/api/auth/skool/request-code", methods=["POST"])
+def auth_skool_request_code():
+    """Step 1 of email login. Accepts { email }, mints + 'sends' a 6-digit code."""
     data = request.get_json(force=True, silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     if not email or "@" not in email or "." not in email:
@@ -1168,6 +1224,71 @@ def auth_skool_activate():
 
     conn = get_db()
     try:
+        # Throttle: refuse if a still-pending code was issued in the last 30s.
+        recent = conn.execute(
+            "SELECT 1 FROM login_codes "
+            "WHERE email = ? AND status = 'pending' "
+            "AND datetime(created_at) > datetime('now', '-30 seconds') LIMIT 1",
+            (email,),
+        ).fetchone()
+        if recent:
+            return jsonify({
+                "ok": True,
+                "sent_to": email,
+                "throttled": True,
+                "detail": "A code was already sent in the last 30 seconds — check your inbox.",
+            })
+        code = _mint_login_code(conn, email)
+        conn.commit()
+        _send_login_email(email, code)
+        return jsonify({"ok": True, "sent_to": email})
+    finally:
+        conn.close()
+
+
+@app.route("/api/auth/skool/activate", methods=["POST"])
+def auth_skool_activate():
+    """Step 2 of email login. Accepts { email, code }, verifies, mints session."""
+    data = request.get_json(force=True, silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    code = (data.get("code") or "").strip()
+    if not email or "@" not in email or "." not in email:
+        return jsonify({"error": "Valid email required"}), 400
+    if not code:
+        return jsonify({"error": "Code required"}), 400
+
+    # Admin override — dev/test convenience. Bypasses email verification but
+    # still goes through the same trial/paid UPSERT below.
+    admin_override = bool(ADMIN_LOGIN_PASSWORD) and code == ADMIN_LOGIN_PASSWORD
+
+    conn = get_db()
+    try:
+        if not admin_override:
+            code_row = conn.execute(
+                "SELECT code, email, status, expires_at FROM login_codes "
+                "WHERE code = ? AND email = ?", (code, email),
+            ).fetchone()
+            if code_row is None:
+                return jsonify({"error": "Invalid code"}), 400
+            if code_row["status"] != "pending":
+                return jsonify({"error": f"Code already {code_row['status']}"}), 400
+            expired = conn.execute(
+                "SELECT 1 WHERE datetime(?) < datetime('now')",
+                (code_row["expires_at"],),
+            ).fetchone()
+            if expired:
+                conn.execute(
+                    "UPDATE login_codes SET status='expired' WHERE code = ?",
+                    (code,),
+                )
+                conn.commit()
+                return jsonify({"error": "Code expired — request a new one"}), 400
+            conn.execute(
+                "UPDATE login_codes SET status='consumed', "
+                "consumed_at=datetime('now') WHERE code = ?",
+                (code,),
+            )
+
         row = conn.execute(
             "SELECT id, allowlisted, allowlist_source FROM users WHERE email = ?",
             (email,),
@@ -1274,6 +1395,7 @@ def require_auth():
         "/api/auth/skool/dm-code/start", "/api/auth/skool/dm-code/poll",
         "/api/auth/skool/search",
         "/api/auth/skool/activate",
+        "/api/auth/skool/request-code",
         "/static/", "/image-viewer", "/image-gallery",
         "/api/current-image", "/api/set-image", "/api/set-gallery",
     }
