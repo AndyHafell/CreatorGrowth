@@ -25,10 +25,22 @@ from functools import wraps
 from flask import Flask, render_template, request, jsonify, send_from_directory, session, redirect
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+_secret_from_env = os.environ.get("SECRET_KEY")
+if not _secret_from_env:
+    # Per-process random — fine for tests, BAD in prod (every restart logs
+    # everyone out and breaks pending DM codes). Surface a loud warning so
+    # this never slips into a deploy.
+    import sys as _sys
+    print(
+        "WARNING: SECRET_KEY not set in env. Using a per-process random. "
+        "Sessions will NOT survive restarts. Pin it in 1Password + the VPS env "
+        "before going to production (see .env.example).",
+        file=_sys.stderr,
+    )
+app.secret_key = _secret_from_env or secrets.token_hex(32)
 app.permanent_session_lifetime = timedelta(days=30)
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "contentmate2026")
-DB_PATH = Path(__file__).resolve().parent / "videos.db"
+DB_PATH = Path(os.environ.get("DB_PATH", str(Path(__file__).resolve().parent / "videos.db")))
 UPLOAD_DIR = Path(__file__).resolve().parent / "static" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 BLOTATO_API_KEY = os.environ.get("BLOTATO_API_KEY", "")
@@ -368,7 +380,275 @@ def init_db():
     conn.close()
 
 
+def _recreate_table_drop_unique(conn, table: str, marker: str, new_create_sql: str,
+                                col_list: list[str], extra_indexes: list[str] = ()):
+    """Generic table recreate that drops a column-level UNIQUE constraint.
+
+    `marker` is a substring the OLD CREATE TABLE contains and the NEW one
+    doesn't — used to detect whether the recreate has already run.
+    `col_list` is the column order in the destination INSERT; should match the
+    NEW table's CREATE.
+    """
+    cur = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ).fetchone()
+    if not cur or marker not in (cur["sql"] or ""):
+        return
+    cols = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})")]
+    # Use only the cols that exist in the OLD table (in case the NEW schema
+    # adds columns — we copy old → new, the NEW table's defaults fill the rest).
+    copy_cols = [c for c in col_list if c in cols]
+    col_csv = ", ".join(copy_cols)
+    try:
+        conn.execute("BEGIN")
+        conn.execute(new_create_sql)
+        conn.execute(
+            f"INSERT INTO {table}_new (rowid, {col_csv}) "
+            f"SELECT rowid, {col_csv} FROM {table}"
+        )
+        conn.execute(f"DROP TABLE {table}")
+        conn.execute(f"ALTER TABLE {table}_new RENAME TO {table}")
+        for ix in extra_indexes:
+            conn.execute(ix)
+        conn.execute("COMMIT")
+    except sqlite3.Error:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def _maybe_drop_videos_video_id_unique(conn):
+    """One-shot table recreate that drops the column-level UNIQUE on
+    videos.video_id. Idempotent — inspects sqlite_master and returns early
+    when the UNIQUE is already gone. Without this, two users can never both
+    track the same YouTube ID.
+
+    Safe because:
+    - PRAGMA foreign_keys is OFF (default in this codebase), so DROP TABLE
+      videos does not cascade-delete child rows in video_details/chapters/etc.
+    - We preserve rowids via `INSERT INTO videos_new(rowid, ...) SELECT rowid,
+      ... FROM videos`, so all child FK references by integer id still resolve
+      against the renamed-back table.
+    - Whole thing runs in a single transaction; rollback on any failure.
+    """
+    cur = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='videos'"
+    ).fetchone()
+    if not cur:
+        return
+    create_sql = cur["sql"] or ""
+    if "video_id TEXT UNIQUE" not in create_sql:
+        return  # already migrated
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(videos)")]
+    col_csv = ", ".join(cols)
+    # Build the new CREATE TABLE: same column ordering, but drop UNIQUE on
+    # video_id. Other column-level constraints are preserved verbatim.
+    new_create = (
+        "CREATE TABLE videos_new (\n"
+        "    id INTEGER PRIMARY KEY AUTOINCREMENT,\n"
+        "    video_id TEXT NOT NULL,\n"
+        "    title TEXT,\n"
+        "    channel_title TEXT,\n"
+        "    channel_thumb TEXT DEFAULT '',\n"
+        "    thumbnail_url TEXT,\n"
+        "    view_count INTEGER,\n"
+        "    duration TEXT,\n"
+        "    published_at TEXT,\n"
+        "    status TEXT DEFAULT 'options',\n"
+        "    outlier_score REAL DEFAULT 0,\n"
+        "    channel_avg_views INTEGER DEFAULT 0,\n"
+        "    added_at TEXT DEFAULT CURRENT_TIMESTAMP,\n"
+        "    transformed INTEGER DEFAULT 0,\n"
+        "    tucked INTEGER DEFAULT 0,\n"
+        "    editor_state TEXT,\n"
+        "    vocal_doc TEXT,\n"
+        "    voiceover_state TEXT,\n"
+        "    visuals_doc TEXT,\n"
+        "    visual_tags TEXT,\n"
+        "    user_id INTEGER REFERENCES users(id)\n"
+        ")"
+    )
+    try:
+        conn.execute("BEGIN")
+        conn.execute(new_create)
+        # Copy preserving rowid so child FKs by id remain valid.
+        conn.execute(
+            f"INSERT INTO videos_new (rowid, {col_csv}) "
+            f"SELECT rowid, {col_csv} FROM videos"
+        )
+        conn.execute("DROP TABLE videos")
+        conn.execute("ALTER TABLE videos_new RENAME TO videos")
+        # Recreate the per-user index we just added above (lost in DROP).
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_videos_user_id ON videos(user_id)")
+        conn.execute("COMMIT")
+    except sqlite3.Error:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def migrate_schema():
+    """Idempotent column/index additions layered on top of init_db().
+
+    Each ALTER runs in its own try/except — sqlite raises OperationalError
+    'duplicate column name: X' when the column already exists, which is the
+    expected steady-state after first deploy. Keeping each statement isolated
+    means a partial migration on a new table doesn't block the rest.
+    """
+    conn = get_db()
+    # Ensure the users table exists (init_db doesn't create it — it was
+    # historically lazy-created in api_login).
+    conn.execute("""CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE NOT NULL,
+        last_login TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    user_cols = [
+        ("skool_handle",     "TEXT"),
+        ("skool_member_id",  "TEXT"),
+        ("access_token",     "TEXT"),
+        ("token_expires_at", "TEXT"),
+        ("allowlisted",      "INTEGER NOT NULL DEFAULT 0"),
+        ("allowlist_source", "TEXT"),     # 'manual' | 'sync' | 'dm-code' | 'seed'
+        ("allowlisted_at",   "TEXT"),
+        ("revoked_at",       "TEXT"),
+        ("display_name",     "TEXT"),     # human-friendly name shown in login typeahead
+    ]
+    for name, typ in user_cols:
+        try:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {name} {typ}")
+        except sqlite3.OperationalError:
+            pass
+    scoped_tables = ("videos", "show_docs", "channels", "keywords",
+                     "my_channel_videos", "tweets")
+    for tbl in scoped_tables:
+        try:
+            conn.execute(f"ALTER TABLE {tbl} ADD COLUMN user_id INTEGER REFERENCES users(id)")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{tbl}_user_id ON {tbl}(user_id)")
+        except sqlite3.OperationalError:
+            pass
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_skool_handle ON users(skool_handle)")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_allowlisted ON users(allowlisted)")
+    except sqlite3.OperationalError:
+        pass
+
+    # ── DM-code verification table ──
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS dm_codes (
+                code TEXT PRIMARY KEY,
+                handle TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',     -- pending|verified|expired|consumed
+                verified_at TEXT,
+                verified_by TEXT,                           -- 'chrome-ext' | 'manual:<approver>'
+                consumed_at TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_dm_codes_handle ON dm_codes(handle, status)")
+    except sqlite3.OperationalError:
+        pass
+
+    # ── videos.video_id: drop column-level UNIQUE, replace with (video_id, user_id) ──
+    # SQLite has no DROP CONSTRAINT, so the only way is to recreate the table.
+    # Idempotent: skips when the UNIQUE on video_id is already gone.
+    _maybe_drop_videos_video_id_unique(conn)
+    try:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_videos_video_id_user "
+                     "ON videos(video_id, user_id)")
+    except sqlite3.OperationalError:
+        pass
+
+    # ── channels.url: drop UNIQUE, replace with composite (url, user_id) ──
+    _recreate_table_drop_unique(
+        conn, "channels", "url TEXT UNIQUE",
+        new_create_sql=(
+            "CREATE TABLE channels_new ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "url TEXT NOT NULL, "
+            "name TEXT DEFAULT '', "
+            "added_at TEXT DEFAULT CURRENT_TIMESTAMP, "
+            "thumbnail TEXT DEFAULT '', "
+            "subscriber_count INTEGER DEFAULT 0, "
+            "avg_views INTEGER DEFAULT 0, "
+            "video_count INTEGER DEFAULT 0, "
+            "last_scraped TEXT DEFAULT '', "
+            "sort_order INTEGER DEFAULT 999, "
+            "user_id INTEGER REFERENCES users(id))"
+        ),
+        col_list=["id","url","name","added_at","thumbnail","subscriber_count",
+                  "avg_views","video_count","last_scraped","sort_order","user_id"],
+        extra_indexes=[
+            "CREATE INDEX IF NOT EXISTS idx_channels_user_id ON channels(user_id)",
+        ],
+    )
+    try:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_url_user ON channels(url, user_id)")
+    except sqlite3.OperationalError:
+        pass
+
+    # ── keywords.keyword: drop UNIQUE, replace with composite (keyword, user_id) ──
+    _recreate_table_drop_unique(
+        conn, "keywords", "keyword TEXT UNIQUE",
+        new_create_sql=(
+            "CREATE TABLE keywords_new ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "keyword TEXT NOT NULL, "
+            "search_volume INTEGER DEFAULT 0, "
+            "competition REAL DEFAULT 0, "
+            "overall REAL DEFAULT 0, "
+            "searches_30d INTEGER DEFAULT 0, "
+            "word_count INTEGER DEFAULT 0, "
+            "is_favorite INTEGER DEFAULT 0, "
+            "is_youtube INTEGER DEFAULT 0, "
+            "added_at TEXT DEFAULT CURRENT_TIMESTAMP, "
+            "user_id INTEGER REFERENCES users(id))"
+        ),
+        col_list=["id","keyword","search_volume","competition","overall",
+                  "searches_30d","word_count","is_favorite","is_youtube",
+                  "added_at","user_id"],
+        extra_indexes=[
+            "CREATE INDEX IF NOT EXISTS idx_keywords_user_id ON keywords(user_id)",
+        ],
+    )
+    try:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_keywords_keyword_user ON keywords(keyword, user_id)")
+    except sqlite3.OperationalError:
+        pass
+
+    # Backfill existing rows to Andy (single-user baseline). Safe to re-run:
+    # only touches rows where user_id IS NULL. Andy is also seeded onto the
+    # allowlist as the founding member.
+    conn.execute(
+        "INSERT INTO users (email, last_login, allowlisted, allowlist_source, allowlisted_at) "
+        "VALUES (?, datetime('now'), 1, 'seed', datetime('now')) "
+        "ON CONFLICT(email) DO UPDATE SET allowlisted=1, "
+        "allowlist_source=COALESCE(NULLIF(allowlist_source,''),'seed'), "
+        "allowlisted_at=COALESCE(allowlisted_at, datetime('now'))",
+        ("andhaf94@gmail.com",),
+    )
+    andy = conn.execute("SELECT id FROM users WHERE email = ?",
+                        ("andhaf94@gmail.com",)).fetchone()
+    if andy:
+        for tbl in scoped_tables:
+            try:
+                conn.execute(f"UPDATE {tbl} SET user_id = ? WHERE user_id IS NULL",
+                             (andy["id"],))
+            except sqlite3.OperationalError:
+                pass
+    conn.commit()
+    conn.close()
+
+
 init_db()
+migrate_schema()
 
 
 # ── Auth ──────────────────────────────────────────────────
@@ -386,6 +666,9 @@ def login_required(f):
 
 @app.route("/api/login", methods=["POST"])
 def api_login():
+    """Legacy email + DASHBOARD_PASSWORD login. Kept for Andy's own admin
+    access. Gated on the same allowlist as the Skool OAuth path — if the
+    email isn't on the allowlist, the shared password isn't enough."""
     data = request.get_json(force=True)
     email = data.get("email", "").strip().lower()
     password = data.get("password", "")
@@ -393,24 +676,24 @@ def api_login():
         return jsonify({"error": "Valid email required"}), 400
     if password != DASHBOARD_PASSWORD:
         return jsonify({"error": "Wrong password"}), 401
-    # Store login
+    # Allowlist check by email. (Handle path is N/A here — Skool callback
+    # owns the handle column.)
+    allow_row = _allowlist_lookup(email, "")
+    if allow_row is None:
+        return jsonify({
+            "error": "not on allowlist",
+            "detail": "Your email isn't authorized. The Skool OAuth flow is the "
+                      "intended login path; legacy email login is admin-only.",
+        }), 403
+    # Refresh last_login on the existing allowlisted row.
     conn = get_db()
-    conn.execute("""CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT UNIQUE NOT NULL,
-        last_login TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    )""")
-    existing = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
     now = datetime.now(timezone.utc).isoformat()
-    if existing:
-        conn.execute("UPDATE users SET last_login = ? WHERE email = ?", (now, email))
-    else:
-        conn.execute("INSERT INTO users (email, last_login) VALUES (?, ?)", (email, now))
+    conn.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, allow_row["id"]))
     conn.commit()
     conn.close()
     session["authenticated"] = True
     session["email"] = email
+    session["user_id"] = allow_row["id"]
     session.permanent = True
     return jsonify({"ok": True})
 
@@ -423,12 +706,436 @@ def api_logout():
 
 @app.route("/api/auth-status")
 def auth_status():
-    return jsonify({"authenticated": bool(session.get("authenticated")), "email": session.get("email", "")})
+    return jsonify({"authenticated": bool(session.get("authenticated")), "email": session.get("email", ""), "user_id": session.get("user_id")})
+
+
+# ── Skool OAuth (Phase 1 stub) ────────────────────────────
+# Real OAuth requires SKOOL_API_KEY + SKOOL_CLIENT_ID + SKOOL_CLIENT_SECRET in
+# env. Without them, /api/auth/skool/callback accepts a `user_email` field and
+# mocks the Skool member lookup so this branch can be tested end-to-end with
+# curl. See overnight/skool_auth_blockers.md for what's needed to flip to prod.
+SKOOL_API_KEY        = os.environ.get("SKOOL_API_KEY", "")
+SKOOL_CLIENT_ID      = os.environ.get("SKOOL_CLIENT_ID", "")
+SKOOL_CLIENT_SECRET  = os.environ.get("SKOOL_CLIENT_SECRET", "")
+SKOOL_REDIRECT_URI   = os.environ.get("SKOOL_REDIRECT_URI", "")
+SKOOL_AUTH_URL       = os.environ.get("SKOOL_AUTH_URL", "https://www.skool.com/oauth/authorize")
+SKOOL_TOKEN_URL      = os.environ.get("SKOOL_TOKEN_URL", "https://www.skool.com/oauth/token")
+SKOOL_MEMBER_URL     = os.environ.get("SKOOL_MEMBER_URL", "https://www.skool.com/api/v1/member/me")
+
+
+def _skool_oauth_configured() -> bool:
+    return bool(SKOOL_API_KEY and SKOOL_CLIENT_ID and SKOOL_CLIENT_SECRET)
+
+
+def _handle_from_email(email: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", email.split("@", 1)[0].lower()).strip("-") or "member"
+
+
+def _allowlist_lookup(email: str, handle: str) -> dict | None:
+    """Return the users row for a known allowlisted member, else None.
+
+    Match priority: handle, then email. We never reveal *why* a callback was
+    rejected (handle unknown vs. revoked) — both return None and the caller
+    surfaces a generic 403.
+    """
+    email = (email or "").strip().lower()
+    handle = (handle or "").strip().lower()
+    if not email and not handle:
+        return None
+    conn = get_db()
+    try:
+        row = None
+        if handle:
+            row = conn.execute(
+                "SELECT id, email, skool_handle, allowlisted, revoked_at "
+                "FROM users WHERE skool_handle = ?", (handle,)
+            ).fetchone()
+        if row is None and email:
+            row = conn.execute(
+                "SELECT id, email, skool_handle, allowlisted, revoked_at "
+                "FROM users WHERE email = ?", (email,)
+            ).fetchone()
+        if row is None or not row["allowlisted"]:
+            return None
+        return dict(row)
+    finally:
+        conn.close()
+
+
+def _upsert_skool_user(email: str, handle: str, member_id: str = "",
+                      access_token: str = "", token_expires_at: str = "") -> int:
+    """UPSERT a user resolved by Skool callback. Returns users.id."""
+    conn = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    existing = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE users SET last_login = ?, skool_handle = COALESCE(NULLIF(?, ''), skool_handle), "
+            "skool_member_id = COALESCE(NULLIF(?, ''), skool_member_id), "
+            "access_token = COALESCE(NULLIF(?, ''), access_token), "
+            "token_expires_at = COALESCE(NULLIF(?, ''), token_expires_at) "
+            "WHERE id = ?",
+            (now, handle, member_id, access_token, token_expires_at, existing["id"]),
+        )
+        uid = existing["id"]
+    else:
+        cur = conn.execute(
+            "INSERT INTO users (email, last_login, skool_handle, skool_member_id, "
+            "access_token, token_expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (email, now, handle, member_id, access_token, token_expires_at),
+        )
+        uid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return uid
+
+
+@app.route("/login", methods=["GET"])
+def login_page():
+    """Minimal landing page that sets the session cookie + advertises auth
+    methods. The SPA at `/` is the real login UI; this route exists so the
+    OAuth flow has a documented start URL and the curl test can prime its
+    cookie jar against a stable path."""
+    return (
+        "<!doctype html><meta charset=utf-8>"
+        "<title>Creator Growth — Sign in</title>"
+        "<p>POST credentials to <code>/api/login</code> or complete Skool OAuth "
+        "via <code>/api/auth/skool/start</code> → <code>/api/auth/skool/callback</code>.</p>",
+        200,
+        {"Content-Type": "text/html; charset=utf-8"},
+    )
+
+
+@app.route("/api/auth/skool/start", methods=["GET"])
+def auth_skool_start():
+    """Issue an OAuth state nonce + return the Skool authorize URL.
+
+    Frontend redirects the browser there. Skool sends the user back to
+    SKOOL_REDIRECT_URI with ?code&state. In stub mode we still issue the state
+    so the contract matches production."""
+    state = secrets.token_urlsafe(24)
+    session["oauth_state"] = state
+    if _skool_oauth_configured():
+        params = (
+            f"client_id={SKOOL_CLIENT_ID}"
+            f"&redirect_uri={SKOOL_REDIRECT_URI}"
+            f"&response_type=code"
+            f"&state={state}"
+        )
+        return jsonify({
+            "auth_url": f"{SKOOL_AUTH_URL}?{params}",
+            "state": state,
+            "mock": False,
+        })
+    return jsonify({
+        "auth_url": "/login?mock=1",
+        "state": state,
+        "mock": True,
+    })
+
+
+@app.route("/api/auth/skool/callback", methods=["POST"])
+def auth_skool_callback():
+    """Exchange the OAuth code for an access token, fetch member identity,
+    UPSERT into users, and start a session.
+
+    Mock mode (SKOOL_API_KEY unset): caller may pass `user_email` instead of
+    relying on a real Skool exchange. The mock derives handle from email and
+    skips token storage. Production mode (SKOOL_API_KEY set): `user_email` is
+    rejected; only `code` is honored and the member identity comes from
+    Skool's /member/me response.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    code = (data.get("code") or "").strip()
+    if not code:
+        return jsonify({"error": "missing code"}), 400
+
+    posted_state = (data.get("state") or "").strip()
+    expected_state = session.pop("oauth_state", None)
+    # In stub usage the curl test doesn't go through /start, so don't fail when
+    # neither side has a state. When start was called, enforce match.
+    if expected_state and posted_state and posted_state != expected_state:
+        return jsonify({"error": "state mismatch"}), 400
+
+    if _skool_oauth_configured():
+        if data.get("user_email"):
+            return jsonify({"error": "user_email forbidden when Skool OAuth is configured"}), 400
+        import urllib.parse
+        from urllib.request import Request, urlopen
+        body = urllib.parse.urlencode({
+            "client_id": SKOOL_CLIENT_ID,
+            "client_secret": SKOOL_CLIENT_SECRET,
+            "code": code,
+            "grant_type": "authorization_code",
+            "redirect_uri": SKOOL_REDIRECT_URI,
+        }).encode()
+        try:
+            req = Request(SKOOL_TOKEN_URL, data=body,
+                          headers={"Content-Type": "application/x-www-form-urlencoded"})
+            with urlopen(req, timeout=10) as r:
+                tok = json.loads(r.read().decode())
+            access_token = tok.get("access_token", "")
+            if not access_token:
+                return jsonify({"error": "no access_token in Skool response"}), 502
+            mreq = Request(SKOOL_MEMBER_URL, headers={"Authorization": f"Bearer {access_token}"})
+            with urlopen(mreq, timeout=10) as r:
+                member = json.loads(r.read().decode())
+            email = (member.get("email") or "").strip().lower()
+            handle = (member.get("handle") or _handle_from_email(email)).strip().lower()
+            member_id = str(member.get("id") or "")
+            expires_at = tok.get("expires_at") or ""
+        except Exception as e:
+            return jsonify({"error": f"Skool exchange failed: {e}"}), 502
+    else:
+        # MOCK PATH — SKOOL_API_KEY not set
+        email = (data.get("user_email") or "").strip().lower()
+        if not email or "@" not in email:
+            return jsonify({"error": "mock callback requires user_email"}), 400
+        handle = _handle_from_email(email)
+        member_id = f"mock_{code}"
+        access_token = ""
+        expires_at = ""
+
+    # ── Allowlist gate ──
+    # Identity (email, handle) is now resolved. Reject anyone not currently
+    # allowlisted BEFORE we touch the session. The 403 message is intentionally
+    # generic — don't leak whether the handle is unknown vs. revoked.
+    allow_row = _allowlist_lookup(email, handle)
+    if allow_row is None:
+        session.clear()
+        return jsonify({
+            "error": "not on allowlist",
+            "detail": "This Skool handle isn't authorized for creatorgrowth.com. "
+                      "If you just joined AI Mate, ask Mike to add you.",
+        }), 403
+
+    # Canonical handle = whatever the allowlist row has, if anything. This
+    # prevents the email-derived handle from clobbering a CLI-set one (e.g.,
+    # 'mike-skool' is the allowlist handle, but email mike@example.com would
+    # derive 'mike' — we want to keep 'mike-skool').
+    canonical_handle = (allow_row.get("skool_handle") or handle).strip().lower()
+    canonical_email = (allow_row.get("email") or email).strip().lower()
+    uid = _upsert_skool_user(canonical_email, canonical_handle, member_id, access_token, expires_at)
+    session["authenticated"] = True
+    session["email"] = canonical_email
+    session["user_id"] = uid
+    session["skool_handle"] = canonical_handle
+    session.permanent = True
+    return jsonify({
+        "ok": True,
+        "user": {"id": uid, "email": canonical_email, "handle": canonical_handle},
+        "mock": not _skool_oauth_configured(),
+    })
+
+
+# ── DM-code verification (no Skool API needed) ──
+# Flow:
+#   1. User enters their Skool handle at /login → POST /api/auth/skool/dm-code/start
+#      Backend mints a 6-digit code, stores it in dm_codes(handle, code, expires_at, status=pending).
+#   2. User DMs SKOOL_DM_TARGET (default 'theaiandy') on Skool with the code.
+#   3. Either: (a) Andy's Chrome extension sees the DM and POSTs to
+#      /api/auth/skool/dm-code/admin-verify with bearer DM_VERIFY_TOKEN, OR
+#      (b) Andy/Mike runs `python3 scripts/skool_dm_verify.py <code>` (same endpoint).
+#   4. Frontend polls /api/auth/skool/dm-code/poll?code=XXXXXX every few seconds.
+#      When status flips to 'verified', that response mints the session and the
+#      browser is logged in.
+SKOOL_DM_TARGET = os.environ.get("SKOOL_DM_TARGET", "theaiandy")
+DM_CODE_TTL_SEC = int(os.environ.get("DM_CODE_TTL_SEC", "600"))    # 10 minutes
+DM_VERIFY_TOKEN = os.environ.get("DM_VERIFY_TOKEN", "")            # required for admin-verify
+
+
+def _mint_dm_code(handle: str) -> dict:
+    """Generate a fresh 6-digit code for `handle`, expire any prior pending ones."""
+    handle = handle.strip().lower()
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE dm_codes SET status='expired' WHERE handle=? AND status='pending'",
+            (handle,),
+        )
+        conn.execute(
+            "INSERT INTO dm_codes (code, handle, expires_at) "
+            "VALUES (?, ?, datetime('now', '+' || ? || ' seconds'))",
+            (code, handle, DM_CODE_TTL_SEC),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT code, handle, expires_at FROM dm_codes WHERE code = ?", (code,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return dict(row)
+
+
+@app.route("/api/auth/skool/dm-code/start", methods=["POST"])
+def auth_dm_code_start():
+    """Frontend posts {handle}; backend mints a 6-digit code + returns
+    instructions for the user to DM SKOOL_DM_TARGET with that code."""
+    data = request.get_json(force=True, silent=True) or {}
+    handle = (data.get("handle") or "").strip().lower()
+    handle = re.sub(r"^@", "", handle)
+    if not re.match(r"^[a-z0-9][a-z0-9._-]{1,38}$", handle):
+        return jsonify({"error": "invalid handle"}), 400
+    # Pre-check allowlist so users not on it get told immediately instead of
+    # going through the whole DM dance for nothing.
+    if _allowlist_lookup("", handle) is None:
+        return jsonify({
+            "error": "not on allowlist",
+            "detail": f"@{handle} isn't authorized. Ask Mike to add you, then try again.",
+        }), 403
+    row = _mint_dm_code(handle)
+    return jsonify({
+        "code": row["code"],
+        "expires_at": row["expires_at"],
+        "dm_target": SKOOL_DM_TARGET,
+        "instructions": (
+            f"DM @{SKOOL_DM_TARGET} on Skool with the code {row['code']} "
+            f"within the next {DM_CODE_TTL_SEC // 60} minutes, then keep this "
+            f"page open — you'll be logged in automatically."
+        ),
+    })
+
+
+@app.route("/api/auth/skool/dm-code/poll", methods=["GET"])
+def auth_dm_code_poll():
+    """Frontend long-polls this. When status flips to 'verified', mint the
+    session and return ok:true; further polls for the same code 404."""
+    code = (request.args.get("code") or "").strip()
+    if not re.match(r"^\d{6}$", code):
+        return jsonify({"error": "invalid code"}), 400
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT code, handle, status, expires_at FROM dm_codes WHERE code = ?", (code,)
+        ).fetchone()
+        if row is None:
+            return jsonify({"status": "unknown"}), 404
+        # Auto-expire if past TTL
+        if row["status"] == "pending":
+            expired = conn.execute(
+                "SELECT 1 FROM dm_codes WHERE code = ? AND expires_at < datetime('now')",
+                (code,),
+            ).fetchone()
+            if expired:
+                conn.execute("UPDATE dm_codes SET status='expired' WHERE code = ?", (code,))
+                conn.commit()
+                return jsonify({"status": "expired"}), 410
+        if row["status"] == "verified":
+            # Mint the session, mark consumed so the same code can't double-mint.
+            handle = row["handle"]
+            allow_row = _allowlist_lookup("", handle)
+            if allow_row is None:
+                # Revoked between verify and poll. Don't mint.
+                conn.execute("UPDATE dm_codes SET status='consumed', consumed_at=datetime('now') WHERE code = ?", (code,))
+                conn.commit()
+                return jsonify({"error": "not on allowlist"}), 403
+            uid = _upsert_skool_user(allow_row["email"], handle, member_id=f"dm:{code}")
+            conn.execute(
+                "UPDATE dm_codes SET status='consumed', consumed_at=datetime('now') WHERE code = ?",
+                (code,),
+            )
+            conn.commit()
+            session["authenticated"] = True
+            session["email"] = allow_row["email"]
+            session["user_id"] = uid
+            session["skool_handle"] = handle
+            session.permanent = True
+            return jsonify({"ok": True, "status": "verified",
+                            "user": {"id": uid, "email": allow_row["email"], "handle": handle}})
+        return jsonify({"status": row["status"]})
+    finally:
+        conn.close()
+
+
+@app.route("/api/auth/skool/search", methods=["GET"])
+def auth_skool_search():
+    """Typeahead for the login page. Returns up to 8 allowlisted members whose
+    display_name OR skool_handle matches `q` (case-insensitive substring).
+
+    Open endpoint by design — anyone visiting /login can search the allowlist
+    to find themselves. Returns only display_name + handle (no email, no id)
+    so the leak is minimal. Empty `q` returns the first 8 members alphabetical
+    so the user sees something the moment they focus the field."""
+    q = (request.args.get("q") or "").strip().lower()
+    conn = get_db()
+    try:
+        if q:
+            like = f"%{q}%"
+            rows = conn.execute(
+                "SELECT skool_handle, display_name FROM users "
+                "WHERE allowlisted = 1 AND skool_handle IS NOT NULL AND skool_handle <> '' "
+                "AND (LOWER(skool_handle) LIKE ? OR LOWER(COALESCE(display_name,'')) LIKE ?) "
+                "ORDER BY COALESCE(display_name, skool_handle) LIMIT 8",
+                (like, like),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT skool_handle, display_name FROM users "
+                "WHERE allowlisted = 1 AND skool_handle IS NOT NULL AND skool_handle <> '' "
+                "ORDER BY COALESCE(display_name, skool_handle) LIMIT 8"
+            ).fetchall()
+    finally:
+        conn.close()
+    return jsonify([
+        {"handle": r["skool_handle"], "name": (r["display_name"] or r["skool_handle"])}
+        for r in rows
+    ])
+
+
+@app.route("/api/auth/skool/dm-code/admin-verify", methods=["POST"])
+def auth_dm_code_admin_verify():
+    """Called by the Chrome extension (or scripts/skool_dm_verify.py) when a DM
+    matching a pending code is seen. Bearer-authed with DM_VERIFY_TOKEN."""
+    if not DM_VERIFY_TOKEN:
+        return jsonify({"error": "DM_VERIFY_TOKEN not configured on server"}), 503
+    sent = (request.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
+    if not sent or sent != DM_VERIFY_TOKEN:
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.get_json(force=True, silent=True) or {}
+    code = (data.get("code") or "").strip()
+    sender_handle = (data.get("sender_handle") or "").strip().lower().lstrip("@")
+    source = (data.get("source") or "chrome-ext").strip()[:32]
+    if not re.match(r"^\d{6}$", code):
+        return jsonify({"error": "invalid code"}), 400
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT code, handle, status, expires_at FROM dm_codes WHERE code = ?", (code,)
+        ).fetchone()
+        if row is None:
+            return jsonify({"error": "unknown code"}), 404
+        if row["status"] != "pending":
+            return jsonify({"error": f"code in status '{row['status']}'"}), 409
+        # If sender_handle is provided (Chrome ext path), it must match.
+        # Manual CLI may omit it (operator vouches for the code).
+        if sender_handle and sender_handle != row["handle"]:
+            return jsonify({
+                "error": "sender_handle mismatch",
+                "expected": row["handle"], "got": sender_handle,
+            }), 409
+        conn.execute(
+            "UPDATE dm_codes SET status='verified', verified_at=datetime('now'), "
+            "verified_by=? WHERE code = ?",
+            (source, code),
+        )
+        conn.commit()
+        return jsonify({"ok": True, "handle": row["handle"], "code": code})
+    finally:
+        conn.close()
 
 
 @app.before_request
 def require_auth():
-    open_paths = {"/", "/api/login", "/api/auth-status", "/static/", "/image-viewer", "/image-gallery", "/api/current-image", "/api/set-image", "/api/set-gallery"}
+    open_paths = {
+        "/", "/login",
+        "/api/login", "/api/auth-status",
+        "/api/auth/skool/start", "/api/auth/skool/callback",
+        "/api/auth/skool/dm-code/start", "/api/auth/skool/dm-code/poll",
+        "/api/auth/skool/search",
+        "/static/", "/image-viewer", "/image-gallery",
+        "/api/current-image", "/api/set-image", "/api/set-gallery",
+    }
     path = request.path
     if path == "/" or path.startswith("/static/") or path in open_paths:
         return None
@@ -437,8 +1144,133 @@ def require_auth():
         return None
     if path.startswith("/api/show-docs"):
         return None
+    if path == "/api/auth/skool/dm-code/admin-verify":
+        return None
     if not session.get("authenticated"):
         return jsonify({"error": "Unauthorized"}), 401
+    # Live allowlist re-check — cancelled member's session dies on next request.
+    uid = session.get("user_id")
+    if uid is not None:
+        conn = get_db()
+        try:
+            row = conn.execute("SELECT allowlisted FROM users WHERE id = ?", (uid,)).fetchone()
+        finally:
+            conn.close()
+        if row is None or not row["allowlisted"]:
+            session.clear()
+            return jsonify({
+                "error": "access revoked",
+                "detail": "Your Skool membership is no longer active. Re-up to continue.",
+            }), 401
+
+
+# ── Per-user scoping ──────────────────────────────────────
+
+def current_user_id():
+    """Return the authenticated session's users.id, or None."""
+    return session.get("user_id")
+
+
+def owns_video(conn, vid: int) -> bool:
+    """True iff the current session user owns this videos.id row."""
+    uid = current_user_id()
+    if uid is None:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM videos WHERE id = ? AND user_id = ?", (vid, uid)
+    ).fetchone()
+    return row is not None
+
+
+def _owns_scoped(table: str, id_col: str, row_id) -> bool:
+    """True iff the current user (session OR bearer) owns the row in `table`
+    with id `row_id`."""
+    uid = _request_user_id()
+    if uid is None:
+        return False
+    conn = get_db()
+    try:
+        row = conn.execute(
+            f"SELECT 1 FROM {table} WHERE {id_col} = ? AND user_id = ?",
+            (row_id, uid),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row is not None
+
+
+def _owns_via_video(table: str, id_col: str, row_id, video_id_col: str = "video_id") -> bool:
+    """True iff the row in `table` belongs to a video owned by the current
+    user (session OR bearer). Used for cascading-from-videos tables (chapters,
+    diagrams, video_details, tts_jobs) that don't carry their own user_id."""
+    uid = _request_user_id()
+    if uid is None:
+        return False
+    conn = get_db()
+    try:
+        row = conn.execute(
+            f"SELECT 1 FROM {table} t JOIN videos v ON v.id = t.{video_id_col} "
+            f"WHERE t.{id_col} = ? AND v.user_id = ?",
+            (row_id, uid),
+        ).fetchone()
+    finally:
+        conn.close()
+    return row is not None
+
+
+def video_owner_required(f):
+    """Decorator: 404s when the current user doesn't own the path-param `vid`."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        vid = kwargs.get("vid")
+        if vid is not None and not _owns_scoped("videos", "id", vid):
+            return jsonify({"error": "not found"}), 404
+        return f(*args, **kwargs)
+    return decorated
+
+
+def diagram_owner_required(f):
+    """Decorator: 404s when the current user doesn't own the diagram via its parent video."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        diagram_id = kwargs.get("diagram_id")
+        if diagram_id is not None and not _owns_via_video("diagrams", "id", diagram_id):
+            return jsonify({"error": "not found"}), 404
+        return f(*args, **kwargs)
+    return decorated
+
+
+def channel_owner_required(f):
+    """Decorator: 404s when the current user doesn't own the channel."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        cid = kwargs.get("cid")
+        if cid is not None and not _owns_scoped("channels", "id", cid):
+            return jsonify({"error": "not found"}), 404
+        return f(*args, **kwargs)
+    return decorated
+
+
+def keyword_owner_required(f):
+    """Decorator: 404s when the current user doesn't own the keyword."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        kid = kwargs.get("kid")
+        if kid is not None and not _owns_scoped("keywords", "id", kid):
+            return jsonify({"error": "not found"}), 404
+        return f(*args, **kwargs)
+    return decorated
+
+
+def show_doc_owner_required(f):
+    """Decorator: 404s when the current user doesn't own the show_doc."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        sid = kwargs.get("sid")
+        if sid is not None and not _owns_scoped("show_docs", "id", sid):
+            return jsonify({"error": "not found"}), 404
+        return f(*args, **kwargs)
+    return decorated
 
 
 def extract_video_id(url: str) -> str | None:
@@ -487,7 +1319,8 @@ def time_ago(published_at: str) -> str:
         return ""
 
 
-def format_views(count: int) -> str:
+def format_views(count) -> str:
+    count = count or 0
     if count >= 1_000_000:
         return f"{count / 1_000_000:.1f}M views"
     if count >= 1_000:
@@ -513,6 +1346,7 @@ def row_to_dict(r):
         "outlier_score": outlier,
         "transformed": bool(r["transformed"]) if "transformed" in r.keys() else False,
         "tucked": bool(r["tucked"]) if "tucked" in r.keys() else False,
+        "user_id": r["user_id"] if "user_id" in r.keys() else None,
     }
 
 
@@ -773,15 +1607,19 @@ def index():
 
 
 def mirror_show_docs_into_videos(conn) -> int:
-    """Ensure every show_docs row has a matching videos row with video_id='sd_<id>'.
-    Idempotent — only INSERTs rows that don't exist yet. New show docs land in status='show'."""
+    """Ensure every show_docs row for the current user has a matching videos row
+    with video_id='sd_<id>'. Idempotent — only INSERTs rows that don't exist
+    yet. New show docs land in status='show' owned by the same user."""
+    uid = current_user_id()
+    if uid is None:
+        return 0
     existing = {r["video_id"][3:] for r in conn.execute(
-        "SELECT video_id FROM videos WHERE video_id GLOB 'sd_[0-9]*'"
+        "SELECT video_id FROM videos WHERE video_id GLOB 'sd_[0-9]*' AND user_id = ?", (uid,)
     ).fetchall()}
     sds = conn.execute(
         "SELECT id, title, date, google_doc_id, google_doc_url, tab_id, "
         "topic_1, topic_1_format, topic_2, topic_2_format, topic_3, topic_3_format "
-        "FROM show_docs"
+        "FROM show_docs WHERE user_id = ?", (uid,)
     ).fetchall()
     inserted = 0
     for sd in sds:
@@ -793,9 +1631,9 @@ def mirror_show_docs_into_videos(conn) -> int:
             published_at = f"{sd['date']}T00:00:00Z"
         conn.execute(
             "INSERT INTO videos (video_id, title, channel_title, channel_thumb, thumbnail_url, "
-            "view_count, duration, published_at, status, outlier_score, channel_avg_views) "
-            "VALUES (?, ?, 'Show Doc', '', '', 0, '', ?, 'show', 0, 0)",
-            (f"sd_{sd_id_str}", sd["title"] or f"Show Doc — {sd['date']}", published_at),
+            "view_count, duration, published_at, status, outlier_score, channel_avg_views, user_id) "
+            "VALUES (?, ?, 'Show Doc', '', '', 0, '', ?, 'show', 0, 0, ?)",
+            (f"sd_{sd_id_str}", sd["title"] or f"Show Doc — {sd['date']}", published_at, uid),
         )
         new_vid = conn.execute(
             "SELECT id FROM videos WHERE video_id = ?", (f"sd_{sd_id_str}",)
@@ -827,15 +1665,21 @@ def mirror_show_docs_into_videos(conn) -> int:
 
 
 @app.route("/api/videos", methods=["GET"])
+@login_required
 def list_videos():
+    uid = current_user_id()
     conn = get_db()
     mirror_show_docs_into_videos(conn)
-    rows = conn.execute("SELECT * FROM videos ORDER BY added_at DESC").fetchall()
-    # Batch-load show_docs so sd_ rows can ship topics inline (avoids per-card fetch from the frontend).
+    rows = conn.execute(
+        "SELECT * FROM videos WHERE user_id = ? ORDER BY added_at DESC", (uid,)
+    ).fetchall()
+    # Batch-load show_docs (scoped to the same user) so sd_ rows can ship
+    # topics inline without a per-card fetch from the frontend.
     sd_rows = {
         str(r["id"]): r for r in conn.execute(
             "SELECT id, date, topic_1, topic_1_format, topic_2, topic_2_format, "
-            "topic_3, topic_3_format, google_doc_url, google_doc_id, tab_id FROM show_docs"
+            "topic_3, topic_3_format, google_doc_url, google_doc_id, tab_id "
+            "FROM show_docs WHERE user_id = ?", (uid,)
         ).fetchall()
     }
     conn.close()
@@ -862,7 +1706,9 @@ def list_videos():
 
 
 @app.route("/api/videos", methods=["POST"])
+@login_required
 def add_video():
+    uid = current_user_id()
     data = request.get_json(force=True)
     url_input = data.get("url", "").strip()
     if not url_input:
@@ -875,7 +1721,10 @@ def add_video():
 
     lookup_id = f"x_{tweet_id}" if tweet_id else video_id
     conn = get_db()
-    if conn.execute("SELECT id FROM videos WHERE video_id = ?", (lookup_id,)).fetchone():
+    # Dedupe is now per-user — two users can each track the same external video.
+    if conn.execute(
+        "SELECT id FROM videos WHERE video_id = ? AND user_id = ?", (lookup_id, uid)
+    ).fetchone():
         conn.close()
         return jsonify({"error": "Already added"}), 409
 
@@ -891,14 +1740,16 @@ def add_video():
             return jsonify({"error": "Video not found on YouTube"}), 404
 
     conn.execute(
-        """INSERT INTO videos (video_id, title, channel_title, channel_thumb, thumbnail_url, view_count, duration, published_at, status, outlier_score, channel_avg_views)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'options', ?, ?)""",
+        """INSERT INTO videos (video_id, title, channel_title, channel_thumb, thumbnail_url, view_count, duration, published_at, status, outlier_score, channel_avg_views, user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'options', ?, ?, ?)""",
         (meta["video_id"], meta["title"], meta["channel_title"], meta["channel_thumb"],
          meta["thumbnail_url"], meta["view_count"], meta["duration"], meta["published_at"],
-         meta["outlier_score"], meta["channel_avg_views"]),
+         meta["outlier_score"], meta["channel_avg_views"], uid),
     )
     conn.commit()
-    row = conn.execute("SELECT * FROM videos WHERE video_id = ?", (meta["video_id"],)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM videos WHERE video_id = ? AND user_id = ?", (meta["video_id"], uid)
+    ).fetchone()
     # Persist X source bundle to video_details.meta so the modal can render it.
     if tweet_id and meta.get("_source"):
         meta_payload = json.dumps({"source": meta["_source"]})
@@ -912,6 +1763,7 @@ def add_video():
 
 
 @app.route("/api/videos/<int:vid>/status", methods=["POST"])
+@video_owner_required
 def update_status(vid):
     data = request.get_json(force=True)
     new_status = data.get("status", "options")
@@ -925,6 +1777,7 @@ def update_status(vid):
 
 
 @app.route("/api/videos/<int:vid>/tuck", methods=["POST"])
+@video_owner_required
 def toggle_tuck(vid):
     """Toggle the tucked flag — hides card behind a '+ N tucked' row in its tab."""
     conn = get_db()
@@ -940,6 +1793,7 @@ def toggle_tuck(vid):
 
 
 @app.route("/api/videos/<int:vid>/thumbnail", methods=["POST"])
+@video_owner_required
 def update_thumbnail(vid):
     data = request.get_json(force=True)
     url = (data.get("url") or "").strip()
@@ -956,6 +1810,7 @@ def update_thumbnail(vid):
 
 @app.route("/api/videos/<int:vid>/transform", methods=["POST"])
 @login_required
+@video_owner_required
 def transform_video(vid):
     """Toggle transform: swap creator photo/name with AI Andy."""
     conn = get_db()
@@ -972,6 +1827,7 @@ def transform_video(vid):
 
 @app.route("/api/videos/<int:vid>/queue-thumb", methods=["POST"])
 @login_required
+@video_owner_required
 def queue_thumb(vid):
     """Queue a thumbnail-generation task. Stamps the caller's email so only their poller picks it up."""
     email = (session.get("email") or "").strip().lower()
@@ -1020,6 +1876,26 @@ def _bearer_user_email():
     return None
 
 
+def _request_user_id():
+    """Return user_id from session OR bearer Auth (THUMB_QUEUE_USERS map), else None.
+
+    Used by endpoints that accept either session cookies (browser users) or
+    bearer tokens (Mac poller, daily showdoc cron). Scope every read/write
+    by the returned uid to keep tenants isolated regardless of auth channel."""
+    uid = session.get("user_id")
+    if uid is not None:
+        return uid
+    email = _bearer_user_email()
+    if not email:
+        return None
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+    finally:
+        conn.close()
+    return row["id"] if row else None
+
+
 @app.route("/api/thumb-queue", methods=["GET"])
 def thumb_queue_list():
     """Mac poller: list this user's pending queued tasks."""
@@ -1064,6 +1940,7 @@ def thumb_queue_done(qid):
 
 
 @app.route("/api/videos/<int:vid>", methods=["DELETE"])
+@video_owner_required
 def delete_video(vid):
     conn = get_db()
     conn.execute("DELETE FROM videos WHERE id = ?", (vid,))
@@ -1074,8 +1951,12 @@ def delete_video(vid):
 
 @app.route("/api/videos/clear", methods=["POST"])
 def clear_videos():
+    """Wipe the current user's videos only — never anyone else's."""
+    uid = _request_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
     conn = get_db()
-    conn.execute("DELETE FROM videos")
+    conn.execute("DELETE FROM videos WHERE user_id = ?", (uid,))
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
@@ -1111,15 +1992,21 @@ def showdoc_row_to_dict(r):
 
 @app.route("/api/show-docs", methods=["GET"])
 def list_show_docs():
+    uid = _request_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
     conn = get_db()
-    rows = conn.execute("SELECT * FROM show_docs ORDER BY date DESC, id DESC").fetchall()
+    rows = conn.execute(
+        "SELECT * FROM show_docs WHERE user_id = ? ORDER BY date DESC, id DESC", (uid,)
+    ).fetchall()
     conn.close()
     return jsonify([showdoc_row_to_dict(r) for r in rows])
 
 
 @app.route("/api/show-docs", methods=["POST"])
 def create_show_doc():
-    if not (_bearer_user_email() or session.get("authenticated")):
+    uid = _request_user_id()
+    if uid is None:
         return jsonify({"error": "Unauthorized"}), 401
     data = request.get_json(force=True)
     title = (data.get("title") or "").strip()
@@ -1138,14 +2025,14 @@ def create_show_doc():
             topic_1, topic_1_format, topic_1_outlier_score,
             topic_2, topic_2_format, topic_2_outlier_score,
             topic_3, topic_3_format, topic_3_outlier_score,
-            status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            status, user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             title, date, google_doc_id, data.get("tab_id") or "", google_doc_url,
             data.get("topic_1") or "", data.get("topic_1_format") or "", data.get("topic_1_outlier_score") or 0,
             data.get("topic_2") or "", data.get("topic_2_format") or "", data.get("topic_2_outlier_score") or 0,
             data.get("topic_3") or "", data.get("topic_3_format") or "", data.get("topic_3_outlier_score") or 0,
-            status,
+            status, uid,
         ),
     )
     conn.commit()
@@ -1156,6 +2043,7 @@ def create_show_doc():
 
 
 @app.route("/api/show-docs/<int:sid>/status", methods=["POST"])
+@show_doc_owner_required
 def update_show_doc_status(sid):
     if not (_bearer_user_email() or session.get("authenticated")):
         return jsonify({"error": "Unauthorized"}), 401
@@ -1178,6 +2066,7 @@ def update_show_doc_status(sid):
 
 
 @app.route("/api/show-docs/<int:sid>", methods=["DELETE"])
+@show_doc_owner_required
 def delete_show_doc(sid):
     if not (_bearer_user_email() or session.get("authenticated")):
         return jsonify({"error": "Unauthorized"}), 401
@@ -1286,14 +2175,22 @@ def scrape_channel_videos(channel_url: str, limit: int = 20) -> list[dict]:
 
 @app.route("/api/channels", methods=["GET"])
 def list_channels():
+    uid = _request_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
     conn = get_db()
-    rows = conn.execute("SELECT * FROM channels ORDER BY added_at DESC").fetchall()
+    rows = conn.execute(
+        "SELECT * FROM channels WHERE user_id = ? ORDER BY added_at DESC", (uid,)
+    ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
 
 @app.route("/api/channels", methods=["POST"])
 def add_channel():
+    uid = _request_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
     data = request.get_json(force=True)
     url = data.get("url", "").strip().rstrip("/")
     if not url:
@@ -1306,19 +2203,25 @@ def add_channel():
     # Normalize: strip trailing /videos etc
     url = re.sub(r"/(videos|shorts|streams|playlists)$", "", url)
     conn = get_db()
-    try:
-        conn.execute("INSERT INTO channels (url, name) VALUES (?, ?)", (url, ""))
-        conn.commit()
-        row = conn.execute("SELECT * FROM channels WHERE url = ?", (url,)).fetchone()
-    except sqlite3.IntegrityError:
+    # Per-user dedupe (two users can each track the same channel URL).
+    existing = conn.execute(
+        "SELECT 1 FROM channels WHERE url = ? AND user_id = ?", (url, uid)
+    ).fetchone()
+    if existing:
         conn.close()
         return jsonify({"error": "Channel already added"}), 409
+    conn.execute("INSERT INTO channels (url, name, user_id) VALUES (?, ?, ?)", (url, "", uid))
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM channels WHERE url = ? AND user_id = ?", (url, uid)
+    ).fetchone()
     result = dict(row)
     conn.close()
     return jsonify(result), 201
 
 
 @app.route("/api/channels/<int:cid>", methods=["DELETE"])
+@channel_owner_required
 def delete_channel(cid):
     conn = get_db()
     conn.execute("DELETE FROM channels WHERE id = ?", (cid,))
@@ -1360,9 +2263,11 @@ def _backfill_dates_for_channel(conn, channel_url: str):
 
 
 def _scrape_channel_into_db(conn, channel_row) -> dict:
-    """Scrape a channel and insert videos into DB. Returns result dict."""
+    """Scrape a channel and insert videos into DB. Returns result dict.
+    All writes scoped to the channel's owner — per-user data isolation."""
     channel_url = channel_row["url"]
     cid = channel_row["id"]
+    owner_uid = channel_row["user_id"] if "user_id" in channel_row.keys() else None
     videos = scrape_channel_videos(channel_url, limit=20)
     inserted = skipped = 0
     channel_name = ""
@@ -1375,21 +2280,22 @@ def _scrape_channel_into_db(conn, channel_row) -> dict:
         try:
             conn.execute(
                 """INSERT INTO videos (video_id, title, channel_title, channel_thumb, thumbnail_url,
-                       view_count, duration, published_at, status, outlier_score, channel_avg_views)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'options', ?, ?)""",
+                       view_count, duration, published_at, status, outlier_score, channel_avg_views, user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'options', ?, ?, ?)""",
                 (v["video_id"], v["title"], v["channel_title"], v["channel_thumb"],
                  v["thumbnail_url"], v["view_count"], v["duration"], v["published_at"],
-                 v["outlier_score"], v["channel_avg_views"]),
+                 v["outlier_score"], v["channel_avg_views"], owner_uid),
             )
             inserted += 1
         except sqlite3.IntegrityError:
-            # Update view count, outlier score, and missing fields for existing videos
+            # Same-user dupe (composite UNIQUE) — refresh stats on the user's copy only.
             if v["view_count"] and v["view_count"] > 0:
                 conn.execute(
                     """UPDATE videos SET view_count = ?, outlier_score = ?, channel_avg_views = ?
-                       WHERE video_id = ? AND (view_count IS NULL OR view_count = 0 OR view_count < ?)""",
+                       WHERE video_id = ? AND user_id = ?
+                         AND (view_count IS NULL OR view_count = 0 OR view_count < ?)""",
                     (v["view_count"], v["outlier_score"], v["channel_avg_views"],
-                     v["video_id"], v["view_count"]),
+                     v["video_id"], owner_uid, v["view_count"]),
                 )
             skipped += 1
     now = datetime.now(timezone.utc).isoformat()
@@ -1434,19 +2340,22 @@ def _scrape_channel_into_db(conn, channel_row) -> dict:
         if video_ids:
             placeholders = ",".join("?" * len(video_ids))
             conn.execute(
-                f"UPDATE videos SET channel_thumb = ? WHERE video_id IN ({placeholders}) AND (channel_thumb = '' OR channel_thumb IS NULL)",
-                (ch_thumb, *video_ids),
+                f"UPDATE videos SET channel_thumb = ? WHERE user_id = ? AND video_id IN ({placeholders}) "
+                f"AND (channel_thumb = '' OR channel_thumb IS NULL)",
+                (ch_thumb, owner_uid, *video_ids),
             )
             if ch_name:
                 conn.execute(
-                    f"UPDATE videos SET channel_title = ? WHERE video_id IN ({placeholders}) AND (channel_title = '' OR channel_title IS NULL)",
-                    (ch_name, *video_ids),
+                    f"UPDATE videos SET channel_title = ? WHERE user_id = ? AND video_id IN ({placeholders}) "
+                    f"AND (channel_title = '' OR channel_title IS NULL)",
+                    (ch_name, owner_uid, *video_ids),
                 )
     conn.commit()
     return {"inserted": inserted, "skipped": skipped, "name": channel_name, "channel_id": cid}
 
 
 @app.route("/api/channels/<int:cid>/scrape", methods=["POST"])
+@channel_owner_required
 def scrape_channel(cid):
     conn = get_db()
     row = conn.execute("SELECT * FROM channels WHERE id = ?", (cid,)).fetchone()
@@ -1465,8 +2374,13 @@ def scrape_channel(cid):
 
 @app.route("/api/channels/scrape-all", methods=["POST"])
 def scrape_all_channels():
+    uid = _request_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
     conn = get_db()
-    rows = conn.execute("SELECT * FROM channels ORDER BY added_at ASC").fetchall()
+    rows = conn.execute(
+        "SELECT * FROM channels WHERE user_id = ? ORDER BY added_at ASC", (uid,)
+    ).fetchall()
     if not rows:
         conn.close()
         return jsonify({"error": "No channels to scrape"}), 400
@@ -1481,8 +2395,10 @@ def scrape_all_channels():
         total_backfilled += _backfill_dates_for_channel(conn, row["url"])
     deep_updated, _ = _deep_backfill_dates(conn, limit=50)
     total_backfilled += deep_updated
-    # Return updated channel list
-    updated_channels = conn.execute("SELECT * FROM channels ORDER BY added_at DESC").fetchall()
+    # Return updated channel list (scoped)
+    updated_channels = conn.execute(
+        "SELECT * FROM channels WHERE user_id = ? ORDER BY added_at DESC", (uid,)
+    ).fetchall()
     conn.close()
     return jsonify({
         "inserted": total_inserted,
@@ -1494,9 +2410,14 @@ def scrape_all_channels():
 
 @app.route("/api/videos/backfill-dates", methods=["POST"])
 def backfill_dates():
-    """Backfill missing dates for all channels using YouTube RSS feeds."""
+    """Backfill missing dates for the current user's channels via YouTube RSS."""
+    uid = _request_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
     conn = get_db()
-    rows = conn.execute("SELECT * FROM channels ORDER BY added_at ASC").fetchall()
+    rows = conn.execute(
+        "SELECT * FROM channels WHERE user_id = ? ORDER BY added_at ASC", (uid,)
+    ).fetchall()
     total = 0
     for row in rows:
         total += _backfill_dates_for_channel(conn, row["url"])
@@ -1504,12 +2425,20 @@ def backfill_dates():
     return jsonify({"backfilled": total})
 
 
-def _deep_backfill_dates(conn, limit: int = 20) -> tuple[int, int]:
-    """Deep backfill missing dates using yt-dlp individual lookups. Returns (updated, remaining)."""
-    missing = conn.execute(
-        "SELECT id, video_id FROM videos WHERE published_at = '' OR published_at IS NULL LIMIT ?",
-        (limit,),
-    ).fetchall()
+def _deep_backfill_dates(conn, limit: int = 20, user_id: int | None = None) -> tuple[int, int]:
+    """Deep backfill missing dates using yt-dlp individual lookups. Returns (updated, remaining).
+    When user_id is provided, scopes to that user; else operates globally (legacy)."""
+    if user_id is not None:
+        missing = conn.execute(
+            "SELECT id, video_id FROM videos WHERE user_id = ? "
+            "AND (published_at = '' OR published_at IS NULL) LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+    else:
+        missing = conn.execute(
+            "SELECT id, video_id FROM videos WHERE published_at = '' OR published_at IS NULL LIMIT ?",
+            (limit,),
+        ).fetchall()
     if not missing:
         return 0, 0
     updated = 0
@@ -1532,19 +2461,29 @@ def _deep_backfill_dates(conn, limit: int = 20) -> tuple[int, int]:
         except (subprocess.TimeoutExpired, json.JSONDecodeError):
             continue
     conn.commit()
-    remaining = conn.execute(
-        "SELECT COUNT(*) FROM videos WHERE published_at = '' OR published_at IS NULL"
-    ).fetchone()[0]
+    if user_id is not None:
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM videos WHERE user_id = ? AND (published_at = '' OR published_at IS NULL)",
+            (user_id,),
+        ).fetchone()[0]
+    else:
+        remaining = conn.execute(
+            "SELECT COUNT(*) FROM videos WHERE published_at = '' OR published_at IS NULL"
+        ).fetchone()[0]
     return updated, remaining
 
 
 @app.route("/api/videos/backfill-dates-deep", methods=["POST"])
 def backfill_dates_deep():
     """Backfill missing dates using yt-dlp individual video lookups (slow but thorough).
-    Processes videos in batches. Pass ?limit=N to control batch size (default 20)."""
+    Processes videos in batches. Pass ?limit=N to control batch size (default 20).
+    Scoped to the current user."""
+    uid = _request_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
     limit = request.args.get("limit", 20, type=int)
     conn = get_db()
-    updated, remaining = _deep_backfill_dates(conn, limit)
+    updated, remaining = _deep_backfill_dates(conn, limit, user_id=uid)
     conn.close()
     return jsonify({"backfilled": updated, "remaining": remaining})
 
@@ -1552,12 +2491,16 @@ def backfill_dates_deep():
 @app.route("/api/videos/backfill-views", methods=["POST"])
 def backfill_views():
     """Backfill missing/zero view counts via YouTube Data API v3 (batched, 50 IDs/call).
-    Falls back to per-video yt-dlp if no API key is configured."""
+    Falls back to per-video yt-dlp if no API key is configured.
+    Scoped to the current user."""
+    uid = _request_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
     limit = request.args.get("limit", 50, type=int)
     conn = get_db()
     missing = conn.execute(
-        "SELECT id, video_id FROM videos WHERE view_count IS NULL OR view_count = 0 LIMIT ?",
-        (limit,),
+        "SELECT id, video_id FROM videos WHERE user_id = ? AND (view_count IS NULL OR view_count = 0) LIMIT ?",
+        (uid, limit),
     ).fetchall()
     if not missing:
         conn.close()
@@ -1624,7 +2567,8 @@ def backfill_views():
 
     conn.commit()
     remaining = conn.execute(
-        "SELECT COUNT(*) FROM videos WHERE view_count IS NULL OR view_count = 0"
+        "SELECT COUNT(*) FROM videos WHERE user_id = ? AND (view_count IS NULL OR view_count = 0)",
+        (uid,),
     ).fetchone()[0]
     conn.close()
     return jsonify({"backfilled": updated, "remaining": remaining})
@@ -1633,12 +2577,18 @@ def backfill_views():
 @app.route("/api/videos/sync-published", methods=["POST"])
 def sync_published():
     """Refresh view_count + published_at for every video with status='published'
-    by batching YouTube Data API v3 videos.list calls (50 IDs per call)."""
+    by batching YouTube Data API v3 videos.list calls (50 IDs per call).
+    Scoped to the current user."""
+    uid = _request_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
     if not YOUTUBE_API_KEY:
         return jsonify({"error": "YOUTUBE_API_KEY not configured"}), 500
     conn = get_db()
     rows = conn.execute(
-        "SELECT id, video_id FROM videos WHERE status = 'published' AND video_id IS NOT NULL AND video_id != ''"
+        "SELECT id, video_id FROM videos WHERE user_id = ? AND status = 'published' "
+        "AND video_id IS NOT NULL AND video_id != ''",
+        (uid,),
     ).fetchall()
     if not rows:
         conn.close()
@@ -1687,7 +2637,10 @@ def sync_published():
 @app.route("/api/videos/sync-ids", methods=["POST"])
 def sync_ids():
     """Refresh view_count + published_at for a specific list of YouTube video_ids
-    (the ones visible in the current frontend filter)."""
+    (the ones visible in the current frontend filter). Scoped to the current user."""
+    uid = _request_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
     if not YOUTUBE_API_KEY:
         return jsonify({"error": "YOUTUBE_API_KEY not configured"}), 500
     body = request.get_json(silent=True) or {}
@@ -1698,8 +2651,8 @@ def sync_ids():
     conn = get_db()
     placeholders = ",".join("?" * len(requested_ids))
     rows = conn.execute(
-        f"SELECT id, video_id FROM videos WHERE video_id IN ({placeholders})",
-        requested_ids,
+        f"SELECT id, video_id FROM videos WHERE user_id = ? AND video_id IN ({placeholders})",
+        (uid, *requested_ids),
     ).fetchall()
     if not rows:
         conn.close()
@@ -1748,6 +2701,7 @@ def sync_ids():
 # ── Video Details (modal data) ────────────────────────────
 
 @app.route("/api/videos/<int:vid>/details", methods=["GET"])
+@video_owner_required
 def get_video_details(vid):
     conn = get_db()
     row = conn.execute("SELECT * FROM video_details WHERE video_id = ?", (vid,)).fetchone()
@@ -1813,6 +2767,7 @@ def get_video_details(vid):
 
 
 @app.route("/api/videos/<int:vid>/abc-choices", methods=["POST"])
+@video_owner_required
 def update_abc_choices(vid):
     data = request.get_json(force=True)
     raw = data.get("choices") or []
@@ -1838,6 +2793,7 @@ def update_abc_choices(vid):
 
 
 @app.route("/api/videos/<int:vid>/details", methods=["POST"])
+@video_owner_required
 def save_video_details(vid):
     data = request.get_json(force=True)
     conn = get_db()
@@ -2086,6 +3042,7 @@ def delete_content_folder():
 
 
 @app.route("/api/videos/<int:vid>/create-content-doc", methods=["POST"])
+@video_owner_required
 def create_content_doc(vid):
     """Create a starter content doc with the inspiration video's hook transcript."""
     conn = get_db()
@@ -2516,6 +3473,7 @@ Return ONLY the JSON object. No preamble, no markdown fences, no commentary."""
 
 
 @app.route("/api/videos/<int:vid>/link-youtube", methods=["POST"])
+@video_owner_required
 def link_card_to_youtube(vid):
     """Link a Published card to its real YouTube video.
     Accepts either a YouTube video_id (11 chars) or a full URL.
@@ -2703,6 +3661,7 @@ Return ONLY the JSON object. No preamble, no markdown fences."""
 
 
 @app.route("/api/videos/<int:vid>/create-screen-share-todo", methods=["POST"])
+@video_owner_required
 def create_screen_share_todo(vid):
     """Create a screen-share to-do for a card. Auto-fills via Gemini using the
     card's Brief Doc as primary input. Falls back to empty template if Gemini
@@ -2822,6 +3781,7 @@ Each scene = one screen state / one camera setup. App switches = new scenes.
 
 
 @app.route("/api/videos/<int:vid>/create-brief", methods=["POST"])
+@video_owner_required
 def create_brief(vid):
     """Create a starter brief for idea-validation BEFORE a content doc.
     Auto-fills via Gemini using the inspiration video's YouTube description + project context.
@@ -3005,6 +3965,7 @@ BRIEF CHECKLIST SCORE: {score_line}{notes_section}{final_thoughts_section}
 
 
 @app.route("/api/videos/<int:vid>/bundle", methods=["GET"])
+@video_owner_required
 def get_card_bundle(vid):
     """Return a single JSON bundle for a card: metadata + Brief Doc markdown +
     Screen Share To-Do markdown + Andy's last 5 / top 5 channel videos.
@@ -3329,6 +4290,7 @@ def _save_details_meta(conn, vid, meta):
 
 
 @app.route("/api/videos/<int:vid>/upload-init", methods=["POST"])
+@video_owner_required
 def video_upload_init(vid):
     """Return the NAS upload endpoint + secret + folder so the browser can POST direct."""
     if not NAS_UPLOAD_SECRET:
@@ -3341,6 +4303,7 @@ def video_upload_init(vid):
 
 
 @app.route("/api/videos/<int:vid>/upload-complete", methods=["POST"])
+@video_owner_required
 def video_upload_complete(vid):
     data = request.get_json(force=True) or {}
     conn = get_db()
@@ -3399,6 +4362,7 @@ def _blotato_upload_media(api_key, video_url):
 
 
 @app.route("/api/videos/<int:vid>/publish-blotato", methods=["POST"])
+@video_owner_required
 def video_publish_blotato(vid):
     api_key = os.environ.get("BLOTATO_API_KEY", "")
     if not api_key:
@@ -3494,6 +4458,7 @@ def video_publish_blotato(vid):
 
 
 @app.route("/api/videos/<int:vid>/publish-status", methods=["POST"])
+@video_owner_required
 def video_publish_status(vid):
     """Re-poll Blotato for each platform that returned a postSubmissionId, update DB."""
     api_key = os.environ.get("BLOTATO_API_KEY", "")
@@ -3552,19 +4517,31 @@ def video_publish_status(vid):
 
 @app.route("/api/keywords", methods=["GET"])
 def list_keywords():
+    uid = _request_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
     filter_type = request.args.get("filter", "all")  # all, favorites, youtube
     conn = get_db()
     if filter_type == "favorites":
-        rows = conn.execute("SELECT * FROM keywords WHERE is_favorite = 1 ORDER BY search_volume DESC").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM keywords WHERE user_id = ? AND is_favorite = 1 "
+            "ORDER BY search_volume DESC", (uid,)
+        ).fetchall()
     elif filter_type == "youtube":
-        rows = conn.execute("SELECT * FROM keywords WHERE is_youtube = 1 ORDER BY search_volume DESC").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM keywords WHERE user_id = ? AND is_youtube = 1 "
+            "ORDER BY search_volume DESC", (uid,)
+        ).fetchall()
     else:
-        rows = conn.execute("SELECT * FROM keywords ORDER BY search_volume DESC").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM keywords WHERE user_id = ? ORDER BY search_volume DESC", (uid,)
+        ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
 
 @app.route("/api/keywords/<int:kid>/favorite", methods=["POST"])
+@keyword_owner_required
 def toggle_favorite(kid):
     conn = get_db()
     row = conn.execute("SELECT is_favorite FROM keywords WHERE id = ?", (kid,)).fetchone()
@@ -3579,6 +4556,7 @@ def toggle_favorite(kid):
 
 
 @app.route("/api/keywords/<int:kid>/youtube", methods=["POST"])
+@keyword_owner_required
 def toggle_youtube(kid):
     conn = get_db()
     row = conn.execute("SELECT is_youtube FROM keywords WHERE id = ?", (kid,)).fetchone()
@@ -3593,6 +4571,7 @@ def toggle_youtube(kid):
 
 
 @app.route("/api/keywords/<int:kid>", methods=["DELETE"])
+@keyword_owner_required
 def delete_keyword(kid):
     conn = get_db()
     conn.execute("DELETE FROM keywords WHERE id = ?", (kid,))
@@ -3603,7 +4582,11 @@ def delete_keyword(kid):
 
 @app.route("/api/keywords/import-airtable", methods=["POST"])
 def import_keywords_airtable():
-    """Import keywords from the Airtable imported table."""
+    """Import keywords from the Airtable imported table. Scoped to the
+    current user \u2014 re-imports for one user won't show up for another."""
+    uid = _request_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
     import urllib.request
     token = os.environ.get("AIRTABLE_TOKEN", "")
     if not token:
@@ -3632,11 +4615,11 @@ def import_keywords_airtable():
             continue
         try:
             conn.execute(
-                """INSERT INTO keywords (keyword, search_volume, competition, overall, searches_30d, word_count)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO keywords (keyword, search_volume, competition, overall, searches_30d, word_count, user_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (keyword.strip(), int(f.get("Search volume", 0)), round(f.get("Competition", 0), 1),
                  round(f.get("Overall", 0), 1), int(f.get("30d ago searches", 0)),
-                 int(f.get("Number of words", 0))),
+                 int(f.get("Number of words", 0)), uid),
             )
             inserted += 1
         except sqlite3.IntegrityError:
@@ -4088,6 +5071,7 @@ def _diagram_row_to_dict(row):
 
 
 @app.route("/api/videos/<int:vid>/diagrams", methods=["GET"])
+@video_owner_required
 def diagrams_list(vid):
     conn = get_db()
     conn.row_factory = sqlite3.Row
@@ -4100,6 +5084,7 @@ def diagrams_list(vid):
 
 
 @app.route("/api/videos/<int:vid>/diagrams", methods=["POST"])
+@video_owner_required
 def diagrams_create(vid):
     diagram_id = "d" + uuid.uuid4().hex[:14]
     name = (request.json or {}).get("name") if request.is_json else None
@@ -4121,6 +5106,7 @@ def diagrams_create(vid):
 
 
 @app.route("/api/diagrams/<diagram_id>", methods=["GET"])
+@diagram_owner_required
 def diagrams_get(diagram_id):
     conn = get_db()
     conn.row_factory = sqlite3.Row
@@ -4132,6 +5118,7 @@ def diagrams_get(diagram_id):
 
 
 @app.route("/api/diagrams/<diagram_id>", methods=["PATCH"])
+@diagram_owner_required
 def diagrams_patch(diagram_id):
     payload = request.get_json(force=True, silent=True) or {}
     fields = []
@@ -4173,6 +5160,7 @@ def diagrams_patch(diagram_id):
 
 
 @app.route("/api/diagrams/<diagram_id>", methods=["DELETE"])
+@diagram_owner_required
 def diagrams_delete(diagram_id):
     import shutil
     conn = get_db()
@@ -4195,6 +5183,7 @@ def diagrams_delete(diagram_id):
 
 
 @app.route("/api/diagrams/<diagram_id>/image", methods=["POST"])
+@diagram_owner_required
 def diagrams_upload_image(diagram_id):
     f = request.files.get("image")
     if not f:
@@ -4244,6 +5233,7 @@ def diagrams_upload_image(diagram_id):
 
 
 @app.route("/api/diagrams/<diagram_id>/audio", methods=["POST"])
+@diagram_owner_required
 def diagrams_upload_audio(diagram_id):
     f = request.files.get("audio")
     if not f:
@@ -5202,6 +6192,7 @@ def _cs_clamp_int(val, lo, hi, default):
 
 
 @app.route("/api/videos/<int:vid>/chapter", methods=["GET"])
+@video_owner_required
 def chapter_get(vid):
     conn = get_db()
     conn.row_factory = sqlite3.Row
@@ -5219,6 +6210,7 @@ def chapter_get(vid):
 
 
 @app.route("/api/videos/<int:vid>/chapter", methods=["PUT"])
+@video_owner_required
 def chapter_put(vid):
     payload = request.get_json(force=True, silent=True) or {}
     items = payload.get("items", [])
@@ -5272,6 +6264,7 @@ def chapter_put(vid):
 
 
 @app.route("/api/videos/<int:vid>/chapter/from-doc", methods=["POST"])
+@video_owner_required
 def chapter_from_doc(vid):
     """Pull chapter titles from the linked content doc.
 
@@ -5337,6 +6330,7 @@ def chapter_from_doc(vid):
 
 
 @app.route("/api/videos/<int:vid>/chapter/render", methods=["POST"])
+@video_owner_required
 def chapter_render(vid):
     """Accept a full transition PNG sequence per clip and assemble N MP4 clips.
 
@@ -5513,6 +6507,7 @@ CRITICAL: Return ONLY the spoken text plus the === markers. No preamble, no code
 
 
 @app.route("/api/videos/<int:vid>/vocal-doc", methods=["GET"])
+@video_owner_required
 def get_vocal_doc(vid):
     conn = get_db()
     conn.row_factory = sqlite3.Row
@@ -5524,6 +6519,7 @@ def get_vocal_doc(vid):
 
 
 @app.route("/api/videos/<int:vid>/vocal-doc", methods=["POST"])
+@video_owner_required
 def save_vocal_doc(vid):
     body = request.get_json(force=True, silent=True) or {}
     text = body.get("vocal_doc", "")
@@ -5535,6 +6531,7 @@ def save_vocal_doc(vid):
 
 
 @app.route("/api/videos/<int:vid>/vocal-doc/generate", methods=["POST"])
+@video_owner_required
 def generate_vocal_doc(vid):
     """Take supplied content doc text (or fall back to stored script col) and
     produce a Benson-coded vocal doc via Gemini 2.5 Flash."""
@@ -5628,6 +6625,7 @@ Output ONLY the tagged vocal doc."""
 
 
 @app.route("/api/videos/<int:vid>/visuals-doc", methods=["GET"])
+@video_owner_required
 def get_visuals_doc(vid):
     conn = get_db()
     conn.row_factory = sqlite3.Row
@@ -5639,6 +6637,7 @@ def get_visuals_doc(vid):
 
 
 @app.route("/api/videos/<int:vid>/visuals-doc", methods=["POST"])
+@video_owner_required
 def save_visuals_doc(vid):
     body = request.get_json(force=True, silent=True) or {}
     text = body.get("visuals_doc", "")
@@ -5650,6 +6649,7 @@ def save_visuals_doc(vid):
 
 
 @app.route("/api/videos/<int:vid>/visuals-doc/generate", methods=["POST"])
+@video_owner_required
 def generate_visuals_doc(vid):
     """Read the stored vocal_doc and run a single Gemini pass that inserts
     [AVATAR]/[DIAGRAM]/[SCREEN] tags before each paragraph block. Saves to
@@ -5816,6 +6816,7 @@ def _parse_visuals_blocks(text):
 
 
 @app.route("/api/videos/<int:vid>/visuals-doc/compute-blocks", methods=["POST"])
+@video_owner_required
 def compute_visuals_blocks(vid):
     """Parse the saved visuals_doc and return time-aligned blocks ready for
     timeline placement. Uses the latest voiceover take's duration via linear
@@ -5924,6 +6925,7 @@ def _sanitize_visual_tags(raw):
 
 
 @app.route("/api/videos/<int:vid>/visual-tags", methods=["GET"])
+@video_owner_required
 def get_visual_tags(vid):
     conn = get_db()
     conn.row_factory = sqlite3.Row
@@ -5939,6 +6941,7 @@ def get_visual_tags(vid):
 
 
 @app.route("/api/videos/<int:vid>/visual-tags", methods=["POST"])
+@video_owner_required
 def save_visual_tags(vid):
     body = request.get_json(force=True, silent=True) or {}
     tags = _sanitize_visual_tags(body.get("tags"))
@@ -6056,6 +7059,7 @@ def _sentence_spans(cleaned, seg):
 
 
 @app.route("/api/videos/<int:vid>/visual-tags/auto-suggest", methods=["POST"])
+@video_owner_required
 def auto_suggest_visual_tags(vid):
     """Generate a sprinkled mix of diagram + avatar + text_anim + screen tags.
 
@@ -6521,6 +7525,7 @@ def auto_suggest_visual_tags(vid):
 
 
 @app.route("/api/videos/<int:vid>/visual-tags/apply", methods=["POST"])
+@video_owner_required
 def apply_visual_tags(vid):
     """Resolve each tag to a concrete timeline placement using the latest
     voiceover take's duration. Char offsets are in the CLEANED vocal_doc
@@ -6735,6 +7740,7 @@ def _find_script_in_doc(script: str, cleaned_doc: str):
 
 
 @app.route("/api/videos/<int:vid>/diagrams/auto-place", methods=["POST"])
+@video_owner_required
 def diagrams_auto_place(vid):
     """For each diagram with a stored `script`, verbatim-match it against the
     cleaned vocal_doc and return its timestamped placement on the timeline.
@@ -7091,12 +8097,14 @@ def _save_voiceover_state(vid, state):
 
 
 @app.route("/api/videos/<int:vid>/say/voiceover", methods=["GET"])
+@video_owner_required
 def get_say_voiceover(vid):
     return jsonify(_load_voiceover_state(vid))
 
 
 @app.route("/api/videos/<int:vid>/say/voiceover/<int:idx>/compute-segments",
            methods=["POST"])
+@video_owner_required
 def compute_voiceover_segments(vid, idx):
     """Backfill step segments on an existing voiceover take without re-calling
     ElevenLabs. Uses ffprobe for duration + linear char→time interpolation
@@ -7183,6 +8191,7 @@ def compute_voiceover_segments(vid, idx):
 
 
 @app.route("/api/videos/<int:vid>/say/voiceover/<int:idx>", methods=["DELETE"])
+@video_owner_required
 def delete_say_voiceover(vid, idx):
     state = _load_voiceover_state(vid)
     gens = state.get("generations", [])
@@ -7372,6 +8381,7 @@ def _tts_run(job_id, vid, text, voice_id, model_id, api_key, segments=None):
 
 
 @app.route("/api/videos/<int:vid>/say/synthesize", methods=["POST"])
+@video_owner_required
 def synthesize_say(vid):
     """Kick off an async ElevenLabs synthesis. Returns {job_id} immediately;
     client polls /status/<job_id> for progress and final result.
@@ -7447,6 +8457,7 @@ def synthesize_say(vid):
 
 
 @app.route("/api/videos/<int:vid>/say/synthesize/status/<job_id>", methods=["GET"])
+@video_owner_required
 def synthesize_status(vid, job_id):
     job = _tts_job_get(job_id)
     if not job:
@@ -7473,6 +8484,7 @@ def synthesize_status(vid, job_id):
 # ── Editor (CapCut-style timeline) ───────────────────────────────────────
 
 @app.route("/api/videos/<int:vid>/assets", methods=["GET"])
+@video_owner_required
 def video_assets(vid):
     """List all rendered assets (diagrams + chapters) for this video."""
     conn = get_db()
@@ -8052,6 +9064,7 @@ def _gemini_generate_diagram_image(brief_obj, api_key):
 
 
 @app.route("/api/videos/<int:vid>/diagrams/generate-batch", methods=["POST"])
+@video_owner_required
 def diagrams_generate_batch(vid):
     """Generate N diagrams in one shot. Body: {briefs?: [{name, brief}]}.
     If briefs missing, derive from chapter items. Runs in parallel."""
@@ -8292,6 +9305,7 @@ _DIAGRAM_PIXEL_PROMPT = (
 
 
 @app.route("/api/diagrams/<diagram_id>/regenerate", methods=["POST"])
+@diagram_owner_required
 def diagram_regenerate(diagram_id):
     """Redo a single diagram's source image via the same 2-step SOP pipeline
     used by /generate-batch. Reuses the chapter brief associated with this
@@ -8366,6 +9380,7 @@ def diagram_regenerate(diagram_id):
 
 
 @app.route("/api/diagrams/<diagram_id>/pixel-art", methods=["POST"])
+@diagram_owner_required
 def diagram_pixel_art(diagram_id):
     """Transform the diagram's current image into 16-bit pixel art via Nano Banana Pro
     (`gemini-3-pro-image-preview`). Replaces image_path with the new pixel version."""
@@ -8745,6 +9760,7 @@ def _faceless_prompt_builder(video_title, nudge=""):
 
 @app.route("/api/videos/<int:vid>/gemini-faceless", methods=["POST"])
 @login_required
+@video_owner_required
 def gemini_faceless(vid):
     """Direct-to-Gemini faceless thumbnails — no Claude judgment, no face refs."""
     if not _FACELESS_SOP_PATH.exists():
@@ -8759,6 +9775,7 @@ def gemini_faceless(vid):
 
 @app.route("/api/videos/<int:vid>/gemini-pixel-face", methods=["POST"])
 @login_required
+@video_owner_required
 def gemini_pixel_face(vid):
     """Direct-to-Gemini pixel-face — sends the locked SOP prompt template (not
     the full SOP) substituted with Claude Code brand info, plus 4 face refs + 1
@@ -8777,6 +9794,7 @@ def gemini_pixel_face(vid):
 
 @app.route("/videos/<int:vid>/thumb-edit/<int:slot>", methods=["GET"])
 @login_required
+@video_owner_required
 def thumb_editor_page(vid, slot):
     """Serve the miniPaint-wrapped thumbnail editor for a single slot.
     Opens in a new tab from the studio. Pre-loads the slot's current PNG
@@ -8812,6 +9830,7 @@ def thumb_editor_page(vid, slot):
 
 @app.route("/diagrams/<diagram_id>/image-edit", methods=["GET"])
 @login_required
+@diagram_owner_required
 def diagram_image_editor_page(diagram_id):
     """miniPaint-wrapped editor for a single diagram's source image. Opens in a
     new tab from Diagram Studio. Pre-loads the diagram's current image as layer 1
@@ -8842,6 +9861,7 @@ def diagram_image_editor_page(diagram_id):
 
 @app.route("/api/videos/<int:vid>/thumb-slot/<int:slot>", methods=["POST"])
 @login_required
+@video_owner_required
 def thumb_slot_save(vid, slot):
     """Receive an edited PNG from the miniPaint wrapper, save it to disk, and
     write the URL into original_thumbs[slot] (overwriting that slot only)."""
@@ -8945,6 +9965,7 @@ def thumb_change_text():
 
 
 @app.route("/api/videos/<int:vid>/editor-bootstrap", methods=["GET"])
+@video_owner_required
 def editor_bootstrap(vid):
     """Single payload the OpenCut bridge page needs to seed a new project:
     title, content/bullet doc text, and the rendered asset list."""
@@ -9022,6 +10043,7 @@ def editor_bootstrap(vid):
 
 
 @app.route("/api/videos/<int:vid>/editor", methods=["GET"])
+@video_owner_required
 def get_editor_state(vid):
     conn = get_db()
     conn.row_factory = sqlite3.Row
@@ -9039,6 +10061,7 @@ def get_editor_state(vid):
 
 
 @app.route("/api/videos/<int:vid>/editor", methods=["POST"])
+@video_owner_required
 def save_editor_state(vid):
     body = request.get_json(force=True, silent=True) or {}
     payload = json.dumps(body)
@@ -9078,6 +10101,7 @@ def _editor_normalize_state(state):
 
 
 @app.route("/api/videos/<int:vid>/editor/render", methods=["POST"])
+@video_owner_required
 def render_editor_timeline(vid):
     """Compose timeline into a single MP4.
     - Video lane: per-clip trim (in/out), gaps padded to black, sequential concat
@@ -9325,6 +10349,7 @@ def _uniform_boundaries(duration, n_segments):
 
 
 @app.route("/api/videos/<int:vid>/screen-share/detect", methods=["POST"])
+@video_owner_required
 def screen_share_detect(vid):
     """Detect cut boundaries for a raw screen-share video.
 
@@ -9363,6 +10388,7 @@ def screen_share_detect(vid):
 
 
 @app.route("/api/videos/<int:vid>/screen-share/cut", methods=["POST"])
+@video_owner_required
 def screen_share_cut(vid):
     """Cut the raw screen-share into N segments at user-accepted boundaries.
 

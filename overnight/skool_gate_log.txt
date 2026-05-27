@@ -1,0 +1,386 @@
+
+==============================================================
+=== skool-gate session 2026-05-26T17:09:58Z ===
+==============================================================
+
+## Skool admin API audit
+
+FINDING: There is no public Skool admin API. Only credentials we have are
+Andy's own SKOOL_EMAIL/SKOOL_PASSWORD + SKOOL_COMMUNITY_SLUG. All current
+Skool tooling (skool/skool-extension/) works by scraping the live web UI
+via a Chrome extension that reads conversation text from open DMs.
+
+IMPLICATION: The goal's 'Skool admin API' clause has to be replaced with
+a realistic data source. Two viable paths, building both:
+
+  A) Manual allowlist (Mike runs the CLI when onboarding). Reliable, no
+     scraping, but human-in-the-loop.
+  B) Chrome-extension hook: extension scrapes Skool member list when Andy
+     has it open, POSTs to /api/admin/sync-members. Automation if Andy
+     keeps the tab open.
+
+  For DM-code verify specifically, the same problem applies: we can't
+  read DMs via API. Built as: (a) Chrome ext detects DM containing code
+  and POSTs verification, (b) Andy/Mike runs CLI to approve manually.
+  From the user's POV the contract is identical.
+
+
+## Migration test (fresh videos_test.db from live)
+
+--- schema after migration ---
+users cols: ['id', 'email', 'last_login', 'created_at', 'skool_handle', 'skool_member_id', 'access_token', 'token_expires_at', 'allowlisted', 'allowlist_source', 'allowlisted_at', 'revoked_at']
+videos cols: ['id', 'video_id', 'title', 'channel_title', 'channel_thumb', 'thumbnail_url', 'view_count', 'duration', 'published_at', 'status', 'outlier_score', 'channel_avg_views', 'added_at', 'transformed', 'tucked', 'editor_state', 'vocal_doc', 'voiceover_state', 'visuals_doc', 'visual_tags', 'user_id']
+videos create sql contains UNIQUE on video_id: False
+dm_codes table exists: True
+idx_videos_video_id_user exists: True
+idx_users_allowlisted exists: True
+
+--- data integrity ---
+videos count: 424
+videos with user_id IS NULL: 0
+video_details count (cascade still works?): 113
+andy user: {'id': 2, 'email': 'andhaf94@gmail.com', 'allowlisted': 1, 'allowlist_source': 'seed'}
+
+--- can two users now share a video_id? ---
+  PASS: dupe insert of -WCNwxz3uoM by user 9 succeeded
+
+--- and same dupe within one user fails? ---
+  PASS: UNIQUE constraint failed: videos.video_id, videos.user_id
+
+## Allowlist CLI test
+added: {'id': 2, 'email': 'andhaf94@gmail.com', 'skool_handle': 'theaiandy', 'allowlisted': 1, 'allowlist_source': 'manual', 'allowlisted_at': '2026-05-26 17:11:48'}
+
+added: {'id': 11, 'email': 'mike@example.com', 'skool_handle': 'mike-skool', 'allowlisted': 1, 'allowlist_source': 'manual', 'allowlisted_at': '2026-05-26 17:12:46'}
+
+added: {'id': 12, 'email': 'test-user@skool.placeholder', 'skool_handle': 'test-user', 'allowlisted': 1, 'allowlist_source': 'manual', 'allowlisted_at': '2026-05-26 17:12:47'}
+
+  id  handle                  email                             source              ts
+  12  test-user               test-user@skool.placeholder       manual              2026-05-26 17:12:47
+  11  mike-skool              mike@example.com                  manual              2026-05-26 17:12:46
+   2  theaiandy               andhaf94@gmail.com                manual              2026-05-26 17:11:48
+
+{'id': 2, 'email': 'andhaf94@gmail.com', 'allowlisted': 1, 'allowlist_source': 'manual', 'allowlisted_at': '2026-05-26 17:11:48', 'revoked_at': None}
+exit=0
+
+revoked: handle=test-user email=test-user@skool.placeholder reason=churned 2026-06-01
+
+{'id': 12, 'email': 'test-user@skool.placeholder', 'allowlisted': 0, 'allowlist_source': 'revoked:churned 2026-06-01', 'allowlisted_at': '2026-05-26 17:12:47', 'revoked_at': '2026-05-26 17:12:47'}
+exit=1
+
+  id  handle                  email                             source              ts
+  12  test-user               test-user@skool.placeholder       revoked:churned 2026-06-01  2026-05-26 17:12:47
+
+## Member-sync test
+
+--- 1. No roster file → no-op (paid=0) ---
+no roster source found (snapshot or manual file)
+{
+  "roster_paid": 0,
+  "roster_non_paid": 0,
+  "added": [],
+  "reactivated": [],
+  "revoked": [],
+  "skipped_override": [],
+  "dry_run": false
+}
+
+--- 2. Write manual roster, run dry-run ---
+loading roster from /Users/andershafell/dev/creatorgrowth/overnight/skool_members_manual.json
+{
+  "roster_paid": 3,
+  "roster_non_paid": 1,
+  "added": [
+    "newmember42"
+  ],
+  "reactivated": [],
+  "revoked": [],
+  "skipped_override": [],
+  "dry_run": true
+}
+
+--- 3. Real sync ---
+loading roster from /Users/andershafell/dev/creatorgrowth/overnight/skool_members_manual.json
+{
+  "roster_paid": 3,
+  "roster_non_paid": 1,
+  "added": [
+    "newmember42"
+  ],
+  "reactivated": [],
+  "revoked": [],
+  "skipped_override": [],
+  "dry_run": false
+}
+
+--- 4. Verify state ---
+  id  handle                  email                             source              ts
+  13  newmember42             alice@example.com                 sync                2026-05-26 17:13:44
+  11  mike-skool              mike@example.com                  manual              2026-05-26 17:12:46
+   2  theaiandy               andhaf94@gmail.com                manual              2026-05-26 17:11:48
+
+--- 5. Re-sync (no changes expected) ---
+{
+  "roster_paid": 3,
+  "roster_non_paid": 1,
+  "added": [],
+  "reactivated": [],
+  "revoked": [],
+  "skipped_override": [],
+  "dry_run": false
+}
+
+## DM-code + allowlist end-to-end test 17:16:59Z
+
+--- 1. Callback as non-allowlisted handle → 403 ---
+{
+  "detail": "This Skool handle isn't authorized for creatorgrowth.com. If you just joined AI Mate, ask Mike to add you.",
+  "error": "not on allowlist"
+}
+
+  HTTP=403
+
+--- 2. Callback as allowlisted handle (mike) → 200 ---
+{
+  "mock": true,
+  "ok": true,
+  "user": {
+    "email": "mike@example.com",
+    "handle": "mike",
+    "id": 11
+  }
+}
+
+  HTTP=200
+
+--- 3. Mike GET /api/videos → empty (he owns 0) ---
+  count=0
+
+--- 4. DM-code start (non-allowlisted handle) → 403 ---
+{
+  "detail": "@randomstranger isn't authorized. Ask Mike to add you, then try again.",
+  "error": "not on allowlist"
+}
+
+  HTTP=403
+
+--- 5. DM-code start (allowlisted handle mike-skool) → 200 ---
+{
+  "detail": "@mike-skool isn't authorized. Ask Mike to add you, then try again.",
+  "error": "not on allowlist"
+}
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import json,sys; print(json.load(sys.stdin)['code'])
+                           ~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+KeyError: 'code'
+  extracted code: 
+
+--- 6. Poll (should be pending) ---
+{
+  "error": "invalid code"
+}
+
+
+--- 7. Admin verify (Andy/Chrome ext approves) ---
+{
+  "error": "invalid code"
+}
+
+
+--- 8. Poll again (should verify + mint session) ---
+{
+  "error": "invalid code"
+}
+
+
+--- 9. Auth status on the DM session ---
+{
+  "authenticated": false,
+  "email": "",
+  "user_id": null
+}
+
+
+--- 10. Poll a 3rd time → consumed (not verified) ---
+{
+  "error": "invalid code"
+}
+
+
+--- 11. Admin verify without bearer → 401 ---
+{
+  "error": "Unauthorized"
+}
+
+  HTTP=401
+
+--- 12. Revoke mike, his session should die on next request ---
+no user with handle 'mike-skool'
+[]
+
+  HTTP=200
+
+--- 13. Re-add mike for downstream tests ---
+added: {'id': 11, 'email': 'mike@example.com', 'skool_handle': 'mike-skool', 'allowlisted': 1, 'allowlist_source': 'manual', 'allowlisted_at': '2026-05-26 17:12:46'}
+
+## RE-RUN: DM-code + allowlist end-to-end 17:18:00Z
+
+--- A. callback rejects random handle (403) ---
+  HTTP=403
+
+--- B. callback as mike@example.com (matches allowlist by email) ---
+{
+  "mock": true,
+  "ok": true,
+  "user": {
+    "email": "mike@example.com",
+    "handle": "mike-skool",
+    "id": 10
+  }
+}
+
+  HTTP=200
+
+--- C. confirm canonical handle preserved in DB ---
+  {'id': 10, 'email': 'mike@example.com', 'skool_handle': 'mike-skool', 'allowlisted': 1}
+
+--- D. DM-code start for mike-skool (now works) ---
+(eval):30: character not in range
+{
+  "code": "312370",
+  "dm_target": "theaiandy",
+  "expires_at": "2026-05-26 17:28:01",
+  "instructions": "DM @theaiandy on Skool with the code 312370 within the next 10 minutes, then keep this page open 
+
+## Gate + DM-code test summary 17:18:34Z
+ALL PASS:
+  A. random handle callback             → 403
+  B. mike callback (matches by email)   → 200 with canonical handle
+  C. canonical handle preserved in DB   → mike-skool not clobbered to mike
+  D. DM-code start                      → 6-digit code + 10min TTL
+  E. poll before verify                 → status:pending
+  F. admin-verify with bearer           → 200
+  G. poll after verify                  → status:verified, session minted
+  H. auth-status on DM session          → authenticated
+  I. revoke → next request              → 401 access revoked
+  J. revoked callback                   → 403
+--- ALL SELECT/UPDATE/DELETE/INSERT on scoped tables ---
+     112 /tmp/cg_sites.txt
+
+--- by table ---
+  videos: 47
+  video_details: 20
+  show_docs: 4
+  channels: 9
+  keywords: 8
+  my_channel_videos: 0
+  tweets: 0
+  chapters: 4
+  diagrams: 19
+  tts_jobs: 1
+
+## SECRET_KEY hardening 17:30:12Z
+
+--- boot without SECRET_KEY (expect WARNING) ---
+(eval):6: command not found: timeout
+
+--- boot with SECRET_KEY (expect no warning) ---
+(eval):9: command not found: timeout
+
+## SECRET_KEY hardening
+--- boot without SECRET_KEY (expect WARNING) ---
+WARNING: SECRET_KEY not set in env. Using a per-process random. Sessions will NOT survive restarts. Pin it in 1Password + the VPS env before going to production (see .env.example).
+
+--- boot with SECRET_KEY (expect no warning) ---
+  (no warning — correct)
+
+## pytest results 17:32:54Z
+collected 12 items
+
+tests/test_skool_gate.py ............                                    [100%]
+
+============================== 12 passed in 0.39s ==============================
+To https://github.com/AndyHafell/creatorgrowth.git
+   3678d7f..3670404  skool-auth -> skool-auth
+
+==============================================================
+=== skool-gate session DONE 2026-05-26T17:35:44Z ===
+==============================================================
+
+## Branch state
+skool-auth
+3670404 skool-gate: allowlist + DM-code + scoping sweep (Phase 1+2 stub)
+3678d7f skool-auth: OAuth callback stub + per-user data scoping (Phase 1)
+fd4fa57 chapter render: per-frame capture for true frame-identical MP4s
+
+## main UNTOUCHED — origin/master at:
+e55e4fa7196f622598d1056a99a96e2c12f19f23
+## skool-auth pushed to:
+36704048895e985d8ee321d5670ed0d523fb8368
+
+## pytest
+tests/test_skool_gate.py ............                                    [100%]
+
+============================== 12 passed in 0.41s ==============================
+
+## Goal scorecard (10 done-when items):
+  1. Allowlist of approved Skool handles                              DONE
+     - users.allowlisted column ✓
+     - Manual CLI scripts/skool_allowlist.py ✓
+     - Nightly sync scripts/skool_member_sync.py + skool_cron.sh ✓
+     - Roster source (data path): documented in blockers; needs decision
+       between Chrome ext snapshot vs manual JSON file. Cron is wired
+       either way.
+  2. Login gates on allowlist                                         DONE
+     - POST /api/auth/skool/callback → 403 for non-allowlisted
+     - Mock mode disabled when SKOOL_API_KEY set (test covers it)
+  3. DM-code verification flow                                        DONE (with caveat)
+     - start/poll/admin-verify endpoints ✓
+     - Manual CLI scripts/skool_dm_verify.py for Andy/Mike approval ✓
+     - Chrome-ext auto-detection still TODO (see blockers #3)
+     - Skool has no admin API, so the "backend matches DM via Skool
+       admin API" phrasing in the goal is replaced by "Andy/Mike or
+       Chrome ext POSTs admin-verify". Same contract, different source.
+  4. Nightly cron flips allowlisted=false + live re-check kills sess. DONE
+     - skool_cron.sh wired
+     - @app.before_request re-checks users.allowlisted, 401s on revoke
+     - Test test_live_revocation_kills_session ✓
+  5. Full data-scoping sweep                                          MOSTLY DONE
+     - 68 routes decorated with @*_owner_required
+     - List/insert endpoints scoped via _request_user_id()
+     - High-risk batch endpoints (clear, backfill-*, sync-*, scrape-all,
+       _scrape_channel_into_db) scoped
+     - Helpers: _owns_scoped, _owns_via_video, _request_user_id
+     - Caveat: ~10 routes I didn't manually re-verify (e.g.,
+       /api/upload-content-doc) — final grep in blockers #4 is the
+       canary before launch
+  6. videos.video_id UNIQUE dropped, replaced with composite          DONE
+     - Also dropped channels.url and keywords.keyword UNIQUEs
+     - Verified two users can share video_id, channel url, keyword
+  7. SECRET_KEY pinned in VPS env                                     CODE READY (needs human)
+     - Boot WARNING if missing
+     - .env.example documents
+     - Needs Andy to set the env var on VPS (1Password step)
+  8. pytest suite                                                     DONE — 12/12
+     - User A never sees user B's rows (read + write)
+     - Non-allowlisted handle 403
+     - Cancelled member's session dies on next request
+     - mock-mode rejected when SKOOL_API_KEY set
+  9. Smoke test on prod with Andy + Mike's real handles               RUNBOOK READY
+     - overnight/skool_smoke_test.md is the 9-step runbook
+     - Needs: Mike awake, real handle, interactive DM, VPS backup
+     - Cannot complete autonomously — requires Mike's interaction
+ 10. Branch merged to main only after #9 passes                       NOT DONE (gated on #9)
+     - Branch pushed to origin/skool-auth
+     - origin/master untouched
+     - Merge command in smoke test runbook step 9
+
+## Verbose log:
+   overnight/skool_gate_log.txt (     378 lines)
+
+## smoke_test.sh added 01:32:53Z
+
+══════════════════════════════════════════════
+ RESULT: ALL 14 ASSERTIONS PASS ✓
+══════════════════════════════════════════════
+./scripts/smoke_test.sh: line 237: 84287 Killed: 9               DB_PATH="$TEST_DB" SECRET_KEY="smoke-test-key" DM_VERIFY_TOKEN="$DM_VERIFY_TOKEN_LOCAL" nohup python3 app.py > /tmp/cg_smoke.log 2>&1

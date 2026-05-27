@@ -1,0 +1,198 @@
+=== skool-auth session 2026-05-26T16:36:58Z ===
+
+=== plan written 16:39:52Z ===
+     318 overnight/skool_auth_plan.md
+total 56
+drwxr-xr-x@  5 andershafell  staff    160 May 26 23:39 .
+drwxr-xr-x@ 24 andershafell  staff    768 May 26 23:37 ..
+-rw-r--r--@  1 andershafell  staff   7294 May 26 23:38 _selects_raw.txt
+-rw-r--r--@  1 andershafell  staff    118 May 26 23:39 skool_auth_log.txt
+-rw-r--r--@  1 andershafell  staff  16122 May 26 23:39 skool_auth_plan.md
+users: ['id', 'email', 'last_login', 'created_at', 'skool_handle', 'skool_member_id', 'access_token', 'token_expires_at']
+videos has user_id: True
+videos: total=424 null_user_id=0
+show_docs: total=2 null_user_id=0
+channels: total=8 null_user_id=0
+keywords: total=301 null_user_id=0
+my_channel_videos: total=401 null_user_id=0
+tweets: total=6 null_user_id=0
+Andy users row: (2, 'andhaf94@gmail.com')
+all users: [(6, 'a@b.com'), (5, 'admin@test.com'), (2, 'andhaf94@gmail.com'), (7, 'andy@aiandy.com'), (3, 'andyemersongo@gmail.com'), (4, 'hamad@thehamflix.com'), (1, 'test@test.com')]
+indexes: ['idx_videos_user_id', 'idx_show_docs_user_id', 'idx_channels_user_id', 'idx_keywords_user_id', 'idx_my_channel_videos_user_id', 'idx_tweets_user_id']
+
+=== curl test 16:44:15Z ===
+
+--- 1. GET /login (cookie jar) ---
+  status=200 cookies_written=no
+
+--- 2. POST /api/auth/skool/callback (test@example.com mock) ---
+{
+  "mock": true,
+  "ok": true,
+  "user": {
+    "email": "test@example.com",
+    "handle": "test",
+    "id": 11
+  }
+}
+
+  HTTP=200
+
+--- 3. GET /api/auth-status (confirm session) ---
+{
+  "authenticated": true,
+  "email": "test@example.com",
+  "user_id": 11
+}
+
+
+--- 4. GET /api/videos (should be empty — test user owns 0 rows) ---
+  raw response length=2
+  type=list count=0
+
+--- 5. Cross-check: same flow as Andy → should return 424 videos ---
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+    r = json.loads('''[
+      {
+    ...<7248 lines>...
+      }
+    ]''')
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/json/__init__.py", line 352, in loads
+    return _default_decoder.decode(s)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/json/decoder.py", line 345, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/json/decoder.py", line 361, in raw_decode
+    obj, end = self.scan_once(s, idx)
+               ~~~~~~~~~~~~~~^^^^^^^^
+json.decoder.JSONDecodeError: Invalid control character at: line 292 column 28 (char 9858)
+
+--- 6. Verify isolation: test user still sees nothing ---
+  count=0
+
+--- 7. DB check: test user got inserted ---
+  (2, 'andhaf94@gmail.com', 'andhaf94', 'mock_test456')
+  (11, 'test@example.com', 'test', 'mock_test123')
+
+--- Step 5 redo: Andy video count (clean) ---
+  count=424
+  distinct user_ids=[None]
+  (884, 'custom_49c79370', 'Claude Code Built a Motion Graphics Tool That Grad')
+  (883, 'custom_94a05c36', "Claude Code Built My SaaS's Skool Login Overnight")
+  (882, 'custom_3596e400', 'Claude Code Polished AgentFlow Web Overnight (v0.2')
+
+--- Cookie file check ---
+-rw-r--r--@ 1 andershafell  wheel  341 May 26 23:44 /tmp/cg_jar.txt
+-rw-r--r--@ 1 andershafell  wheel  345 May 26 23:44 /tmp/cg_jar_andy.txt
+
+--- Session cookie payload (jar) ---
+#HttpOnly_127.0.0.1	FALSE	/	FALSE	1782405855	session	.eJw1i8EKgCAQBf9lzxJ49dSfyKIPklwVXSGI_j0PdZxh5ibf0IULipLTPmGIpx4LU2BF_CWEUyZHiqE7LpaWsYUqZGictWZ_cIkZX7HsHOg-rd_a5wVz9CQU.ahXN3w.FgPieuA7dg4kwZAhFVvnbFQfA-0
+
+=== FINAL CURL TEST 16:45:22Z ===
+
+--- 1. test@example.com login ---
+  /login status=200
+{
+  "mock": true,
+  "ok": true,
+  "user": {
+    "email": "test@example.com",
+    "handle": "test",
+    "id": 11
+  }
+}
+
+  HTTP=200
+
+--- 2. GET /api/videos as test user ---
+  count=0
+  user_ids in payload=[]
+  PASS: only test user rows
+
+--- 3. andhaf94@gmail.com login (separate cookie jar) ---
+  count=424
+  user_ids in payload=[2]
+  PASS: only Andy rows (uid=2)
+
+--- 4. Re-verify test user still scoped (after Andy login) ---
+  test user count=0 (expect 0)
+  PASS
+
+--- 5. Unauth check (no cookies) ---
+  /api/videos no-cookie status=401 (expect 401)
+
+--- 6. POST as test user, verify isolation on write ---
+<!doctype html>
+<html lang=en>
+<title>400 Bad Request</title>
+<h1>Bad Request</h1>
+<p>Failed to decode JSON object: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)</p>
+
+  HTTP=400
+
+  test user count after insert=0
+
+--- 6b. POST as test user (clean JSON via file) ---
+{
+  "channel_thumb": "https://yt3.googleusercontent.com/MOWpaiGJdgN4aKMI-NGQLL4jMVP3aDORlQpOBWooi0GSE2TGt4_9ncyepk1pCh-yWQ795AhPbw=s900-c-k-c0x00ffffff-no-rj",
+  "channel_title": "Rick Astley",
+  "duration": "3:33",
+  "id": 885,
+  "outlier_score": 0,
+  "published_at": "2009-10-25T00:00:00Z",
+  "status": "options",
+  "thumbnail_url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
+  "time_ago": "16 years ago",
+  "title": "Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)",
+  "transformed": false,
+  "tucked": false,
+  "user_id": 11,
+  "video_id": "dQw4w9WgXcQ",
+
+--- 6c. test user GET after insert ---
+  test user count=1
+    id=885 video_id=dQw4w9WgXcQ user_id=11 title=Rick Astley - Never Gonna Give You Up (Official Vi
+
+--- 6d. Andy still sees 424 (write didnt leak) ---
+  Andy count=424
+  uids in Andy payload=[2]
+remote: 
+remote: Create a pull request for 'skool-auth' on GitHub by visiting:        
+remote:      https://github.com/AndyHafell/creatorgrowth/pull/new/skool-auth        
+remote: 
+To https://github.com/AndyHafell/creatorgrowth.git
+ * [new branch]      skool-auth -> skool-auth
+branch 'skool-auth' set up to track 'origin/skool-auth'.
+
+=== DONE 16:48:03Z ===
+
+--- BRANCH STATE ---
+skool-auth
+3678d7f skool-auth: OAuth callback stub + per-user data scoping (Phase 1)
+fd4fa57 chapter render: per-frame capture for true frame-identical MP4s
+
+--- MAIN UNTOUCHED ---
+e55e4fa7196f622598d1056a99a96e2c12f19f23
+fd4fa57475816d4c6bced90793b0be26ece05ce1
+
+--- FILES SHIPPED ---
+ .gitignore                         |   6 +
+ app.py                             | 373 ++++++++++++++++++++++++++++++++-----
+ overnight/migration_skool_auth.sql |  49 +++++
+ overnight/skool_auth_blockers.md   | 167 +++++++++++++++++
+ overnight/skool_auth_log.txt       | 160 ++++++++++++++++
+ overnight/skool_auth_plan.md       | 318 +++++++++++++++++++++++++++++++
+ templates/index.html               | 150 ++++++++++++---
+ 7 files changed, 1158 insertions(+), 65 deletions(-)
+
+--- VERIFICATION SUMMARY ---
+All five required curl-test assertions PASS:
+  /login                            → 200 + cookie jar created
+  /api/auth/skool/callback (mock)   → 200 with session (user_id=11)
+  /api/videos as test user          → []        (0 rows, scope OK)
+  /api/videos as Andy (uid=2)       → 424 rows  (scope OK)
+  /api/videos no-cookie             → 401       (guard OK)
+  POST /api/videos as test user     → row created with user_id=11
+
