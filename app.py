@@ -57,6 +57,62 @@ CONTENT_DIR = Path(os.environ.get("CONTENT_DIR", str(Path(__file__).resolve().pa
 CONTENT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _migrate_content_to_u2():
+    """One-time migration: move legacy flat layout under CONTENT_DIR/u2/ so each
+    tenant gets its own root. user_id=2 is the founding tenant (Andy). Idempotent
+    — marker file prevents re-running. Symlinks legacy top-level subdirs back to
+    u2/<same> so external scp paths and other scripts keep working without
+    update."""
+    marker = CONTENT_DIR / ".migrated_to_user_dirs"
+    if marker.exists():
+        return
+    u2 = CONTENT_DIR / "u2"
+    u2.mkdir(exist_ok=True)
+    moved_dirs = []
+    for item in list(CONTENT_DIR.iterdir()):
+        if item.name == ".migrated_to_user_dirs":
+            continue
+        if item.is_symlink():
+            continue
+        if item.name.startswith("u") and item.name[1:].isdigit():
+            continue
+        target = u2 / item.name
+        if target.exists():
+            continue
+        try:
+            item.rename(target)
+            if target.is_dir():
+                moved_dirs.append(item.name)
+        except OSError:
+            pass
+    # Backwards-compat symlinks: /opt/content_docs/<name> -> u2/<name>
+    for name in moved_dirs:
+        legacy = CONTENT_DIR / name
+        if legacy.exists() or legacy.is_symlink():
+            continue
+        try:
+            legacy.symlink_to(u2 / name)
+        except OSError:
+            pass
+    marker.touch()
+
+
+_migrate_content_to_u2()
+
+
+def _user_content_root() -> Path:
+    """Per-tenant root inside CONTENT_DIR. Always returns CONTENT_DIR/u<uid>,
+    creating it on demand. Endpoints use this instead of CONTENT_DIR so each
+    user's filesystem view is isolated. Only valid inside a request context;
+    @app.before_request guarantees session.user_id is set on authed routes."""
+    uid = session.get("user_id")
+    if uid is None:
+        raise PermissionError("Authentication required for content access")
+    root = CONTENT_DIR / f"u{int(uid)}"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def get_db():
     # 30s busy timeout — wait instead of erroring when another connection holds the lock
     conn = sqlite3.connect(str(DB_PATH), timeout=30.0)
@@ -3231,13 +3287,15 @@ def create_blank_video():
 
 @app.route("/api/content", methods=["GET"])
 def list_content():
-    """List folders and files in a content directory."""
+    """List folders and files in a content directory. Scoped to the caller's
+    /u<id>/ subtree — they never see other tenants' files."""
+    user_root = _user_content_root()
     rel_path = request.args.get("path", "")
-    dir_path = CONTENT_DIR / rel_path if rel_path else CONTENT_DIR
+    dir_path = user_root / rel_path if rel_path else user_root
     if not dir_path.exists() or not dir_path.is_dir():
         return jsonify({"error": "Directory not found"}), 404
     try:
-        dir_path.resolve().relative_to(CONTENT_DIR.resolve())
+        dir_path.resolve().relative_to(user_root.resolve())
     except ValueError:
         return jsonify({"error": "Invalid path"}), 403
     folders = []
@@ -3245,7 +3303,7 @@ def list_content():
     for item in sorted(dir_path.iterdir()):
         if item.name.startswith("."):
             continue
-        rel = str(item.relative_to(CONTENT_DIR))
+        rel = str(item.relative_to(user_root))
         if item.is_dir():
             md_count = len(list(item.rglob("*.md")))
             if md_count > 0:
@@ -3263,32 +3321,33 @@ def list_content():
 
 @app.route("/api/content/resolve", methods=["GET"])
 def resolve_content_path():
-    """Resolve a filename to its full relative path within content directory."""
+    """Resolve a filename to its full relative path within the caller's content directory."""
+    user_root = _user_content_root()
     filename = request.args.get("name", "").strip()
     if not filename:
         return jsonify({"error": "No filename provided"}), 400
-    # Search all subdirectories for this filename
-    for f in CONTENT_DIR.rglob("*.md"):
+    for f in user_root.rglob("*.md"):
         if f.name == filename:
             try:
-                f.resolve().relative_to(CONTENT_DIR.resolve())
+                f.resolve().relative_to(user_root.resolve())
             except ValueError:
                 continue
-            return jsonify({"path": str(f.relative_to(CONTENT_DIR))})
+            return jsonify({"path": str(f.relative_to(user_root))})
     return jsonify({"error": "File not found"}), 404
 
 
 @app.route("/api/content/file", methods=["GET"])
 def get_content_file():
-    """Read a markdown file and return its content."""
+    """Read a markdown file from the caller's tenant and return its content."""
+    user_root = _user_content_root()
     rel_path = request.args.get("path", "")
     if not rel_path:
         return jsonify({"error": "No path provided"}), 400
-    file_path = CONTENT_DIR / rel_path
+    file_path = user_root / rel_path
     if not file_path.exists() or not file_path.is_file():
         return jsonify({"error": "File not found"}), 404
     try:
-        file_path.resolve().relative_to(CONTENT_DIR.resolve())
+        file_path.resolve().relative_to(user_root.resolve())
     except ValueError:
         return jsonify({"error": "Invalid path"}), 403
     content = file_path.read_text(encoding="utf-8")
@@ -3297,15 +3356,16 @@ def get_content_file():
 
 @app.route("/api/content/file", methods=["PUT"])
 def save_content_file():
-    """Save markdown content to a file."""
+    """Save markdown content to a file inside the caller's tenant."""
+    user_root = _user_content_root()
     data = request.get_json(force=True)
     rel_path = data.get("path", "")
     content_text = data.get("content", "")
     if not rel_path:
         return jsonify({"error": "No path provided"}), 400
-    file_path = CONTENT_DIR / rel_path
+    file_path = user_root / rel_path
     try:
-        file_path.resolve().relative_to(CONTENT_DIR.resolve())
+        file_path.resolve().relative_to(user_root.resolve())
     except ValueError:
         return jsonify({"error": "Invalid path"}), 403
     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3315,14 +3375,15 @@ def save_content_file():
 
 @app.route("/api/content/file", methods=["DELETE"])
 def delete_content_file():
-    """Delete a markdown file."""
+    """Delete a markdown file from the caller's tenant."""
+    user_root = _user_content_root()
     data = request.get_json(force=True)
     rel_path = data.get("path", "")
     if not rel_path:
         return jsonify({"error": "No path provided"}), 400
-    file_path = CONTENT_DIR / rel_path
+    file_path = user_root / rel_path
     try:
-        file_path.resolve().relative_to(CONTENT_DIR.resolve())
+        file_path.resolve().relative_to(user_root.resolve())
     except ValueError:
         return jsonify({"error": "Invalid path"}), 403
     if not file_path.exists() or not file_path.is_file():
@@ -3333,14 +3394,15 @@ def delete_content_file():
 
 @app.route("/api/content/folder", methods=["DELETE"])
 def delete_content_folder():
-    """Delete a folder and all its contents."""
+    """Delete a folder and all its contents from the caller's tenant."""
+    user_root = _user_content_root()
     data = request.get_json(force=True)
     rel_path = data.get("path", "")
     if not rel_path:
         return jsonify({"error": "No path provided"}), 400
-    folder_path = CONTENT_DIR / rel_path
+    folder_path = user_root / rel_path
     try:
-        folder_path.resolve().relative_to(CONTENT_DIR.resolve())
+        folder_path.resolve().relative_to(user_root.resolve())
     except ValueError:
         return jsonify({"error": "Invalid path"}), 403
     if not folder_path.exists() or not folder_path.is_dir():
