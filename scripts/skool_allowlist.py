@@ -45,20 +45,23 @@ def _conn(db_path: str) -> sqlite3.Connection:
 def cmd_add(args, c: sqlite3.Connection) -> int:
     handle = args.handle.strip().lower()
     email = (args.email or f"{handle}@skool.placeholder").strip().lower()
-    # UPSERT by email (the existing PK). Handle gets written either way.
+    # display_name defaults to the handle (capitalized), so the login typeahead
+    # has something to show even when --name isn't supplied.
+    display_name = (args.name or "").strip() or handle
     c.execute(
-        "INSERT INTO users (email, skool_handle, allowlisted, allowlist_source, allowlisted_at, revoked_at) "
-        "VALUES (?, ?, 1, ?, datetime('now'), NULL) "
+        "INSERT INTO users (email, skool_handle, display_name, allowlisted, allowlist_source, allowlisted_at, revoked_at) "
+        "VALUES (?, ?, ?, 1, ?, datetime('now'), NULL) "
         "ON CONFLICT(email) DO UPDATE SET "
         "  skool_handle = excluded.skool_handle, "
+        "  display_name = COALESCE(NULLIF(excluded.display_name,''), users.display_name, excluded.skool_handle), "
         "  allowlisted = 1, "
         "  allowlist_source = excluded.allowlist_source, "
         "  allowlisted_at = COALESCE(users.allowlisted_at, datetime('now')), "
         "  revoked_at = NULL",
-        (email, handle, args.source),
+        (email, handle, display_name, args.source),
     )
     c.commit()
-    row = c.execute("SELECT id, email, skool_handle, allowlisted, allowlist_source, allowlisted_at "
+    row = c.execute("SELECT id, email, skool_handle, display_name, allowlisted, allowlist_source, allowlisted_at "
                     "FROM users WHERE email = ?", (email,)).fetchone()
     print(f"added: {dict(row)}")
     return 0
@@ -119,6 +122,7 @@ def main(argv=None) -> int:
     add = sub.add_parser("add", help="Add or re-enable a Skool handle")
     add.add_argument("--handle", required=True)
     add.add_argument("--email")
+    add.add_argument("--name", help="Friendly name shown in the login typeahead (defaults to handle)")
     add.add_argument("--source", default="manual",
                      help="Tag for who/what added this row (default: manual)")
     add.set_defaults(func=cmd_add)

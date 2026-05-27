@@ -511,6 +511,7 @@ def migrate_schema():
         ("allowlist_source", "TEXT"),     # 'manual' | 'sync' | 'dm-code' | 'seed'
         ("allowlisted_at",   "TEXT"),
         ("revoked_at",       "TEXT"),
+        ("display_name",     "TEXT"),     # human-friendly name shown in login typeahead
     ]
     for name, typ in user_cols:
         try:
@@ -1047,6 +1048,41 @@ def auth_dm_code_poll():
         conn.close()
 
 
+@app.route("/api/auth/skool/search", methods=["GET"])
+def auth_skool_search():
+    """Typeahead for the login page. Returns up to 8 allowlisted members whose
+    display_name OR skool_handle matches `q` (case-insensitive substring).
+
+    Open endpoint by design — anyone visiting /login can search the allowlist
+    to find themselves. Returns only display_name + handle (no email, no id)
+    so the leak is minimal. Empty `q` returns the first 8 members alphabetical
+    so the user sees something the moment they focus the field."""
+    q = (request.args.get("q") or "").strip().lower()
+    conn = get_db()
+    try:
+        if q:
+            like = f"%{q}%"
+            rows = conn.execute(
+                "SELECT skool_handle, display_name FROM users "
+                "WHERE allowlisted = 1 AND skool_handle IS NOT NULL AND skool_handle <> '' "
+                "AND (LOWER(skool_handle) LIKE ? OR LOWER(COALESCE(display_name,'')) LIKE ?) "
+                "ORDER BY COALESCE(display_name, skool_handle) LIMIT 8",
+                (like, like),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT skool_handle, display_name FROM users "
+                "WHERE allowlisted = 1 AND skool_handle IS NOT NULL AND skool_handle <> '' "
+                "ORDER BY COALESCE(display_name, skool_handle) LIMIT 8"
+            ).fetchall()
+    finally:
+        conn.close()
+    return jsonify([
+        {"handle": r["skool_handle"], "name": (r["display_name"] or r["skool_handle"])}
+        for r in rows
+    ])
+
+
 @app.route("/api/auth/skool/dm-code/admin-verify", methods=["POST"])
 def auth_dm_code_admin_verify():
     """Called by the Chrome extension (or scripts/skool_dm_verify.py) when a DM
@@ -1096,6 +1132,7 @@ def require_auth():
         "/api/login", "/api/auth-status",
         "/api/auth/skool/start", "/api/auth/skool/callback",
         "/api/auth/skool/dm-code/start", "/api/auth/skool/dm-code/poll",
+        "/api/auth/skool/search",
         "/static/", "/image-viewer", "/image-gallery",
         "/api/current-image", "/api/set-image", "/api/set-gallery",
     }
