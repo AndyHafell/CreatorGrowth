@@ -103,6 +103,30 @@ def test_impersonator_email_persists_across_hops(client, seed_user, login_as, ad
     assert r.get_json()["restored_email"] == "admin@example.com"
 
 
+def test_impersonate_bypasses_user_allowlist(client, seed_user, login_as, admin_setup, db):
+    """Admin impersonating a revoked user can still access — they need to debug."""
+    seed_user("admin@example.com", "admin-handle")
+    eve_uid = seed_user("eve@example.com", "eve-handle")
+    # Revoke eve
+    db.execute(
+        "UPDATE users SET allowlisted = 0, revoked_at = datetime('now'), "
+        "allowlist_source = 'trial:expired' WHERE id = ?", (eve_uid,)
+    )
+    db.commit()
+
+    login_as("admin@example.com")
+    r = client.post("/api/admin/impersonate", json={"email": "eve@example.com"})
+    assert r.status_code == 200
+
+    # Admin (now session=eve) can still hit data endpoints
+    r = client.get("/api/videos")
+    assert r.status_code == 200
+
+    # Eve's allowlisted=0 was NOT mutated by the request
+    row = db.execute("SELECT allowlisted FROM users WHERE id = ?", (eve_uid,)).fetchone()
+    assert row["allowlisted"] == 0
+
+
 def test_data_scoping_uses_impersonated_user_id(client, seed_user, login_as, admin_setup, db):
     """While admin impersonates bob, /api/videos returns bob's videos, not admin's."""
     admin_uid = seed_user("admin@example.com", "admin-handle")
