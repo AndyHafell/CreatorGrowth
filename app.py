@@ -508,10 +508,11 @@ def migrate_schema():
         ("access_token",     "TEXT"),
         ("token_expires_at", "TEXT"),
         ("allowlisted",      "INTEGER NOT NULL DEFAULT 0"),
-        ("allowlist_source", "TEXT"),     # 'manual' | 'sync' | 'dm-code' | 'seed'
+        ("allowlist_source", "TEXT"),     # 'manual' | 'sync' | 'dm-code' | 'seed' | 'trial' | 'paid' | 'trial:expired'
         ("allowlisted_at",   "TEXT"),
         ("revoked_at",       "TEXT"),
         ("display_name",     "TEXT"),     # human-friendly name shown in login typeahead
+        ("trial_end",        "TEXT"),     # ISO timestamp; set when allowlist_source='trial'; NULL once flipped to 'paid'
     ]
     for name, typ in user_cols:
         try:
@@ -553,6 +554,23 @@ def migrate_schema():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_dm_codes_handle ON dm_codes(handle, status)")
+    except sqlite3.OperationalError:
+        pass
+
+    # ── Paid-webhook log (Zapier new_paid_member → /api/admin/paid-members) ──
+    # Append-only audit of every Zap webhook fire. Helps debug double-fires,
+    # missing emails, etc. The actual user state lives on users.allowlist_source.
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS paid_webhook_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL,
+                name TEXT,
+                received_at TEXT NOT NULL DEFAULT (datetime('now')),
+                raw_payload TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_paid_webhook_log_email ON paid_webhook_log(email)")
     except sqlite3.OperationalError:
         pass
 
@@ -1125,6 +1143,128 @@ def auth_dm_code_admin_verify():
         conn.close()
 
 
+# ── Email-based activation (the new default login path) ──────────────
+#
+# Flow:
+#   1. User joins skool.com/aimate (free 7-day trial OR paid).
+#   2. Inside the Skool community, a pinned post links here:
+#      "Activate your CreatorGrowth access" → /login overlay → email field.
+#   3. User submits their Skool email → /api/auth/skool/activate
+#        - First time: row created with allowlist_source='trial',
+#          trial_end=now+7d. Access granted immediately.
+#        - Already paid (set by Zap webhook below): just session-login.
+#        - Was revoked: 403. They need to be in the paid roster.
+#   4. At day 7, before_request checks: if trial_end < now AND source still
+#      'trial' (no Zap fire yet), flip to 'trial:expired' and 401 them.
+#   5. When Skool charges them on day 7, Zap fires /api/admin/paid-members
+#      → user flipped to 'paid', stays in forever.
+
+@app.route("/api/auth/skool/activate", methods=["POST"])
+def auth_skool_activate():
+    data = request.get_json(force=True, silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    if not email or "@" not in email or "." not in email:
+        return jsonify({"error": "Valid email required"}), 400
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id, allowlisted, allowlist_source FROM users WHERE email = ?",
+            (email,),
+        ).fetchone()
+
+        if row is None:
+            # New user → start 7-day trial. Skool's own trial timer runs in
+            # parallel; if they convert, the Zap webhook flips them to 'paid'.
+            conn.execute(
+                "INSERT INTO users (email, last_login, allowlisted, "
+                "allowlist_source, allowlisted_at, trial_end) "
+                "VALUES (?, datetime('now'), 1, 'trial', datetime('now'), "
+                "datetime('now', '+7 days'))",
+                (email,),
+            )
+            conn.commit()
+            uid = conn.execute(
+                "SELECT id FROM users WHERE email = ?", (email,)
+            ).fetchone()["id"]
+        else:
+            uid = row["id"]
+            if not row["allowlisted"]:
+                # Revoked or never allowlisted → refuse. They must show up in
+                # the paid roster (Zap will flip them when Skool charges them).
+                return jsonify({
+                    "error": "Not active",
+                    "detail": "We can't see you in AI Mate yet. "
+                              "If you just joined, give it a minute and try again.",
+                    "join_url": "https://www.skool.com/aimate",
+                }), 403
+            conn.execute(
+                "UPDATE users SET last_login = datetime('now') WHERE id = ?",
+                (uid,),
+            )
+            conn.commit()
+
+        session.clear()
+        session["authenticated"] = True
+        session["user_id"] = uid
+        session["email"] = email
+        session.permanent = True
+        return jsonify({"ok": True, "user_id": uid, "email": email})
+    finally:
+        conn.close()
+
+
+# ── Zapier webhook target: new paid member ────────────────────────────
+#
+# Zapier Zap: trigger = Skool "New Paid Member" → action = Webhook POST here.
+# Bearer-authed via PAID_WEBHOOK_TOKEN env. Idempotent UPSERT.
+
+PAID_WEBHOOK_TOKEN = os.environ.get("PAID_WEBHOOK_TOKEN", "").strip()
+
+
+@app.route("/api/admin/paid-members", methods=["POST"])
+def admin_paid_members():
+    if not PAID_WEBHOOK_TOKEN:
+        return jsonify({"error": "PAID_WEBHOOK_TOKEN not configured on server"}), 503
+    sent = (request.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
+    if not sent or sent != PAID_WEBHOOK_TOKEN:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    data = request.get_json(force=True, silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    name = (data.get("name") or "").strip()
+    if not email or "@" not in email:
+        return jsonify({"error": "Valid email required"}), 400
+
+    conn = get_db()
+    try:
+        # Append-only log of every webhook fire
+        import json as _json
+        conn.execute(
+            "INSERT INTO paid_webhook_log (email, name, raw_payload) VALUES (?, ?, ?)",
+            (email, name or None, _json.dumps(data)),
+        )
+
+        # UPSERT: flip to paid. Clears trial_end and any revocation.
+        conn.execute(
+            "INSERT INTO users (email, display_name, allowlisted, "
+            "allowlist_source, allowlisted_at, trial_end, last_login) "
+            "VALUES (?, ?, 1, 'paid', datetime('now'), NULL, datetime('now')) "
+            "ON CONFLICT(email) DO UPDATE SET "
+            "  display_name = COALESCE(NULLIF(excluded.display_name, ''), users.display_name), "
+            "  allowlisted = 1, "
+            "  allowlist_source = 'paid', "
+            "  allowlisted_at = COALESCE(users.allowlisted_at, datetime('now')), "
+            "  trial_end = NULL, "
+            "  revoked_at = NULL",
+            (email, name or None),
+        )
+        conn.commit()
+        return jsonify({"ok": True, "email": email})
+    finally:
+        conn.close()
+
+
 @app.before_request
 def require_auth():
     open_paths = {
@@ -1133,6 +1273,7 @@ def require_auth():
         "/api/auth/skool/start", "/api/auth/skool/callback",
         "/api/auth/skool/dm-code/start", "/api/auth/skool/dm-code/poll",
         "/api/auth/skool/search",
+        "/api/auth/skool/activate",
         "/static/", "/image-viewer", "/image-gallery",
         "/api/current-image", "/api/set-image", "/api/set-gallery",
     }
@@ -1145,6 +1286,8 @@ def require_auth():
     if path.startswith("/api/show-docs"):
         return None
     if path == "/api/auth/skool/dm-code/admin-verify":
+        return None
+    if path == "/api/admin/paid-members":
         return None
     if not session.get("authenticated"):
         return jsonify({"error": "Unauthorized"}), 401
@@ -1159,15 +1302,49 @@ def require_auth():
             "error": "stale session",
             "detail": "Please sign in again via the new Skool handle flow.",
         }), 401
-    # Live allowlist re-check — cancelled member's session dies on next request.
+    # Live allowlist re-check + trial-expiry — runs on every authed request.
+    # Cancelled or expired members get 401 on their very next hit.
     if uid is not None:
         conn = get_db()
         try:
-            row = conn.execute("SELECT allowlisted FROM users WHERE id = ?", (uid,)).fetchone()
+            row = conn.execute(
+                "SELECT allowlisted, allowlist_source, trial_end "
+                "FROM users WHERE id = ?", (uid,)
+            ).fetchone()
+            # Trial-expiry sweep: if source is still 'trial' (Zap hasn't flipped
+            # them to 'paid') and trial_end has passed, revoke now. After this,
+            # the allowlisted check below will fire the 401.
+            if (row is not None
+                    and row["allowlisted"]
+                    and row["allowlist_source"] == "trial"
+                    and row["trial_end"]):
+                expired = conn.execute(
+                    "SELECT 1 WHERE datetime(?) < datetime('now')",
+                    (row["trial_end"],),
+                ).fetchone()
+                if expired:
+                    conn.execute(
+                        "UPDATE users SET allowlisted = 0, "
+                        "allowlist_source = 'trial:expired', "
+                        "revoked_at = datetime('now') WHERE id = ?",
+                        (uid,),
+                    )
+                    conn.commit()
+                    row = conn.execute(
+                        "SELECT allowlisted, allowlist_source, trial_end "
+                        "FROM users WHERE id = ?", (uid,)
+                    ).fetchone()
         finally:
             conn.close()
         if row is None or not row["allowlisted"]:
             session.clear()
+            source = row["allowlist_source"] if row else None
+            if source == "trial:expired":
+                return jsonify({
+                    "error": "trial expired",
+                    "detail": "Your 7-day trial has ended. Join AI Mate to continue.",
+                    "join_url": "https://www.skool.com/aimate",
+                }), 401
             return jsonify({
                 "error": "access revoked",
                 "detail": "Your Skool membership is no longer active. Re-up to continue.",
