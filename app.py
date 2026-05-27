@@ -85,13 +85,15 @@ def _migrate_content_to_u2():
                 moved_dirs.append(item.name)
         except OSError:
             pass
-    # Backwards-compat symlinks: /opt/content_docs/<name> -> u2/<name>
+    # Backwards-compat symlinks: /opt/content_docs/<name> -> u2/<name>.
+    # Use a RELATIVE target so the link resolves identically from the host
+    # (/opt/content_docs/...) and from inside the container (/app/content_docs/...).
     for name in moved_dirs:
         legacy = CONTENT_DIR / name
         if legacy.exists() or legacy.is_symlink():
             continue
         try:
-            legacy.symlink_to(u2 / name)
+            legacy.symlink_to(Path("u2") / name)
         except OSError:
             pass
     marker.touch()
