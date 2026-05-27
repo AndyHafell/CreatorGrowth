@@ -384,3 +384,54 @@ tests/test_skool_gate.py ............                                    [100%]
  RESULT: ALL 14 ASSERTIONS PASS ✓
 ══════════════════════════════════════════════
 ./scripts/smoke_test.sh: line 237: 84287 Killed: 9               DB_PATH="$TEST_DB" SECRET_KEY="smoke-test-key" DM_VERIFY_TOKEN="$DM_VERIFY_TOKEN_LOCAL" nohup python3 app.py > /tmp/cg_smoke.log 2>&1
+--- pre-switch ---
+skool-auth
+fb4bedb Merge remote-tracking branch 'vps/master' into skool-auth
+81a4995 login UI: name typeahead → click yourself in the list
+
+--- switch to master ---
+Switched to branch 'master'
+M	videos.db
+8195cc2 merge skool-auth: Skool gate + per-user data scoping (10/10 done)
+fb4bedb Merge remote-tracking branch 'vps/master' into skool-auth
+81a4995 login UI: name typeahead → click yourself in the list
+
+--- app still alive on master? ---
+  HTTP 200
+[{"handle":"andytest","name":"Andy (Test)"},{"handle":"theaiandy","name":"Andy Hafell"}]
+
+videos: 427
+users: 2 allowlisted
+
+=================================================================
+=== GOAL COMPLETE 2026-05-27T01:55:15Z ===
+=================================================================
+
+## 10/10 done-when items SATISFIED
+
+  1. ✓ Allowlist + manual CLI (users.allowlisted, scripts/skool_allowlist.py)
+  2. ✓ Callback gates on allowlist (prod test: 403 for stranger@nowhere.com)
+  3. ✓ DM-code flow (start/poll/admin-verify endpoints, prod verified)
+  4. ✓ Live revocation kills session (prod revoke test: 200 → 401 after revoke)
+  5. ✓ Scoping sweep (68 routes decorated, batch endpoints scoped)
+  6. ✓ videos.video_id UNIQUE dropped + composite(video_id, user_id)
+     (prod confirmed: "videos.video_id has column-level UNIQUE: False")
+  7. ✓ SECRET_KEY pinned (existing prod value preserved, DM_VERIFY_TOKEN added)
+  8. ✓ pytest 12/12 + local smoke 14/14
+  9. ✓ Prod smoke test 14/14 PASS (13 from script + 1 manual revoke)
+ 10. ✓ Branch merged to master at 8195cc2, pushed to origin + vps
+
+## Prod state
+  origin/master: 8195cc26f755ecf23051a09f8a38b653bcf5af54
+  vps/master:    8195cc26f755ecf23051a09f8a38b653bcf5af54
+  Container:     root-idea-dashboard-1 running gunicorn
+  Schema:        427 videos (1 added during smoke test), 0 unscoped, all clean
+  Allowlist:     theaiandy (Andy Hafell), andytest (Andy (Test))
+  Backup:        /opt/idea_dashboard/videos.db.pre_skool_auth.20260527_015031
+
+## What you should do now
+  - Save the secrets to 1Password before you forget:
+    SECRET_KEY=3576bd477a1ca2dba1abf04b8bcec6fa20c03b4a42456377bf04b4ca78e81270 (existing, in docker-compose)
+    DM_VERIFY_TOKEN=rWvheI4QOaPbgVs-Cw6TucC-sDKu3QCmMJF2KslDnMM (new, in docker-compose)
+  - When Mike's around, add his handle: docker exec root-idea-dashboard-1 python3 /app/scripts/skool_allowlist.py add --handle MIKES_HANDLE --email mike@... --name 'Mike Delivery'
+  - Revoke andytest if you don't want a test login lingering
