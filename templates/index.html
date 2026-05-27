@@ -319,6 +319,74 @@
             cursor: not-allowed;
             opacity: 0.6;
         }
+        .settings-section {
+            margin-top: 16px;
+            padding-top: 12px;
+            border-top: 1px solid #2a2a2a;
+        }
+        .settings-section h4 {
+            margin: 0 0 8px;
+            color: #FFD700;
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .admin-user-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 0;
+            font-size: 13px;
+        }
+        .admin-user-row .email { color: #ddd; }
+        .admin-user-row .tag {
+            display: inline-block;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-left: 6px;
+            color: #aaa;
+            background: #2a2a2a;
+        }
+        .admin-user-row .tag.paid { color: #5e5; background: #1a2a1a; }
+        .admin-user-row .tag.trial { color: #ffb84d; background: #2a2218; }
+        .admin-user-row .tag.revoked { color: #e55; background: #2a1818; }
+        .admin-impersonate-btn {
+            background: #272727;
+            color: #ddd;
+            border: 1px solid #444;
+            border-radius: 4px;
+            padding: 4px 10px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        .admin-impersonate-btn:hover { background: #3a3a3a; border-color: #FFD700; color: #FFD700; }
+        .impersonation-banner {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            background: #4a2a00;
+            color: #FFD700;
+            padding: 8px 16px;
+            text-align: center;
+            z-index: 1500;
+            font-size: 13px;
+            display: none;
+            border-bottom: 2px solid #FFD700;
+        }
+        .impersonation-banner.open { display: block; }
+        .impersonation-banner button {
+            background: #FFD700;
+            color: #000;
+            border: none;
+            border-radius: 4px;
+            padding: 4px 10px;
+            margin-left: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        body.impersonating { padding-top: 36px; }
 
         /* ---- Tabs (YouTube chip style) ---- */
         .tabs-bar {
@@ -1832,6 +1900,12 @@
     <script src="https://cdn.jsdelivr.net/npm/turndown/dist/turndown.js"></script>
 </head>
 <body>
+    <!-- Impersonation Banner -->
+    <div class="impersonation-banner" id="impersonationBanner">
+        Impersonating <strong id="impersonationTarget">…</strong> as <span id="impersonationAdmin">…</span>
+        <button onclick="stopImpersonating()">Stop impersonating</button>
+    </div>
+
     <!-- Auth Overlay -->
     <div class="auth-overlay {% if authenticated %}hidden{% endif %}" id="authOverlay">
         <div class="auth-card">
@@ -1893,6 +1967,12 @@
                     <div class="settings-row-label">Email</div>
                     <div class="settings-row-sub" id="settingsEmail">…</div>
                 </div>
+            </div>
+
+            <!-- Admin section (only shown when /api/auth-status returns is_admin) -->
+            <div class="settings-section" id="settingsAdminSection" style="display:none;">
+                <h4>Admin · Impersonate user</h4>
+                <div id="settingsAdminUsers" style="max-height: 240px; overflow-y: auto;"></div>
             </div>
         </div>
     </div>
@@ -5623,11 +5703,12 @@
             } catch (e) { /* still reload to drop session client-side */ }
             window.location.href = '/';
         }
-        function openSettings() {
+        async function openSettings() {
             document.getElementById('profileMenu').classList.remove('open');
             const email = document.getElementById('profileMenuEmail').textContent;
             document.getElementById('settingsEmail').textContent = email || '';
             document.getElementById('settingsOverlay').classList.add('open');
+            await maybeLoadAdminTools();
         }
         function closeSettings() {
             document.getElementById('settingsOverlay').classList.remove('open');
@@ -5635,6 +5716,99 @@
         document.addEventListener('keydown', e => {
             if (e.key === 'Escape') closeSettings();
         });
+
+        // ── Admin: impersonate ──────────────────────────────
+        async function maybeLoadAdminTools() {
+            const adminSection = document.getElementById('settingsAdminSection');
+            adminSection.style.display = 'none';
+            let status;
+            try {
+                status = await (await fetch('/api/auth-status')).json();
+            } catch (e) { return; }
+            if (!status.is_admin) return;
+            adminSection.style.display = '';
+            try {
+                const users = await (await fetch('/api/admin/users')).json();
+                renderAdminUsers(users);
+            } catch (e) {
+                document.getElementById('settingsAdminUsers').innerHTML =
+                    '<div style="color:#888; font-size:12px;">Could not load users.</div>';
+            }
+        }
+        function renderAdminUsers(users) {
+            const host = document.getElementById('settingsAdminUsers');
+            host.innerHTML = '';
+            users.forEach(u => {
+                const row = document.createElement('div');
+                row.className = 'admin-user-row';
+                const left = document.createElement('div');
+                const emailSpan = document.createElement('span');
+                emailSpan.className = 'email';
+                emailSpan.textContent = u.email;
+                left.appendChild(emailSpan);
+                if (u.is_admin) {
+                    const tag = document.createElement('span');
+                    tag.className = 'tag';
+                    tag.textContent = 'admin';
+                    left.appendChild(tag);
+                }
+                if (u.source) {
+                    const tag = document.createElement('span');
+                    const cls = u.source === 'paid' ? 'paid'
+                        : u.source.indexOf('trial') === 0 ? 'trial'
+                        : (u.source.indexOf('revoked') >= 0 || u.source.indexOf('expired') >= 0) ? 'revoked'
+                        : '';
+                    tag.className = 'tag ' + cls;
+                    tag.textContent = u.source;
+                    left.appendChild(tag);
+                }
+                row.appendChild(left);
+                if (!u.is_self) {
+                    const btn = document.createElement('button');
+                    btn.className = 'admin-impersonate-btn';
+                    btn.textContent = 'Impersonate';
+                    btn.onclick = () => impersonate(u.email);
+                    row.appendChild(btn);
+                }
+                host.appendChild(row);
+            });
+        }
+        async function impersonate(email) {
+            try {
+                const r = await fetch('/api/admin/impersonate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email }),
+                });
+                if (!r.ok) {
+                    alert('Could not impersonate: ' + (await r.text()));
+                    return;
+                }
+                window.location.href = '/';
+            } catch (e) { alert('Network error'); }
+        }
+        async function stopImpersonating() {
+            try {
+                await fetch('/api/admin/stop-impersonating', { method: 'POST' });
+            } catch (e) { /* still reload */ }
+            window.location.href = '/';
+        }
+        async function refreshImpersonationBanner() {
+            try {
+                const status = await (await fetch('/api/auth-status')).json();
+                const banner = document.getElementById('impersonationBanner');
+                if (status.impersonating) {
+                    document.getElementById('impersonationTarget').textContent = status.email;
+                    document.getElementById('impersonationAdmin').textContent = status.impersonator_email;
+                    banner.classList.add('open');
+                    document.body.classList.add('impersonating');
+                } else {
+                    banner.classList.remove('open');
+                    document.body.classList.remove('impersonating');
+                }
+            } catch (e) { /* silent */ }
+        }
+        refreshImpersonationBanner();
         // Close menu on outside click
         document.addEventListener('click', e => {
             const wrap = document.getElementById('profileWrap');

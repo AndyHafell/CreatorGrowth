@@ -821,9 +821,28 @@ def api_logout():
     return jsonify({"ok": True})
 
 
+ADMIN_EMAILS = {
+    e.strip().lower()
+    for e in os.environ.get("ADMIN_EMAILS", "andhaf94@gmail.com").split(",")
+    if e.strip()
+}
+
+
+def _is_admin_email(email: str) -> bool:
+    return bool(email) and email.strip().lower() in ADMIN_EMAILS
+
+
 @app.route("/api/auth-status")
 def auth_status():
-    return jsonify({"authenticated": bool(session.get("authenticated")), "email": session.get("email", ""), "user_id": session.get("user_id")})
+    email = session.get("email", "")
+    return jsonify({
+        "authenticated": bool(session.get("authenticated")),
+        "email": email,
+        "user_id": session.get("user_id"),
+        "is_admin": _is_admin_email(email) or _is_admin_email(session.get("impersonator_email", "")),
+        "impersonating": bool(session.get("impersonator_email")),
+        "impersonator_email": session.get("impersonator_email", ""),
+    })
 
 
 # ── Skool OAuth (Phase 1 stub) ────────────────────────────
@@ -1464,6 +1483,121 @@ def admin_paid_members():
         return jsonify({"ok": True, "email": email})
     finally:
         conn.close()
+
+
+# ── Admin: impersonate user ───────────────────────────────────────────
+#
+# Lets admins (emails in ADMIN_EMAILS env) log in as any other user to
+# debug their session, see what they see, reproduce a bug. Stores the
+# original admin email in session["impersonator_email"] so we can restore.
+#
+# Endpoints (all require the *real* signed-in email to be an admin —
+# even while impersonating, you can still stop because we re-check against
+# impersonator_email):
+#
+#   GET  /api/admin/users → [{ id, email, source, allowlisted, is_self }]
+#   POST /api/admin/impersonate {email} → flips session
+#   POST /api/admin/stop-impersonating → restores
+
+def _require_admin():
+    """Returns the real admin email if the session is allowed to use admin
+    endpoints; otherwise sends a 403 response. Real email = the impersonator
+    if set, else the current session email."""
+    admin_email = (session.get("impersonator_email") or session.get("email") or "").lower()
+    if not _is_admin_email(admin_email):
+        return None, (jsonify({"error": "Admin only"}), 403)
+    return admin_email, None
+
+
+@app.route("/api/admin/users", methods=["GET"])
+def admin_users():
+    admin_email, err = _require_admin()
+    if err:
+        return err
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, email, display_name, allowlist_source, allowlisted, "
+            "trial_end, last_login FROM users ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        out.append({
+            "id": r["id"],
+            "email": r["email"],
+            "display_name": r["display_name"],
+            "source": r["allowlist_source"],
+            "allowlisted": bool(r["allowlisted"]),
+            "trial_end": r["trial_end"],
+            "last_login": r["last_login"],
+            "is_self": (r["email"] or "").lower() == admin_email,
+            "is_admin": _is_admin_email(r["email"]),
+        })
+    return jsonify(out)
+
+
+@app.route("/api/admin/impersonate", methods=["POST"])
+def admin_impersonate():
+    admin_email, err = _require_admin()
+    if err:
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    target_email = (data.get("email") or "").strip().lower()
+    if not target_email or "@" not in target_email:
+        return jsonify({"error": "Valid email required"}), 400
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id, email, allowlisted FROM users WHERE email = ?",
+            (target_email,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return jsonify({"error": "User not found"}), 404
+    # Don't change impersonator_email if already impersonating — the admin
+    # might be hopping between users, but the "real you" doesn't change.
+    if not session.get("impersonator_email"):
+        session["impersonator_email"] = admin_email
+    session["authenticated"] = True
+    session["user_id"] = row["id"]
+    session["email"] = row["email"]
+    session.permanent = True
+    return jsonify({
+        "ok": True,
+        "impersonating": row["email"],
+        "user_id": row["id"],
+        "impersonator_email": admin_email,
+    })
+
+
+@app.route("/api/admin/stop-impersonating", methods=["POST"])
+def admin_stop_impersonating():
+    admin_email = (session.get("impersonator_email") or "").lower()
+    if not admin_email:
+        return jsonify({"error": "Not currently impersonating"}), 400
+    if not _is_admin_email(admin_email):
+        # Defense-in-depth: stored impersonator must still be an admin
+        session.clear()
+        return jsonify({"error": "Impersonator no longer admin; session cleared"}), 403
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id, email FROM users WHERE email = ?", (admin_email,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        session.clear()
+        return jsonify({"error": "Admin user gone; session cleared"}), 404
+    session["authenticated"] = True
+    session["user_id"] = row["id"]
+    session["email"] = row["email"]
+    session.pop("impersonator_email", None)
+    session.permanent = True
+    return jsonify({"ok": True, "restored_email": row["email"], "user_id": row["id"]})
 
 
 # ── S3 presigned uploads ──────────────────────────────────────────────
