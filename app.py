@@ -1808,6 +1808,13 @@ def require_auth():
             "error": "stale session",
             "detail": "Please sign in again via the new Skool handle flow.",
         }), 401
+    # Admin impersonation override: when a real admin is impersonating, skip
+    # the user-level allowlist/trial enforcement. Admin needs to see what the
+    # target sees (including locked-out users) without getting kicked.
+    impersonator = (session.get("impersonator_email") or "").lower()
+    if impersonator and _is_admin_email(impersonator):
+        return None
+
     # Live allowlist re-check + trial-expiry — runs on every authed request.
     # Cancelled or expired members get 401 on their very next hit.
     if uid is not None:
