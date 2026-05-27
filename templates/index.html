@@ -195,6 +195,69 @@
             white-space: nowrap;
         }
 
+        .profile-wrap {
+            position: relative;
+            display: inline-block;
+        }
+        .profile-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            overflow: hidden;
+            border: none;
+            padding: 0;
+            cursor: pointer;
+            background: #1a1a1a;
+            transition: transform 0.15s, box-shadow 0.15s;
+        }
+        .profile-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 0 0 2px #FFD700;
+        }
+        .profile-btn img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+        .profile-menu {
+            position: absolute;
+            top: calc(100% + 8px);
+            right: 0;
+            min-width: 220px;
+            background: #1a1a1a;
+            border: 1px solid #2a2a2a;
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            padding: 8px;
+            z-index: 1000;
+            display: none;
+        }
+        .profile-menu.open { display: block; }
+        .profile-menu-email {
+            color: #aaa;
+            font-size: 12px;
+            padding: 8px 12px 6px;
+            border-bottom: 1px solid #2a2a2a;
+            margin-bottom: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .profile-menu-item {
+            display: block;
+            width: 100%;
+            text-align: left;
+            background: transparent;
+            color: #ddd;
+            border: none;
+            padding: 8px 12px;
+            font-size: 13px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .profile-menu-item:hover { background: #2a2a2a; color: #fff; }
+
         /* ---- Tabs (YouTube chip style) ---- */
         .tabs-bar {
             max-width: 1800px;
@@ -1764,6 +1827,15 @@
         </div>
         <div class="header-actions">
             <span class="video-count" id="videoCount"></span>
+            <div class="profile-wrap" id="profileWrap">
+                <button class="profile-btn" id="profileBtn" onclick="toggleProfileMenu()" title="Account">
+                    <img src="/static/andy_avatar.png" alt="Account">
+                </button>
+                <div class="profile-menu" id="profileMenu">
+                    <div class="profile-menu-email" id="profileMenuEmail">…</div>
+                    <button class="profile-menu-item" onclick="signOut()">Sign out</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -5442,6 +5514,38 @@
         document.getElementById('authCodeInput').addEventListener('keydown', e => {
             if (e.key === 'Enter') { e.preventDefault(); verifyLoginCode(); }
         });
+
+        // ── Profile button + sign out ────────────────────────
+        async function refreshProfileEmail() {
+            try {
+                const res = await fetch('/api/auth-status');
+                if (!res.ok) return;
+                const data = await res.json();
+                if (data.authenticated && data.email) {
+                    document.getElementById('profileMenuEmail').textContent = data.email;
+                }
+            } catch (e) { /* silent */ }
+        }
+        function toggleProfileMenu() {
+            const menu = document.getElementById('profileMenu');
+            const isOpen = menu.classList.toggle('open');
+            if (isOpen) refreshProfileEmail();
+        }
+        async function signOut() {
+            try {
+                await fetch('/api/logout', { method: 'POST' });
+            } catch (e) { /* still reload to drop session client-side */ }
+            window.location.href = '/';
+        }
+        // Close menu on outside click
+        document.addEventListener('click', e => {
+            const wrap = document.getElementById('profileWrap');
+            if (wrap && !wrap.contains(e.target)) {
+                document.getElementById('profileMenu').classList.remove('open');
+            }
+        });
+        // Prime the email on load so the dropdown is instant the first time
+        refreshProfileEmail();
     
         // --- Content Tab ---
         let contentCurrentPath = '';
