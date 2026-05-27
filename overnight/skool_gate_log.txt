@@ -377,3 +377,10 @@ tests/test_skool_gate.py ............                                    [100%]
 
 ## Verbose log:
    overnight/skool_gate_log.txt (     378 lines)
+
+## smoke_test.sh added 01:32:53Z
+
+══════════════════════════════════════════════
+ RESULT: ALL 14 ASSERTIONS PASS ✓
+══════════════════════════════════════════════
+./scripts/smoke_test.sh: line 237: 84287 Killed: 9               DB_PATH="$TEST_DB" SECRET_KEY="smoke-test-key" DM_VERIFY_TOKEN="$DM_VERIFY_TOKEN_LOCAL" nohup python3 app.py > /tmp/cg_smoke.log 2>&1

@@ -1,7 +1,39 @@
 # Prod smoke test — Skool gate + per-user isolation
 
+## NEW (Andy-only path, no Mike needed)
+
+There's a self-contained smoke test you can run yourself. It plays both
+roles (Andy + a test handle) and asserts every gate behavior. Use it as
+the gate-check before merging.
+
+### Local pre-flight (do this first — proves the code works on a copy of your real DB):
+```bash
+cd ~/dev/creatorgrowth
+./scripts/smoke_test.sh local
+# Expect: "RESULT: ALL 14 ASSERTIONS PASS ✓"
+```
+
+### Prod equivalent (run after deploy, replace BASE):
+```bash
+# After deploy steps 0–2 below, with DM_VERIFY_TOKEN set in your shell env:
+DM_VERIFY_TOKEN="<from VPS .env>" ./scripts/smoke_test.sh prod https://creatorgrowth.com
+# Same 14 assertions, against the live server.
+```
+
+If both passes, item #9 is satisfied — no need for Mike to be online.
+You merge per step 9 of this runbook. If you want Mike to validate his
+own handle separately later, that's a nice-to-have, not a blocker.
+
+The detailed manual runbook below remains for the case where the
+automated script can't be used (e.g., need to debug a specific step).
+
+---
+
+## Detailed manual runbook
+
 Run this BEFORE merging `skool-auth` to `main`. Requires:
-- Mike awake and at his laptop (real Skool handle needed).
+- Mike awake and at his laptop (real Skool handle needed) — OR use Andy
+  + a second test handle (the new `smoke_test.sh prod` path covers this).
 - VPS DB backup taken (this changes schema + drops UNIQUEs).
 - `SECRET_KEY`, `DM_VERIFY_TOKEN` set in VPS env (see `.env.example`).
 
