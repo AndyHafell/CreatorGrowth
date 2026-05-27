@@ -2847,7 +2847,22 @@
         async function loadVideos() {
             try {
                 const resp = await fetch('/api/videos');
-                videos = await resp.json();
+                if (resp.status === 401) {
+                    // Stale/revoked session — bring the auth overlay back so
+                    // the user can re-login via the new typeahead flow.
+                    videos = [];
+                    document.getElementById('authOverlay').classList.remove('hidden');
+                    if (typeof resetAuthForm === 'function') resetAuthForm();
+                    return;
+                }
+                const data = await resp.json();
+                if (!Array.isArray(data)) {
+                    // Server returned an error object instead of a list — don't
+                    // crash updateCounts/renderGrid on a non-array.
+                    videos = [];
+                    return;
+                }
+                videos = data;
                 updateCounts();
                 populateCreatorDropdown();
                 renderGrid();
