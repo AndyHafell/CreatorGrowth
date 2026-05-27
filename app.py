@@ -1342,6 +1342,9 @@ def _send_login_email(email: str, code: str) -> bool:
         headers={
             "Authorization": f"Bearer {RESEND_API_KEY}",
             "Content-Type": "application/json",
+            # Default urllib UA is blocked by api.resend.com's Cloudflare edge
+            # (returns CF 1010). Any non-default UA passes.
+            "User-Agent": "CreatorGrowth/1.0",
         },
         method="POST",
     )
