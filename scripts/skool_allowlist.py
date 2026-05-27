@@ -18,10 +18,25 @@ import sqlite3
 import sys
 from pathlib import Path
 
-DEFAULT_DB = str(Path(__file__).resolve().parent.parent / "videos.db")
+REPO = Path(__file__).resolve().parent.parent
+DEFAULT_DB = str(REPO / "videos.db")
+
+
+def _ensure_schema(db_path: str) -> None:
+    """Trigger app's migrate_schema() against the target DB so the CLI works
+    on a freshly-cloned repo before any web request has booted the app."""
+    os.environ["DB_PATH"] = db_path
+    sys.path.insert(0, str(REPO))
+    # Importing app runs init_db() + migrate_schema() at module scope.
+    import importlib
+    if "app" in sys.modules:
+        importlib.reload(sys.modules["app"])
+    else:
+        importlib.import_module("app")
 
 
 def _conn(db_path: str) -> sqlite3.Connection:
+    _ensure_schema(db_path)
     c = sqlite3.connect(db_path, timeout=30.0)
     c.row_factory = sqlite3.Row
     return c

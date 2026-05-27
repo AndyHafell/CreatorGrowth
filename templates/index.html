@@ -1712,11 +1712,31 @@
         <div class="auth-card">
             <img src="/static/logo.png" alt="Creator Growth">
             <h2>Creator Growth</h2>
-            <p>Enter your email and password to access the dashboard</p>
+            <p id="authPrompt">Enter your Skool handle to sign in</p>
             <div class="auth-error" id="authError"></div>
-            <input type="email" class="auth-input" id="authEmail" placeholder="Email address" autocomplete="email">
-            <input type="password" class="auth-input" id="authPassword" placeholder="Password" autocomplete="current-password">
-            <button class="auth-btn" id="authBtn" onclick="handleLogin()">Log In</button>
+
+            <!-- Step 1: handle entry -->
+            <div id="authStepHandle">
+                <input type="text" class="auth-input" id="authHandle"
+                       placeholder="@your-skool-handle"
+                       autocomplete="username"
+                       spellcheck="false"
+                       autocapitalize="off">
+                <div id="authRecent" style="display:none; margin: 8px 0; max-height: 140px; overflow-y: auto;">
+                    <div style="font-size: 11px; color: #888; margin-bottom: 4px;">Recent handles (click to fill):</div>
+                    <div id="authRecentList"></div>
+                </div>
+                <button class="auth-btn" id="authBtn" onclick="startDmCode()">Continue</button>
+            </div>
+
+            <!-- Step 2: code shown, waiting for DM -->
+            <div id="authStepCode" style="display:none;">
+                <div style="font-size: 13px; color: #aaa; margin-bottom: 8px;">DM this code to <strong id="authDmTarget">@theaiandy</strong> on Skool:</div>
+                <div id="authCodeDisplay" style="font-family: monospace; font-size: 36px; letter-spacing: 8px; text-align: center; background: #1a1a1a; padding: 16px; border-radius: 8px; margin: 12px 0; color: #FFD700;"></div>
+                <div id="authCodeStatus" style="font-size: 12px; color: #888; text-align: center; min-height: 16px;">Waiting for verification…</div>
+                <button class="auth-btn" id="authBackBtn" style="background:#333; margin-top: 8px;" onclick="resetAuthForm()">← Back</button>
+            </div>
+
             <div class="auth-divider"></div>
             <div class="auth-cta">
                 Don't have access? <a href="https://skool.com/Ai-mate" target="_blank">Join the free community</a>
@@ -5292,46 +5312,129 @@
             btn.textContent = 'Import from Airtable';
         }
 
-        // ── Auth ──────────────────────────────────────────
-        async function handleLogin() {
-            const email = document.getElementById('authEmail').value.trim();
-            const password = document.getElementById('authPassword').value;
+        // ── Auth: Skool handle + DM-code flow ─────────────
+        const RECENT_HANDLES_KEY = 'cg.recent_handles';
+        let authPollTimer = null;
+
+        function getRecentHandles() {
+            try { return JSON.parse(localStorage.getItem(RECENT_HANDLES_KEY) || '[]'); }
+            catch (e) { return []; }
+        }
+
+        function rememberHandle(handle) {
+            const list = getRecentHandles().filter(h => h !== handle);
+            list.unshift(handle);
+            localStorage.setItem(RECENT_HANDLES_KEY, JSON.stringify(list.slice(0, 6)));
+        }
+
+        function renderRecentHandles() {
+            const list = getRecentHandles();
+            const wrap = document.getElementById('authRecent');
+            const listEl = document.getElementById('authRecentList');
+            if (!list.length) { wrap.style.display = 'none'; return; }
+            wrap.style.display = 'block';
+            listEl.innerHTML = '';
+            list.forEach(h => {
+                const btn = document.createElement('button');
+                btn.textContent = '@' + h;
+                btn.style.cssText = 'display:block; width:100%; text-align:left; padding:8px 12px; margin:2px 0; background:#1a1a1a; color:#ddd; border:1px solid #2a2a2a; border-radius:4px; cursor:pointer; font-size:13px;';
+                btn.onmouseover = () => btn.style.background = '#222';
+                btn.onmouseout  = () => btn.style.background = '#1a1a1a';
+                btn.onclick = () => {
+                    document.getElementById('authHandle').value = h;
+                    startDmCode();
+                };
+                listEl.appendChild(btn);
+            });
+        }
+
+        function resetAuthForm() {
+            if (authPollTimer) { clearInterval(authPollTimer); authPollTimer = null; }
+            document.getElementById('authStepHandle').style.display = '';
+            document.getElementById('authStepCode').style.display = 'none';
+            document.getElementById('authError').textContent = '';
+            document.getElementById('authBtn').disabled = false;
+            document.getElementById('authBtn').textContent = 'Continue';
+            document.getElementById('authPrompt').textContent = 'Enter your Skool handle to sign in';
+            renderRecentHandles();
+        }
+
+        async function startDmCode() {
+            const handle = document.getElementById('authHandle').value.trim().replace(/^@/, '').toLowerCase();
             const errEl = document.getElementById('authError');
             const btn = document.getElementById('authBtn');
             errEl.textContent = '';
-            if (!email || !email.includes('@')) { errEl.textContent = 'Enter a valid email'; return; }
-            if (!password) { errEl.textContent = 'Enter the password'; return; }
+            if (!handle || !/^[a-z0-9][a-z0-9._-]{1,38}$/.test(handle)) {
+                errEl.textContent = 'Enter a valid Skool handle (e.g., theaiandy)';
+                return;
+            }
             btn.disabled = true;
-            btn.textContent = 'Logging in...';
+            btn.textContent = 'Requesting code...';
             try {
-                const res = await fetch('/api/login', {
+                const res = await fetch('/api/auth/skool/dm-code/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email, password })
+                    body: JSON.stringify({ handle })
                 });
                 const data = await res.json();
                 if (!res.ok) {
-                    errEl.textContent = data.error || 'Login failed';
+                    errEl.textContent = data.detail || data.error || 'Could not start login';
                     btn.disabled = false;
-                    btn.textContent = 'Log In';
+                    btn.textContent = 'Continue';
                     return;
                 }
-                document.getElementById('authOverlay').classList.add('hidden');
-                loadVideos();
+                // Switch to step 2
+                document.getElementById('authStepHandle').style.display = 'none';
+                document.getElementById('authStepCode').style.display = '';
+                document.getElementById('authCodeDisplay').textContent = data.code;
+                document.getElementById('authDmTarget').textContent = '@' + (data.dm_target || 'theaiandy');
+                document.getElementById('authPrompt').textContent = 'Almost there — DM the code below';
+                pollForVerify(data.code, handle);
             } catch (e) {
                 errEl.textContent = 'Connection error';
                 btn.disabled = false;
-                btn.textContent = 'Log In';
+                btn.textContent = 'Continue';
             }
         }
 
-        // Enter key submits login
-        document.getElementById('authPassword').addEventListener('keydown', e => {
-            if (e.key === 'Enter') handleLogin();
+        function pollForVerify(code, handle) {
+            const statusEl = document.getElementById('authCodeStatus');
+            let attempts = 0;
+            if (authPollTimer) clearInterval(authPollTimer);
+            authPollTimer = setInterval(async () => {
+                attempts++;
+                try {
+                    const res = await fetch(`/api/auth/skool/dm-code/poll?code=${code}`);
+                    if (res.status === 410) {
+                        statusEl.textContent = 'Code expired — start over';
+                        statusEl.style.color = '#e55';
+                        clearInterval(authPollTimer); authPollTimer = null;
+                        return;
+                    }
+                    if (!res.ok) return;
+                    const data = await res.json();
+                    if (data.ok && data.status === 'verified') {
+                        clearInterval(authPollTimer); authPollTimer = null;
+                        rememberHandle(handle);
+                        statusEl.textContent = 'Verified — loading…';
+                        statusEl.style.color = '#5e5';
+                        document.getElementById('authOverlay').classList.add('hidden');
+                        if (typeof loadVideos === 'function') loadVideos();
+                    } else if (data.status === 'pending') {
+                        statusEl.textContent = `Waiting for DM… (checked ${attempts}×)`;
+                    }
+                } catch (e) {
+                    statusEl.textContent = 'Connection error — retrying';
+                }
+            }, 3000);
+        }
+
+        // Enter key submits handle
+        document.getElementById('authHandle').addEventListener('keydown', e => {
+            if (e.key === 'Enter') startDmCode();
         });
-        document.getElementById('authEmail').addEventListener('keydown', e => {
-            if (e.key === 'Enter') document.getElementById('authPassword').focus();
-        });
+        // Render recent handles on first load
+        renderRecentHandles();
     
         // --- Content Tab ---
         let contentCurrentPath = '';
