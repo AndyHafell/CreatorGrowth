@@ -26,8 +26,9 @@ def test_join_open_no_auth(client):
     r = client.get("/join")
     assert r.status_code == 200
     body = r.get_data(as_text=True)
-    # External Skool link.
-    assert "https://www.skool.com/ai-mate" in body
+    # External Skool link (canonical URL, no hyphen).
+    assert "https://www.skool.com/aimate" in body
+    assert "skool.com/ai-mate" not in body
     # Back link to welcome.
     assert 'href="/welcome"' in body
 
