@@ -2560,7 +2560,6 @@
                     <button class="kw-filter-btn" data-kwfilter="favorites" onclick="setKwFilter('favorites')">Favorites</button>
                     <button class="kw-filter-btn" data-kwfilter="youtube" onclick="setKwFilter('youtube')">YouTube</button>
                 </div>
-                <button class="scrape-all-btn" id="importKwBtn" onclick="importKeywords()">Import from Airtable</button>
             </div>
         </div>
         <div class="kw-table-wrap">
@@ -3150,11 +3149,14 @@
                         <div style="color:#666; font-size:10px; letter-spacing:2px;">OPTIONAL NUDGE</div>
                         <input id="tsNudge" type="text" placeholder="Extra direction for Claude (optional)…" style="background:#0a0a14; border:1px solid #2a2a4a; color:#ddd; padding:9px 11px; border-radius:6px; font-size:13px; font-family:inherit; outline:none;">
                     </div>
-                    <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                        <button onclick="tsGenerate('pixel_face')" style="background:#1a1018; border:1px solid #e87a5b; color:#e87a5b; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GENERATE 3 PIXEL FACE</button>
-                        <button onclick="tsGenerate('faceless')" style="background:#0d1620; border:1px solid #5b9bd5; color:#5b9bd5; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GENERATE 3 FACELESS</button>
-                        <button onclick="tsGeminiDirect('faceless')" title="Pure Gemini, no Claude judgment, faceless SOP as prompt. ~$0.12 / 3 thumbs, ~30s, runs on VPS." style="background:#101820; border:1px solid #7ad17a; color:#7ad17a; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GEMINI DIRECT (FACELESS)</button>
-                        <button onclick="tsGeminiDirect('pixel-face')" title="Pure Gemini + 4 face refs, no Claude judgment, pixel-face SOP as prompt. ~$0.12 / 3 thumbs, ~30s, runs on VPS. No brand logo." style="background:#1a1410; border:1px solid #f5b942; color:#f5b942; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GEMINI DIRECT (PIXEL FACE)</button>
+                    <div id="thumbGenButtons" style="display:flex; gap:10px; flex-wrap:wrap;">
+                        <button class="thumb-gen-btn" onclick="tsGenerate('pixel_face')" style="background:#1a1018; border:1px solid #e87a5b; color:#e87a5b; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GENERATE 3 PIXEL FACE</button>
+                        <button class="thumb-gen-btn" onclick="tsGenerate('faceless')" style="background:#0d1620; border:1px solid #5b9bd5; color:#5b9bd5; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GENERATE 3 FACELESS</button>
+                        <button class="thumb-gen-btn" onclick="tsGeminiDirect('faceless')" title="Pure Gemini, no Claude judgment, faceless SOP as prompt. ~$0.12 / 3 thumbs, ~30s, runs on VPS." style="background:#101820; border:1px solid #7ad17a; color:#7ad17a; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GEMINI DIRECT (FACELESS)</button>
+                        <button class="thumb-gen-btn" onclick="tsGeminiDirect('pixel-face')" title="Pure Gemini + 4 face refs, no Claude judgment, pixel-face SOP as prompt. ~$0.12 / 3 thumbs, ~30s, runs on VPS. No brand logo." style="background:#1a1410; border:1px solid #f5b942; color:#f5b942; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GEMINI DIRECT (PIXEL FACE)</button>
+                    </div>
+                    <div id="thumbGenPlaceholder" style="display:none; padding:14px 16px; background:#1a1410; border:1px dashed #5a4830; border-radius:6px; color:#a8895a; font-size:12px;">
+                        🔒 Thumb generation unlocks when you upload your own face references in <strong>Settings v2</strong> — coming this week.
                     </div>
                 </div>
 
@@ -5565,8 +5567,71 @@
             modalDocChanged();
         }
 
+        // ── Pre-Settings-v2 capability gates ──────────────────
+        // Until per-user social/API-key storage ships, a handful of features
+        // are gated to the admin (whose creds are in env vars). The server
+        // returns 403 settings_v2_required on the gated routes; the UI mirrors
+        // that by disabling the relevant buttons + showing a tooltip.
+        window.__cg_caps = {
+            can_publish_blotato: false,
+            can_import_airtable_keywords: false,
+            can_use_pixel_face_thumbs: false,
+            loaded: false,
+        };
+        async function loadCgCapabilities() {
+            try {
+                const res = await fetch('/api/auth-status');
+                if (!res.ok) return;
+                const s = await res.json();
+                window.__cg_caps.can_publish_blotato = !!s.can_publish_blotato;
+                window.__cg_caps.can_import_airtable_keywords = !!s.can_import_airtable_keywords;
+                window.__cg_caps.can_use_pixel_face_thumbs = !!s.can_use_pixel_face_thumbs;
+                window.__cg_caps.loaded = true;
+                applyCgCapabilityGates();
+            } catch (e) { /* silent — gates default to false (closed) */ }
+        }
+        function showSettingsV2Modal(feature) {
+            alert("🔒 " + (feature || "This feature") + " unlocks when you connect your own accounts in Settings v2 — coming this week.");
+        }
+        function applyCgCapabilityGates() {
+            // Twitter post button
+            const tweetBtn = document.getElementById('tweetPostBtn');
+            if (tweetBtn && !window.__cg_caps.can_publish_blotato) {
+                tweetBtn.disabled = true;
+                tweetBtn.style.opacity = '0.5';
+                tweetBtn.style.cursor = 'not-allowed';
+                tweetBtn.title = 'Connect your X account in Settings v2 — coming this week';
+                tweetBtn.onclick = (e) => {
+                    e.preventDefault();
+                    showSettingsV2Modal('Cross-posting to X');
+                };
+            }
+            // Video publish-to-socials button (lives inside the video modal,
+            // may not exist yet at first render — re-applied on modal open).
+            const pubBtn = document.getElementById('videoPublishBtn');
+            if (pubBtn && !window.__cg_caps.can_publish_blotato) {
+                pubBtn.disabled = true;
+                pubBtn.style.opacity = '0.5';
+                pubBtn.style.cursor = 'not-allowed';
+                pubBtn.title = 'Connect your social accounts in Settings v2 — coming this week';
+                pubBtn.onclick = (e) => {
+                    e.preventDefault();
+                    showSettingsV2Modal('Publishing to socials');
+                };
+            }
+            // Thumb generation buttons — all 4 depend on admin-curated face refs
+            // and the faceless SOP. Hide the row and show the placeholder.
+            if (!window.__cg_caps.can_use_pixel_face_thumbs) {
+                const btnRow = document.getElementById('thumbGenButtons');
+                const placeholder = document.getElementById('thumbGenPlaceholder');
+                if (btnRow) btnRow.style.display = 'none';
+                if (placeholder) placeholder.style.display = '';
+            }
+        }
+
         // Attach input listener
         document.addEventListener('DOMContentLoaded', () => {
+            loadCgCapabilities();
             if (window.location.hash) history.replaceState(null, '', window.location.pathname);
             const ed = document.getElementById('modalDocContent');
             if (ed) ed.addEventListener('input', modalDocChanged);
@@ -6017,25 +6082,8 @@
             }
         }
 
-        async function importKeywords() {
-            const btn = document.getElementById('importKwBtn');
-            btn.disabled = true;
-            btn.textContent = 'Importing...';
-            try {
-                const res = await fetch('/api/keywords/import-airtable', { method: 'POST' });
-                const data = await res.json();
-                if (res.ok) {
-                    showToast(`Imported ${data.inserted} keywords (${data.skipped} already existed)`);
-                    loadKeywords();
-                } else {
-                    showToast(data.error || 'Import failed');
-                }
-            } catch (e) {
-                showToast('Import failed');
-            }
-            btn.disabled = false;
-            btn.textContent = 'Import from Airtable';
-        }
+        // Removed 2026-05-28: importKeywords() / Airtable import button.
+        // Pulled from admin-only Airtable. Re-add via Settings v2 BYO keys.
 
         // ── Auth: email → 6-digit code (or admin override) ─────
         let authPendingEmail = null;

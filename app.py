@@ -857,6 +857,22 @@ def _is_admin_email(email: str) -> bool:
     return bool(email) and email.strip().lower() in ADMIN_EMAILS
 
 
+def _can_publish_blotato() -> bool:
+    """Pre-Settings-v2 gate. The Blotato account IDs (X, YouTube, TikTok, …) are
+    hardcoded in env vars to the admin's accounts, so allowing non-admins to
+    hit /api/twitter/post or /api/videos/<vid>/publish-blotato would publish to
+    the admin's socials. Once Settings v2 ships per-user social connections
+    this becomes a per-user check against their stored creds."""
+    identity_email = session.get("identity_email") or session.get("email", "")
+    return _is_admin_email(identity_email)
+
+
+_SETTINGS_V2_GATE = {
+    "error": "settings_v2_required",
+    "message": "Cross-posting unlocks when you connect your own social accounts in Settings v2 — coming this week.",
+}
+
+
 @app.route("/api/auth-status")
 def auth_status():
     email = session.get("email", "")
@@ -890,6 +906,11 @@ def auth_status():
         "is_admin": _is_admin_email(email) or _is_admin_email(session.get("impersonator_email", "")),
         "impersonating": bool(session.get("impersonator_email")),
         "impersonator_email": session.get("impersonator_email", ""),
+        # Pre-Settings-v2 capability flags. Once Settings v2 ships per-user
+        # social/API-key storage, these become true for any user with creds.
+        "can_publish_blotato": _can_publish_blotato(),
+        "can_import_airtable_keywords": _is_admin_email(identity_email),
+        "can_use_pixel_face_thumbs": _is_admin_email(identity_email),
     })
 
 
@@ -5489,6 +5510,8 @@ def _blotato_upload_media(api_key, video_url):
 @app.route("/api/videos/<int:vid>/publish-blotato", methods=["POST"])
 @video_owner_required
 def video_publish_blotato(vid):
+    if not _can_publish_blotato():
+        return jsonify(_SETTINGS_V2_GATE), 403
     api_key = os.environ.get("BLOTATO_API_KEY", "")
     if not api_key:
         return jsonify({"error": "BLOTATO_API_KEY not configured"}), 500
@@ -5705,53 +5728,9 @@ def delete_keyword(kid):
     return jsonify({"ok": True})
 
 
-@app.route("/api/keywords/import-airtable", methods=["POST"])
-def import_keywords_airtable():
-    """Import keywords from the Airtable imported table. Scoped to the
-    current user \u2014 re-imports for one user won't show up for another."""
-    uid = _request_user_id()
-    if uid is None:
-        return jsonify({"error": "Unauthorized"}), 401
-    import urllib.request
-    token = os.environ.get("AIRTABLE_TOKEN", "")
-    if not token:
-        return jsonify({"error": "AIRTABLE_TOKEN not configured"}), 500
-    base_id = "appghTjP5qs7AyO4z"
-    table_id = "tblFlmtj4GgpS51GF"
-    all_records = []
-    offset = None
-    while True:
-        url = f"https://api.airtable.com/v0/{base_id}/{table_id}"
-        if offset:
-            url += f"?offset={offset}"
-        req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read())
-        all_records.extend(data.get("records", []))
-        offset = data.get("offset")
-        if not offset:
-            break
-    conn = get_db()
-    inserted = skipped = 0
-    for r in all_records:
-        f = r.get("fields", {})
-        keyword = f.get("\ufeffKeyword") or f.get("Keyword", "")
-        if not keyword:
-            continue
-        try:
-            conn.execute(
-                """INSERT INTO keywords (keyword, search_volume, competition, overall, searches_30d, word_count, user_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (keyword.strip(), int(f.get("Search volume", 0)), round(f.get("Competition", 0), 1),
-                 round(f.get("Overall", 0), 1), int(f.get("30d ago searches", 0)),
-                 int(f.get("Number of words", 0)), uid),
-            )
-            inserted += 1
-        except sqlite3.IntegrityError:
-            skipped += 1
-    conn.commit()
-    conn.close()
-    return jsonify({"inserted": inserted, "skipped": skipped, "total": len(all_records)})
+# Removed 2026-05-28: /api/keywords/import-airtable route. It pulled from an
+# admin-owned Airtable base/table no other user could reach. Re-add behind
+# per-user Airtable credentials in Settings v2 if there is demand.
 
 
 
@@ -5760,6 +5739,8 @@ def import_keywords_airtable():
 @app.route("/api/twitter/post", methods=["POST"])
 @login_required
 def twitter_post():
+    if not _can_publish_blotato():
+        return jsonify(_SETTINGS_V2_GATE), 403
     data = request.get_json()
     text = (data or {}).get("text", "").strip()
     media_url = (data or {}).get("media_url", "").strip()
@@ -5822,10 +5803,11 @@ def twitter_post():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+    uid = session.get("user_id")
     conn = get_db()
     conn.execute(
-        "INSERT INTO tweets (text, blotato_id, media_url, thread_json) VALUES (?, ?, ?, ?)",
-        (text, blotato_id, media_url, json.dumps(thread_parts))
+        "INSERT INTO tweets (text, blotato_id, media_url, thread_json, user_id) VALUES (?, ?, ?, ?, ?)",
+        (text, blotato_id, media_url, json.dumps(thread_parts), uid)
     )
     conn.commit()
     conn.close()
@@ -5835,9 +5817,12 @@ def twitter_post():
 @app.route("/api/twitter/feed", methods=["GET"])
 @login_required
 def twitter_feed():
+    uid = session.get("user_id")
     conn = get_db()
     rows = conn.execute(
-        "SELECT id, text, posted_at, blotato_id, media_url, thread_json FROM tweets ORDER BY id DESC LIMIT 50"
+        "SELECT id, text, posted_at, blotato_id, media_url, thread_json FROM tweets "
+        "WHERE user_id = ? ORDER BY id DESC LIMIT 50",
+        (uid,),
     ).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
@@ -10888,6 +10873,8 @@ def _faceless_prompt_builder(video_title, nudge=""):
 @video_owner_required
 def gemini_faceless(vid):
     """Direct-to-Gemini faceless thumbnails — no Claude judgment, no face refs."""
+    if not _is_admin_email(session.get("identity_email") or session.get("email", "")):
+        return jsonify(_SETTINGS_V2_GATE), 403
     if not _FACELESS_SOP_PATH.exists():
         return jsonify({"error": f"SOP missing: {_FACELESS_SOP_PATH}"}), 500
     return _gemini_thumb_direct(
@@ -10905,6 +10892,8 @@ def gemini_pixel_face(vid):
     """Direct-to-Gemini pixel-face — sends the locked SOP prompt template (not
     the full SOP) substituted with Claude Code brand info, plus 4 face refs + 1
     brand logo."""
+    if not _is_admin_email(session.get("identity_email") or session.get("email", "")):
+        return jsonify(_SETTINGS_V2_GATE), 403
     if not _load_face_refs():
         return jsonify({"error": "no face references found in assets/face_references/"}), 500
     if not _load_logo(_DEFAULT_BRAND["logo_name"]):
