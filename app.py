@@ -2708,7 +2708,7 @@ def index():
 def welcome():
     if session.get("authenticated"):
         return redirect("/")
-    return render_template("welcome.html")
+    return render_template("index.html", authenticated=False, welcome_mode=True)
 
 
 @app.route("/join")

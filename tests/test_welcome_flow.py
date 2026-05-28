@@ -13,6 +13,11 @@ def test_welcome_open_no_auth(client):
     # Both CTAs present.
     assert 'href="/activate"' in body
     assert 'href="/join"' in body
+    # Welcome card rendered (not the email form).
+    assert "welcome-card" in body
+    assert "runs itself" in body
+    # And the auth-overlay backdrop is showing (so the SPA blurs behind it).
+    assert 'class="auth-overlay ' in body or "auth-overlay\"" in body
     # Value-based copy, not "dashboard for AI Mate members" framing.
     assert "dashboard for AI Mate members" not in body
 

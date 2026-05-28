@@ -97,6 +97,76 @@
         }
         .auth-cta a:hover { text-decoration: underline; }
 
+        /* Welcome variant of the auth card (yes/no Skool gate). */
+        .welcome-card { width: 440px; padding: 40px 36px; }
+        .welcome-h2 {
+            font-size: 24px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 8px;
+            line-height: 1.25;
+        }
+        .welcome-sub {
+            font-size: 14px;
+            color: #bbb;
+            margin-bottom: 4px;
+            line-height: 1.5;
+        }
+        .welcome-bullets {
+            list-style: none;
+            text-align: left;
+            margin: 18px auto 6px;
+            padding: 0;
+            max-width: 320px;
+        }
+        .welcome-bullets li {
+            font-size: 13.5px;
+            color: #ccc;
+            padding: 5px 0 5px 22px;
+            position: relative;
+            line-height: 1.45;
+        }
+        .welcome-bullets li::before {
+            content: "✓";
+            color: #FFD700;
+            position: absolute;
+            left: 0;
+            font-weight: 700;
+        }
+        .welcome-q {
+            font-size: 14px;
+            color: #888;
+            margin: 18px 0 12px;
+        }
+        .welcome-btn {
+            display: block;
+            width: 100%;
+            padding: 13px 16px;
+            border-radius: 10px;
+            border: none;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            text-align: center;
+            transition: background 0.15s, border-color 0.15s, color 0.15s;
+            margin-bottom: 10px;
+            font-family: inherit;
+            box-sizing: border-box;
+        }
+        .welcome-btn-primary { background: #FFD700; color: #1a1a1a; }
+        .welcome-btn-primary:hover { background: #ffdf33; }
+        .welcome-btn-secondary {
+            background: #272727;
+            color: #f1f1f1;
+            border: 1px solid #3a3a3a;
+        }
+        .welcome-btn-secondary:hover {
+            background: #2f2f2f;
+            border-color: #FFD700;
+            color: #FFD700;
+        }
+
         body {
             font-family: 'Roboto', Arial, sans-serif;
             background: #0f0f0f;
@@ -1973,6 +2043,22 @@
 
     <!-- Auth Overlay -->
     <div class="auth-overlay {% if authenticated %}hidden{% endif %}" id="authOverlay">
+        {% if welcome_mode %}
+        <div class="auth-card welcome-card">
+            <img src="/static/logo.png" alt="Creator Growth">
+            <h2 class="welcome-h2">A content engine that <span style="color:#FFD700">runs itself</span></h2>
+            <p class="welcome-sub">Ideas → script → thumbnail → publish — one dashboard.</p>
+            <ul class="welcome-bullets">
+                <li>Pull viral ideas tuned to your channel</li>
+                <li>Draft content docs &amp; show docs in minutes</li>
+                <li>Generate thumbnails &amp; titles that get clicks</li>
+                <li>Track every video from idea to published</li>
+            </ul>
+            <p class="welcome-q">Are you an AI Mate member?</p>
+            <a href="/activate" class="welcome-btn welcome-btn-primary">Yes — I'm a member</a>
+            <a href="/join" class="welcome-btn welcome-btn-secondary">Not yet</a>
+        </div>
+        {% else %}
         <div class="auth-card">
             <img src="/static/logo.png" alt="Creator Growth">
             <h2>Creator Growth</h2>
@@ -2011,6 +2097,7 @@
                 Don't have access? <a href="https://skool.com/Ai-mate" target="_blank">Join AI Mate</a>
             </div>
         </div>
+        {% endif %}
     </div>
 
     <!-- Settings Modal -->
