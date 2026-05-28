@@ -585,6 +585,17 @@ def migrate_schema():
             conn.execute(f"ALTER TABLE users ADD COLUMN {name} {typ}")
         except sqlite3.OperationalError:
             pass
+    # NOTE — future multi-channel-per-account direction:
+    # Today, user_id on each scoped table doubles as "which workspace owns
+    # this row." When one workspace needs to run multiple channels (e.g. an
+    # "AI Andy" channel + an "Andy Lifts" channel under one paid seat), add
+    # a `youtube_channels` table (id, user_id, display_name, slug, created_at)
+    # and a `channel_id` FK on each scoped table. Queries become
+    # `WHERE channel_id = ? AND <channels_row>.user_id = session.user_id`.
+    # Backfill: create a default channel per user, set channel_id on all
+    # existing rows. Team membership stays workspace-wide (a member sees all
+    # of the owner's channels, not just one) — team_owner_user_id keeps its
+    # current meaning. See memory project_creatorgrowth_multi_channel.
     scoped_tables = ("videos", "show_docs", "channels", "keywords",
                      "my_channel_videos", "tweets")
     for tbl in scoped_tables:
@@ -939,7 +950,12 @@ def _resolve_team_owner_id(conn, uid: int) -> int:
     """Return the workspace owner's users.id for `uid`. Returns uid itself when
     the user is solo (no team_owner_user_id set). Used by every login path so
     session.user_id always points at the workspace owner — the 68 ownership
-    decorators stay correct without changes."""
+    decorators stay correct without changes.
+
+    Future multi-channel: this still resolves the workspace; a separate
+    session.channel_id (defaulting to the workspace's primary channel) would
+    select which channel inside the workspace is active. See migrate_schema()
+    note + memory project_creatorgrowth_multi_channel."""
     row = conn.execute(
         "SELECT team_owner_user_id FROM users WHERE id = ?", (uid,)
     ).fetchone()
