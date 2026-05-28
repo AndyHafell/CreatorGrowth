@@ -2295,25 +2295,25 @@
         </div>
         <div class="fake-grid">
             {% set fake_videos = [
-                ('QoQBzR1NIqI', 'CLAUDE CODE FULL COURSE 4 HOURS: Build & Sell (2026)', '1.7M views'),
-                ('mpALXah_PBg', 'Build & Sell with Claude Code (10+ Hour Course)', '653K views'),
-                ('TZUTe7s11-I', 'Claude Code + Nano Banana 2 = Insane $10,000 Websites', '603K views'),
-                ('sboNwYmH3AY', 'Andrej Karpathy Just 10x’d Everyone’s Claude Code', '545K views'),
-                ('6MC1XqZSltw', 'I Turned Claude Opus 4.7 Into a 24/7 Trader', '461K views'),
-                ('86HM0RUWhCk', 'Building Beautiful Websites with Claude Code Is Too Easy', '434K views'),
-                ('ZNbgOhxhzXg', 'Claude Just Destroyed Every Video Editing Tool', '334K views'),
-                ('eRS3CmvrOvA', 'I Tried 100+ Claude Code Skills. These 6 I Can’t Live Without', '312K views'),
-                ('EsTrWCV0Ph4', 'AI Agents Full Course 2026: Master Agentic AI (2 Hours)', '311K views'),
-                ('bhPHwVsrTo0', 'Antigravity + Flutter + Stitch builds Insane Mobile Apps', '305K views'),
-                ('qOvc9IUKEIc', 'How Anthropic Engineers ACTUALLY Prompt Claude Code', '295K views'),
-                ('jqoFP9QapXI', '32 Tricks to Level Up Claude Code in 16 Mins', '279K views')
+                ('QoQBzR1NIqI', 'CLAUDE CODE FULL COURSE 4 HOURS: Build & Sell (2026)', '1.7M views', 'Nick Saraev'),
+                ('mpALXah_PBg', 'Build & Sell with Claude Code (10+ Hour Course)', '653K views', 'Nate Herk'),
+                ('-X9ymqNGNOU', 'How To Create A News Channel With ChatGPT & AI News Video Generator', '628K views', 'AI Andy'),
+                ('TZUTe7s11-I', 'Claude Code + Nano Banana 2 = Insane $10,000 Websites', '603K views', 'Jack Roberts'),
+                ('bhPHwVsrTo0', 'Antigravity + Flutter + Stitch builds Insane Mobile Apps', '305K views', 'RoboNuggets'),
+                ('qOvc9IUKEIc', 'How Anthropic Engineers ACTUALLY Prompt Claude Code', '295K views', 'Austin Marchese'),
+                ('-tGH2tLwCEw', 'Claude Design is INSANE', '243K views', 'Chase AI'),
+                ('8uP2IrP3IG8', 'I Built a FREE OpenClaw (no Mac Mini or API Fees)', '177K views', 'Stephen G. Pope'),
+                ('rVzGu5OYYS0', 'I Replaced OpenClaw and Hermes With This Claude Code Setup', '102K views', 'Mark Kashef'),
+                ('8ImlAQOyVTs', 'It’s Broken… The Claude Code Vs Codex Debate Is Finally Over', '78K views', 'AI LABS'),
+                ('iz3_xhi6iQE', 'ChatGPT 5.5 Codex is the greatest AI coding tool ever', '75K views', 'Alex Finn'),
+                ('MyRF01zzKvE', '100 hours of Vibe Coding lessons in 20 minutes', '37K views', 'Mikey No Code')
             ] %}
-            {% for vid, title, views in fake_videos %}
+            {% for vid, title, views, creator in fake_videos %}
             <div class="fake-card">
                 <img src="https://i.ytimg.com/vi/{{ vid }}/maxresdefault.jpg" alt="" loading="lazy">
                 <div class="fake-card-body">
                     <div class="fake-card-title">{{ title }}</div>
-                    <div class="fake-card-meta">{{ views }} · AI Andy</div>
+                    <div class="fake-card-meta">{{ views }} · {{ creator }}</div>
                 </div>
             </div>
             {% endfor %}
