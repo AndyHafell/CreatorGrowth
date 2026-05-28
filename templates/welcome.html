@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>CreatorGrowth</title>
+    <link rel="icon" href="/static/favicon.png">
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Roboto', Arial, sans-serif;
+            background: #0f0f0f;
+            color: #f1f1f1;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+        .card {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 16px;
+            padding: 48px 40px;
+            width: 100%;
+            max-width: 480px;
+            text-align: center;
+        }
+        .logo {
+            width: 56px;
+            height: 56px;
+            border-radius: 12px;
+            margin: 0 auto 20px;
+            display: block;
+        }
+        h1 {
+            font-size: 26px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 10px;
+            line-height: 1.25;
+        }
+        .gold { color: #FFD700; }
+        .tagline {
+            font-size: 15px;
+            color: #bbb;
+            margin-bottom: 8px;
+            line-height: 1.5;
+        }
+        .bullets {
+            list-style: none;
+            text-align: left;
+            margin: 24px auto 28px;
+            max-width: 340px;
+        }
+        .bullets li {
+            font-size: 14px;
+            color: #ccc;
+            padding: 6px 0;
+            padding-left: 22px;
+            position: relative;
+        }
+        .bullets li::before {
+            content: "✓";
+            color: #FFD700;
+            position: absolute;
+            left: 0;
+            font-weight: 700;
+        }
+        .question {
+            font-size: 15px;
+            color: #888;
+            margin: 24px 0 14px;
+        }
+        .btn {
+            display: block;
+            width: 100%;
+            padding: 14px 16px;
+            border-radius: 10px;
+            border: none;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            text-align: center;
+            transition: background 0.15s, border-color 0.15s, color 0.15s;
+            margin-bottom: 10px;
+            font-family: inherit;
+        }
+        .btn-primary {
+            background: #FFD700;
+            color: #1a1a1a;
+        }
+        .btn-primary:hover { background: #ffdf33; }
+        .btn-secondary {
+            background: #272727;
+            color: #f1f1f1;
+            border: 1px solid #3a3a3a;
+        }
+        .btn-secondary:hover { background: #2f2f2f; border-color: #FFD700; color: #FFD700; }
+        .footnote {
+            font-size: 12px;
+            color: #666;
+            margin-top: 18px;
+        }
+    </style>
+</head>
+<body>
+    <main class="card">
+        <img src="/static/logo.png" alt="CreatorGrowth" class="logo">
+        <h1>Build a content engine that <span class="gold">runs itself</span></h1>
+        <p class="tagline">Ideas → script → thumbnail → publish — one dashboard.</p>
+        <ul class="bullets">
+            <li>Pull viral ideas tuned to your channel</li>
+            <li>Draft content docs &amp; show docs in minutes</li>
+            <li>Generate thumbnails &amp; titles that get clicks</li>
+            <li>Track every video from idea to published</li>
+        </ul>
+        <p class="question">Are you an AI Mate member?</p>
+        <a href="/activate" class="btn btn-primary">Yes — I'm a member</a>
+        <a href="/join" class="btn btn-secondary">Not yet</a>
+        <p class="footnote">CreatorGrowth is free for AI Mate members during your 7-day trial.</p>
+    </main>
+</body>
+</html>

@@ -2169,7 +2169,7 @@ def uploads_delete(upload_id):
 @app.before_request
 def require_auth():
     open_paths = {
-        "/", "/login",
+        "/", "/login", "/welcome", "/join", "/activate",
         "/api/login", "/api/auth-status",
         "/api/auth/skool/start", "/api/auth/skool/callback",
         "/api/auth/skool/dm-code/start", "/api/auth/skool/dm-code/poll",
@@ -2699,7 +2699,28 @@ def fetch_tweet_metadata(tweet_id: str) -> dict | None:
 
 @app.route("/")
 def index():
-    return render_template("index.html", authenticated=session.get("authenticated", False))
+    if not session.get("authenticated"):
+        return redirect("/welcome")
+    return render_template("index.html", authenticated=True)
+
+
+@app.route("/welcome")
+def welcome():
+    if session.get("authenticated"):
+        return redirect("/")
+    return render_template("welcome.html")
+
+
+@app.route("/join")
+def join():
+    return render_template("join.html")
+
+
+@app.route("/activate")
+def activate():
+    if session.get("authenticated"):
+        return redirect("/")
+    return render_template("index.html", authenticated=False)
 
 
 def mirror_show_docs_into_videos(conn) -> int:
