@@ -109,6 +109,78 @@
         }
         .auth-cta a:hover { text-decoration: underline; }
 
+        /* Fake CG dashboard backdrop for front-door pages (welcome/join/activate).
+           Sits above the real SPA (which still exists in the DOM) so its post-401
+           toasts and stale UI don't flash through. The auth-overlay's
+           backdrop-filter blurs this for the YouTube-y look. */
+        .fake-dashboard {
+            position: fixed;
+            inset: 0;
+            z-index: 100;
+            background: #0f0f0f;
+            overflow: hidden;
+            padding: 24px 32px;
+            pointer-events: none;
+        }
+        .fake-nav {
+            display: flex;
+            align-items: center;
+            gap: 32px;
+            padding-bottom: 18px;
+            border-bottom: 1px solid #1f1f1f;
+        }
+        .fake-nav-left { display: flex; align-items: center; gap: 10px; }
+        .fake-nav-logo { width: 28px; height: 28px; border-radius: 6px; }
+        .fake-nav-brand { font-size: 15px; font-weight: 700; color: #fff; }
+        .fake-nav-tabs { display: flex; gap: 6px; flex: 1; }
+        .fake-tab {
+            font-size: 13px;
+            color: #999;
+            padding: 6px 14px;
+            border-radius: 999px;
+            background: #1a1a1a;
+        }
+        .fake-tab.active { background: #FFD700; color: #1a1a1a; font-weight: 600; }
+        .fake-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 18px;
+            margin-top: 24px;
+        }
+        .fake-card {
+            background: #1a1a1a;
+            border-radius: 10px;
+            overflow: hidden;
+            border: 1px solid #222;
+        }
+        .fake-card img {
+            width: 100%;
+            height: auto;
+            aspect-ratio: 16 / 9;
+            object-fit: cover;
+            display: block;
+        }
+        .fake-card-title {
+            height: 10px;
+            margin: 12px 12px 6px;
+            background: #2a2a2a;
+            border-radius: 3px;
+            width: 80%;
+        }
+        .fake-card-meta {
+            height: 8px;
+            margin: 0 12px 14px;
+            background: #232323;
+            border-radius: 3px;
+            width: 45%;
+        }
+        @media (max-width: 1100px) {
+            .fake-grid { grid-template-columns: repeat(3, 1fr); }
+        }
+        @media (max-width: 800px) {
+            .fake-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
         /* Welcome variant of the auth card (yes/no Skool gate). */
         .welcome-card { width: 520px; padding: 40px 40px; }
         .welcome-h2 {
@@ -2100,6 +2172,39 @@
     <div class="workspace-banner" id="workspaceBanner">
         Signed in as <strong id="workspaceIdentity">…</strong> · viewing <strong id="workspaceOwner">…</strong>'s workspace
     </div>
+
+    {% if welcome_mode or join_mode or activate_mode %}
+    <!-- Fake CG dashboard backdrop — only rendered for the front-door pages.
+         Covers the real SPA so its (post-401) error toasts and stale buttons
+         don't flash through the semi-transparent auth-overlay. -->
+    <div class="fake-dashboard" aria-hidden="true">
+        <div class="fake-nav">
+            <div class="fake-nav-left">
+                <img src="/static/logo.png" alt="" class="fake-nav-logo">
+                <span class="fake-nav-brand">CreatorGrowth</span>
+            </div>
+            <div class="fake-nav-tabs">
+                <span class="fake-tab active">Ideas</span>
+                <span class="fake-tab">Best</span>
+                <span class="fake-tab">Packaging</span>
+                <span class="fake-tab">Script</span>
+                <span class="fake-tab">Edited</span>
+                <span class="fake-tab">Published</span>
+                <span class="fake-tab">Archive</span>
+            </div>
+        </div>
+        <div class="fake-grid">
+            {% set fake_ids = ['B44bXmzU60s','RLjaUES9P8A','PsE9u37gJjU','N9fRqffXdqQ','8ktcSaSTvxk','5lycYTOYbPM','WKNSH85qXXc','k5NhsF7t68M','ckTYz3kDaHk','Pi-m8R068r4','UQmmGnz6iVQ','tjjX43FoAUg'] %}
+            {% for vid in fake_ids %}
+            <div class="fake-card">
+                <img src="https://i.ytimg.com/vi/{{ vid }}/maxresdefault.jpg" alt="" loading="lazy">
+                <div class="fake-card-title"></div>
+                <div class="fake-card-meta"></div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
 
     <!-- Auth Overlay -->
     <div class="auth-overlay {% if authenticated %}hidden{% endif %}" id="authOverlay">
