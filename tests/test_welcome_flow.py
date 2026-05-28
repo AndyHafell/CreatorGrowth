@@ -65,3 +65,6 @@ def test_activate_open_no_auth_shows_overlay(client):
     # unauthenticated visitor — otherwise the email-code form is unreachable.
     assert 'id="authOverlay"' in body
     assert 'class="auth-overlay hidden"' not in body
+    # Back link to /welcome is present on /activate (the front-door path).
+    assert 'class="auth-back-link"' in body
+    assert 'href="/welcome"' in body

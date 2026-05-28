@@ -34,7 +34,19 @@
             padding: 40px;
             width: 380px;
             text-align: center;
+            position: relative;
         }
+        .auth-back-link {
+            position: absolute;
+            top: 16px;
+            left: 18px;
+            font-size: 13px;
+            color: #888;
+            text-decoration: none;
+            font-weight: 500;
+            transition: color 0.15s;
+        }
+        .auth-back-link:hover { color: #FFD700; }
         .auth-card img { width: 48px; height: 48px; border-radius: 8px; margin-bottom: 16px; }
         .auth-card h2 {
             font-size: 22px;
@@ -2060,6 +2072,9 @@
         </div>
         {% else %}
         <div class="auth-card">
+            {% if activate_mode %}
+            <a href="/welcome" class="auth-back-link">← Back</a>
+            {% endif %}
             <img src="/static/logo.png" alt="Creator Growth">
             <h2>Creator Growth</h2>
             <p id="authPrompt">Enter your Skool email to get started</p>

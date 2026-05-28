@@ -2720,7 +2720,7 @@ def join():
 def activate():
     if session.get("authenticated"):
         return redirect("/")
-    return render_template("index.html", authenticated=False)
+    return render_template("index.html", authenticated=False, activate_mode=True)
 
 
 def mirror_show_docs_into_videos(conn) -> int:
