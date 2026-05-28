@@ -1427,6 +1427,76 @@ def _send_login_email(email: str, code: str) -> bool:
         return False
 
 
+def _send_team_invite_email(email: str, owner_email: str, owner_display: str = "") -> bool:
+    """Notify a freshly invited team member. Uses the same Resend transport as
+    the login code; falls back to stderr in dev. Best-effort — the caller
+    treats failure as a soft warning, not a 500."""
+    inviter = (owner_display or owner_email or "").strip() or "Your teammate"
+    print(f"[team-invite] to={email} from_owner={owner_email}  "
+          f"(provider={'resend' if RESEND_API_KEY else 'stderr-only'})",
+          file=sys.stderr, flush=True)
+
+    if not RESEND_API_KEY:
+        return True
+
+    subject = f"{inviter} added you to their CreatorGrowth workspace"
+    body_text = (
+        f"{inviter} ({owner_email}) added you to their CreatorGrowth workspace.\n\n"
+        f"Sign in at https://creatorgrowth.com using THIS email address "
+        f"({email}) and you'll land directly in their workspace — same ideas, "
+        f"same scripts, same thumbnails.\n\n"
+        f"If you weren't expecting this, you can ignore the email."
+    )
+    body_html = (
+        f"<p>{inviter} (<a href=\"mailto:{owner_email}\">{owner_email}</a>) "
+        f"added you to their CreatorGrowth workspace.</p>"
+        f"<p>Sign in at <a href=\"https://creatorgrowth.com\">creatorgrowth.com</a> "
+        f"using <strong>this</strong> email address (<code>{email}</code>) and "
+        f"you'll land directly in their workspace — same ideas, same scripts, "
+        f"same thumbnails.</p>"
+        f"<p style=\"color:#666;font-size:13px\">If you weren't expecting this, "
+        f"you can ignore the email.</p>"
+    )
+    import urllib.request
+    import urllib.error
+    payload = json.dumps({
+        "from": RESEND_FROM,
+        "to": [email],
+        "subject": subject,
+        "text": body_text,
+        "html": body_html,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+            "User-Agent": "CreatorGrowth/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            ok = 200 <= resp.status < 300
+            if not ok:
+                print(f"[team-invite] resend non-2xx: {resp.status}",
+                      file=sys.stderr, flush=True)
+            return ok
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        print(f"[team-invite] resend HTTPError {e.code}: {body}",
+              file=sys.stderr, flush=True)
+        return False
+    except Exception as e:
+        print(f"[team-invite] resend error: {e}", file=sys.stderr, flush=True)
+        return False
+
+
 @app.route("/api/auth/skool/request-code", methods=["POST"])
 def auth_skool_request_code():
     """Step 1 of email login. Accepts { email }, mints + 'sends' a 6-digit code."""
@@ -1812,9 +1882,10 @@ def team_invite():
     try:
         # Resolve workspace owner's own email so the owner can't invite themselves.
         owner_row = conn.execute(
-            "SELECT email FROM users WHERE id = ?", (workspace_uid,)
+            "SELECT email, display_name FROM users WHERE id = ?", (workspace_uid,)
         ).fetchone()
         owner_email = (owner_row["email"] if owner_row else "").lower()
+        owner_display = (owner_row["display_name"] if owner_row else "") or ""
         if email == owner_email:
             return jsonify({"error": "You're already the workspace owner"}), 400
 
@@ -1865,7 +1936,18 @@ def team_invite():
         conn.commit()
     finally:
         conn.close()
-    return jsonify({"ok": True, "member_id": member_id, "email": email})
+    # Best-effort notify — never fail the invite on email failure.
+    email_sent = False
+    try:
+        email_sent = _send_team_invite_email(email, owner_email, owner_display)
+    except Exception as e:
+        print(f"[team-invite] notify raised: {e}", file=sys.stderr, flush=True)
+    return jsonify({
+        "ok": True,
+        "member_id": member_id,
+        "email": email,
+        "email_sent": email_sent,
+    })
 
 
 @app.route("/api/team/members/<path:email>", methods=["DELETE"])

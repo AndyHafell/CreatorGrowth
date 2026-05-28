@@ -138,6 +138,43 @@ def test_auth_status_reports_workspace_context(client, seed_user, login_as, db):
     assert body["user_id"] == owner_uid
 
 
+def test_invite_triggers_invite_email(client, seed_user, login_as, app_module,
+                                       monkeypatch):
+    """POST /api/team/invite calls _send_team_invite_email with the right args."""
+    calls = []
+
+    def fake_send(to_email, owner_email, owner_display=""):
+        calls.append({"to": to_email, "owner_email": owner_email,
+                      "owner_display": owner_display})
+        return True
+
+    monkeypatch.setattr(app_module, "_send_team_invite_email", fake_send)
+    _login_owner(client, seed_user, login_as,
+                 email="andy@example.com", handle="andy-handle")
+    r = client.post("/api/team/invite", json={"email": "hamflix@example.com"})
+    assert r.status_code == 200
+    assert r.get_json()["email_sent"] is True
+    assert len(calls) == 1
+    assert calls[0]["to"] == "hamflix@example.com"
+    assert calls[0]["owner_email"] == "andy@example.com"
+
+
+def test_invite_succeeds_even_when_email_send_fails(client, seed_user, login_as,
+                                                      app_module, monkeypatch):
+    """Email failures must NOT roll back the invite — the row is already saved."""
+    def boom(*a, **kw):
+        raise RuntimeError("resend down")
+
+    monkeypatch.setattr(app_module, "_send_team_invite_email", boom)
+    _login_owner(client, seed_user, login_as)
+    r = client.post("/api/team/invite", json={"email": "hamflix@example.com"})
+    assert r.status_code == 200
+    assert r.get_json()["email_sent"] is False
+    # And the member is still listed
+    listed = client.get("/api/team/members").get_json()
+    assert any(m["email"] == "hamflix@example.com" for m in listed)
+
+
 def test_team_endpoints_require_workspace_owner_identity(client, seed_user, login_as):
     """Even an admin impersonating a team member doesn't get owner powers —
     identity_user_id != user_id while impersonating, which blocks /api/team/*.

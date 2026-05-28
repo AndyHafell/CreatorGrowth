@@ -5983,7 +5983,9 @@
                     statusEl.textContent = body.error + (body.detail ? ' — ' + body.detail : '');
                     statusEl.style.color = '#d66';
                 } else {
-                    statusEl.textContent = 'Invited ' + email + '.';
+                    statusEl.textContent = body.email_sent
+                        ? 'Invited ' + email + ' — invite email sent.'
+                        : 'Invited ' + email + ' (no email sent — share the link manually).';
                     statusEl.style.color = '#7d7';
                     input.value = '';
                     await refreshTeamList();
