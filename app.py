@@ -572,6 +572,13 @@ def migrate_schema():
         ("revoked_at",       "TEXT"),
         ("display_name",     "TEXT"),     # human-friendly name shown in login typeahead
         ("trial_end",        "TEXT"),     # ISO timestamp; set when allowlist_source='trial'; NULL once flipped to 'paid'
+        # ── Team membership ──
+        # If set, this user logs in to another user's workspace. session.user_id
+        # becomes team_owner_user_id so all 68 ownership decorators (which gate
+        # on session.user_id) keep gating on the owner's row, sharing data.
+        # session.identity_user_id / identity_email retain the real user for audit.
+        ("team_owner_user_id", "INTEGER"), # FK→users.id; SQLite ALTER can't add FK constraint, so it's just int
+        ("team_role",          "TEXT"),    # 'owner' | 'member'; NULL = solo tenant
     ]
     for name, typ in user_cols:
         try:
@@ -595,6 +602,10 @@ def migrate_schema():
         pass
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_users_allowlisted ON users(allowlisted)")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_users_team_owner ON users(team_owner_user_id)")
     except sqlite3.OperationalError:
         pass
 
@@ -807,10 +818,13 @@ def api_login():
     now = datetime.now(timezone.utc).isoformat()
     conn.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, allow_row["id"]))
     conn.commit()
+    workspace_uid = _resolve_team_owner_id(conn, allow_row["id"])
     conn.close()
     session["authenticated"] = True
     session["email"] = email
-    session["user_id"] = allow_row["id"]
+    session["user_id"] = workspace_uid
+    session["identity_user_id"] = allow_row["id"]
+    session["identity_email"] = email
     session.permanent = True
     return jsonify({"ok": True})
 
@@ -835,10 +849,33 @@ def _is_admin_email(email: str) -> bool:
 @app.route("/api/auth-status")
 def auth_status():
     email = session.get("email", "")
+    user_id = session.get("user_id")
+    identity_user_id = session.get("identity_user_id") or user_id
+    identity_email = session.get("identity_email") or email
+    in_team_workspace = (
+        identity_user_id is not None
+        and user_id is not None
+        and identity_user_id != user_id
+    )
+    workspace_owner_email = ""
+    if in_team_workspace and user_id is not None:
+        conn = get_db()
+        try:
+            row = conn.execute(
+                "SELECT email FROM users WHERE id = ?", (user_id,)
+            ).fetchone()
+            if row:
+                workspace_owner_email = row["email"] or ""
+        finally:
+            conn.close()
     return jsonify({
         "authenticated": bool(session.get("authenticated")),
         "email": email,
-        "user_id": session.get("user_id"),
+        "user_id": user_id,
+        "identity_user_id": identity_user_id,
+        "identity_email": identity_email,
+        "workspace_owner_email": workspace_owner_email,
+        "in_team_workspace": in_team_workspace,
         "is_admin": _is_admin_email(email) or _is_admin_email(session.get("impersonator_email", "")),
         "impersonating": bool(session.get("impersonator_email")),
         "impersonator_email": session.get("impersonator_email", ""),
@@ -896,6 +933,19 @@ def _allowlist_lookup(email: str, handle: str) -> dict | None:
         return dict(row)
     finally:
         conn.close()
+
+
+def _resolve_team_owner_id(conn, uid: int) -> int:
+    """Return the workspace owner's users.id for `uid`. Returns uid itself when
+    the user is solo (no team_owner_user_id set). Used by every login path so
+    session.user_id always points at the workspace owner — the 68 ownership
+    decorators stay correct without changes."""
+    row = conn.execute(
+        "SELECT team_owner_user_id FROM users WHERE id = ?", (uid,)
+    ).fetchone()
+    if row and row["team_owner_user_id"]:
+        return row["team_owner_user_id"]
+    return uid
 
 
 def _upsert_skool_user(email: str, handle: str, member_id: str = "",
@@ -1052,9 +1102,16 @@ def auth_skool_callback():
     canonical_handle = (allow_row.get("skool_handle") or handle).strip().lower()
     canonical_email = (allow_row.get("email") or email).strip().lower()
     uid = _upsert_skool_user(canonical_email, canonical_handle, member_id, access_token, expires_at)
+    conn = get_db()
+    try:
+        workspace_uid = _resolve_team_owner_id(conn, uid)
+    finally:
+        conn.close()
     session["authenticated"] = True
     session["email"] = canonical_email
-    session["user_id"] = uid
+    session["user_id"] = workspace_uid
+    session["identity_user_id"] = uid
+    session["identity_email"] = canonical_email
     session["skool_handle"] = canonical_handle
     session.permanent = True
     return jsonify({
@@ -1172,9 +1229,12 @@ def auth_dm_code_poll():
                 (code,),
             )
             conn.commit()
+            workspace_uid = _resolve_team_owner_id(conn, uid)
             session["authenticated"] = True
             session["email"] = allow_row["email"]
-            session["user_id"] = uid
+            session["user_id"] = workspace_uid
+            session["identity_user_id"] = uid
+            session["identity_email"] = allow_row["email"]
             session["skool_handle"] = handle
             session.permanent = True
             return jsonify({"ok": True, "status": "verified",
@@ -1478,12 +1538,20 @@ def auth_skool_activate():
             )
             conn.commit()
 
+        workspace_uid = _resolve_team_owner_id(conn, uid)
         session.clear()
         session["authenticated"] = True
-        session["user_id"] = uid
+        session["user_id"] = workspace_uid
         session["email"] = email
+        session["identity_user_id"] = uid
+        session["identity_email"] = email
         session.permanent = True
-        return jsonify({"ok": True, "user_id": uid, "email": email})
+        return jsonify({
+            "ok": True,
+            "user_id": workspace_uid,
+            "email": email,
+            "in_team_workspace": workspace_uid != uid,
+        })
     finally:
         conn.close()
 
@@ -1615,14 +1683,23 @@ def admin_impersonate():
     # might be hopping between users, but the "real you" doesn't change.
     if not session.get("impersonator_email"):
         session["impersonator_email"] = admin_email
+    # Follow the team chain so impersonating a team member shows the workspace
+    # they actually see (owner's data), not an empty user_id.
+    conn = get_db()
+    try:
+        workspace_uid = _resolve_team_owner_id(conn, row["id"])
+    finally:
+        conn.close()
     session["authenticated"] = True
-    session["user_id"] = row["id"]
+    session["user_id"] = workspace_uid
     session["email"] = row["email"]
+    session["identity_user_id"] = row["id"]
+    session["identity_email"] = row["email"]
     session.permanent = True
     return jsonify({
         "ok": True,
         "impersonating": row["email"],
-        "user_id": row["id"],
+        "user_id": workspace_uid,
         "impersonator_email": admin_email,
     })
 
@@ -1646,12 +1723,175 @@ def admin_stop_impersonating():
     if row is None:
         session.clear()
         return jsonify({"error": "Admin user gone; session cleared"}), 404
+    conn = get_db()
+    try:
+        workspace_uid = _resolve_team_owner_id(conn, row["id"])
+    finally:
+        conn.close()
     session["authenticated"] = True
-    session["user_id"] = row["id"]
+    session["user_id"] = workspace_uid
     session["email"] = row["email"]
+    session["identity_user_id"] = row["id"]
+    session["identity_email"] = row["email"]
     session.pop("impersonator_email", None)
     session.permanent = True
-    return jsonify({"ok": True, "restored_email": row["email"], "user_id": row["id"]})
+    return jsonify({"ok": True, "restored_email": row["email"], "user_id": workspace_uid})
+
+
+# ── Team membership (multi-user workspaces) ───────────────────────────
+#
+# A "workspace" = the data namespace owned by one user (their users.id is the
+# user_id stamped on every videos/show_docs/channels/etc row). Other users can
+# be invited into a workspace; on login, their session.user_id flips to the
+# owner's id so the existing 68 ownership decorators just work. session.
+# identity_user_id + identity_email preserve who actually clicked the button.
+#
+# Endpoints (workspace owner only — admin impersonation does not grant access):
+#   GET    /api/team/members          — list members of caller's workspace
+#   POST   /api/team/invite {email}   — add (or restore) a team member
+#   DELETE /api/team/members/<email>  — kick a member back to solo
+
+def _require_workspace_owner():
+    """Returns (workspace_uid, None) when the caller is the workspace owner;
+    otherwise (None, error_response). The workspace owner is the user whose
+    own users.id matches session.user_id (identity_user_id == user_id)."""
+    identity_uid = session.get("identity_user_id")
+    workspace_uid = session.get("user_id")
+    if identity_uid is None or workspace_uid is None or identity_uid != workspace_uid:
+        return None, (jsonify({
+            "error": "Only the workspace owner can manage the team",
+        }), 403)
+    return workspace_uid, None
+
+
+@app.route("/api/team/members", methods=["GET"])
+def team_members():
+    workspace_uid, err = _require_workspace_owner()
+    if err:
+        return err
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, email, display_name, allowlisted, allowlist_source, "
+            "       team_role, allowlisted_at, last_login "
+            "FROM users WHERE team_owner_user_id = ? ORDER BY allowlisted_at, id",
+            (workspace_uid,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return jsonify([
+        {
+            "id": r["id"],
+            "email": r["email"],
+            "display_name": r["display_name"],
+            "allowlisted": bool(r["allowlisted"]),
+            "source": r["allowlist_source"],
+            "role": r["team_role"] or "member",
+            "added_at": r["allowlisted_at"],
+            "last_login": r["last_login"],
+        }
+        for r in rows
+    ])
+
+
+@app.route("/api/team/invite", methods=["POST"])
+def team_invite():
+    workspace_uid, err = _require_workspace_owner()
+    if err:
+        return err
+    data = request.get_json(force=True, silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    if not email or "@" not in email or "." not in email:
+        return jsonify({"error": "Valid email required"}), 400
+
+    conn = get_db()
+    try:
+        # Resolve workspace owner's own email so the owner can't invite themselves.
+        owner_row = conn.execute(
+            "SELECT email FROM users WHERE id = ?", (workspace_uid,)
+        ).fetchone()
+        owner_email = (owner_row["email"] if owner_row else "").lower()
+        if email == owner_email:
+            return jsonify({"error": "You're already the workspace owner"}), 400
+
+        existing = conn.execute(
+            "SELECT id, email, allowlisted, allowlist_source, team_owner_user_id "
+            "FROM users WHERE email = ?", (email,),
+        ).fetchone()
+
+        if existing:
+            # Block existing paying tenants — they have their own workspace.
+            # 'paid' and 'trial' (active free trial) both indicate a separate
+            # tenant whose data we must not silently fold into someone else's.
+            blocking_sources = {"paid", "trial"}
+            if (existing["allowlist_source"] in blocking_sources
+                    and not existing["team_owner_user_id"]):
+                return jsonify({
+                    "error": "This email is already a paying tenant",
+                    "detail": "They have their own workspace. They'd need to "
+                              "cancel before joining yours, or you can ask them "
+                              "to invite you instead.",
+                }), 409
+            # Refuse cross-workspace poaching — if they're a member of another
+            # owner's workspace, that owner has to kick first.
+            if (existing["team_owner_user_id"]
+                    and existing["team_owner_user_id"] != workspace_uid):
+                return jsonify({
+                    "error": "Already on another workspace's team",
+                    "detail": "They need to leave that workspace first.",
+                }), 409
+            conn.execute(
+                "UPDATE users SET team_owner_user_id = ?, team_role = 'member', "
+                "  allowlisted = 1, "
+                "  allowlist_source = COALESCE(NULLIF(allowlist_source, ''), 'team'), "
+                "  allowlisted_at = COALESCE(allowlisted_at, datetime('now')), "
+                "  revoked_at = NULL "
+                "WHERE id = ?",
+                (workspace_uid, existing["id"]),
+            )
+            member_id = existing["id"]
+        else:
+            cur = conn.execute(
+                "INSERT INTO users (email, allowlisted, allowlist_source, "
+                "  allowlisted_at, team_owner_user_id, team_role) "
+                "VALUES (?, 1, 'team', datetime('now'), ?, 'member')",
+                (email, workspace_uid),
+            )
+            member_id = cur.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "member_id": member_id, "email": email})
+
+
+@app.route("/api/team/members/<path:email>", methods=["DELETE"])
+def team_kick(email: str):
+    workspace_uid, err = _require_workspace_owner()
+    if err:
+        return err
+    target_email = (email or "").strip().lower()
+    if not target_email or "@" not in target_email:
+        return jsonify({"error": "Valid email required"}), 400
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id, team_owner_user_id, allowlist_source "
+            "FROM users WHERE email = ?", (target_email,),
+        ).fetchone()
+        if row is None or row["team_owner_user_id"] != workspace_uid:
+            return jsonify({"error": "Not a member of your workspace"}), 404
+        # Clear team linkage only. Their row stays so future invites or solo
+        # signups land on the same id. Allowlist is left alone — the kicked
+        # member can still log in (now into their own empty solo workspace).
+        conn.execute(
+            "UPDATE users SET team_owner_user_id = NULL, team_role = NULL "
+            "WHERE id = ?",
+            (row["id"],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "removed": target_email})
 
 
 # ── S3 presigned uploads ──────────────────────────────────────────────

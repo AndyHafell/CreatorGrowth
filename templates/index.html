@@ -387,6 +387,66 @@
             cursor: pointer;
         }
         body.impersonating { padding-top: 36px; }
+        .workspace-banner {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            background: #3a2e00;
+            color: #FFD700;
+            padding: 8px 16px;
+            text-align: center;
+            z-index: 1499;
+            font-size: 13px;
+            display: none;
+            border-bottom: 2px solid #FFD700;
+        }
+        .workspace-banner.open { display: block; }
+        body.in-team-workspace { padding-top: 36px; }
+        .team-member-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 6px 8px;
+            border-bottom: 1px solid #2a2a2a;
+            font-size: 13px;
+        }
+        .team-member-row .email { color: #ddd; }
+        .team-member-row .added { color: #888; font-size: 11px; margin-left: 8px; }
+        .team-kick-btn {
+            background: #2a1a1a;
+            color: #d66;
+            border: 1px solid #4a2222;
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        .team-kick-btn:hover { background: #4a2222; color: #fff; }
+        .team-invite-row {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .team-invite-row input {
+            flex: 1;
+            background: #1a1a1a;
+            color: #ddd;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 6px 10px;
+            font-size: 13px;
+        }
+        .team-invite-row button {
+            background: #FFD700;
+            color: #000;
+            border: none;
+            border-radius: 4px;
+            padding: 6px 14px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .team-invite-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .team-invite-status { font-size: 12px; color: #888; margin-top: 6px; min-height: 16px; }
 
         /* ---- Tabs (YouTube chip style) ---- */
         .tabs-bar {
@@ -1906,6 +1966,11 @@
         <button onclick="stopImpersonating()">Stop impersonating</button>
     </div>
 
+    <!-- Team Workspace Banner (shown when signed in as a team member) -->
+    <div class="workspace-banner" id="workspaceBanner">
+        Signed in as <strong id="workspaceIdentity">…</strong> · viewing <strong id="workspaceOwner">…</strong>'s workspace
+    </div>
+
     <!-- Auth Overlay -->
     <div class="auth-overlay {% if authenticated %}hidden{% endif %}" id="authOverlay">
         <div class="auth-card">
@@ -1967,6 +2032,21 @@
                     <div class="settings-row-label">Email</div>
                     <div class="settings-row-sub" id="settingsEmail">…</div>
                 </div>
+            </div>
+
+            <!-- Team section (only shown when caller is the workspace owner) -->
+            <div class="settings-section" id="settingsTeamSection" style="display:none;">
+                <h4>Your team</h4>
+                <div class="settings-row-sub" style="margin-bottom: 8px;">
+                    Anyone here can sign in with their own email and see your CreatorGrowth data.
+                </div>
+                <div id="teamMembersList" style="max-height: 200px; overflow-y: auto;"></div>
+                <div class="team-invite-row">
+                    <input type="email" id="teamInviteEmail" placeholder="invite by email"
+                           autocomplete="off" spellcheck="false">
+                    <button id="teamInviteBtn" onclick="inviteTeamMember()">Invite</button>
+                </div>
+                <div class="team-invite-status" id="teamInviteStatus"></div>
             </div>
 
             <!-- Admin section (only shown when /api/auth-status returns is_admin) -->
@@ -5708,7 +5788,7 @@
             const email = document.getElementById('profileMenuEmail').textContent;
             document.getElementById('settingsEmail').textContent = email || '';
             document.getElementById('settingsOverlay').classList.add('open');
-            await maybeLoadAdminTools();
+            await Promise.all([maybeLoadAdminTools(), maybeLoadTeamTools()]);
         }
         function closeSettings() {
             document.getElementById('settingsOverlay').classList.remove('open');
@@ -5806,9 +5886,142 @@
                     banner.classList.remove('open');
                     document.body.classList.remove('impersonating');
                 }
+                const wsBanner = document.getElementById('workspaceBanner');
+                if (status.in_team_workspace) {
+                    document.getElementById('workspaceIdentity').textContent =
+                        status.identity_email || '';
+                    document.getElementById('workspaceOwner').textContent =
+                        status.workspace_owner_email || '';
+                    wsBanner.classList.add('open');
+                    document.body.classList.add('in-team-workspace');
+                } else {
+                    wsBanner.classList.remove('open');
+                    document.body.classList.remove('in-team-workspace');
+                }
             } catch (e) { /* silent */ }
         }
         refreshImpersonationBanner();
+
+        // ── Team: workspace owner manages members ───────────────
+        async function maybeLoadTeamTools() {
+            const section = document.getElementById('settingsTeamSection');
+            section.style.display = 'none';
+            let status;
+            try {
+                status = await (await fetch('/api/auth-status')).json();
+            } catch (e) { return; }
+            // Only the workspace OWNER (identity matches user_id) can manage team.
+            // Hide for team members AND while admin is impersonating someone.
+            if (!status.authenticated) return;
+            if (status.in_team_workspace) return;
+            if (status.impersonating) return;
+            section.style.display = '';
+            await refreshTeamList();
+        }
+        async function refreshTeamList() {
+            const host = document.getElementById('teamMembersList');
+            host.innerHTML = '<div style="color:#888; font-size:12px;">Loading…</div>';
+            try {
+                const members = await (await fetch('/api/team/members')).json();
+                renderTeamMembers(members);
+            } catch (e) {
+                host.innerHTML = '<div style="color:#888; font-size:12px;">Could not load team.</div>';
+            }
+        }
+        function renderTeamMembers(members) {
+            const host = document.getElementById('teamMembersList');
+            host.innerHTML = '';
+            if (!members.length) {
+                host.innerHTML = '<div style="color:#888; font-size:12px; padding: 6px 8px;">No team members yet. Invite someone below.</div>';
+                return;
+            }
+            members.forEach(m => {
+                const row = document.createElement('div');
+                row.className = 'team-member-row';
+                const left = document.createElement('div');
+                const emailSpan = document.createElement('span');
+                emailSpan.className = 'email';
+                emailSpan.textContent = m.email;
+                left.appendChild(emailSpan);
+                if (m.added_at) {
+                    const added = document.createElement('span');
+                    added.className = 'added';
+                    added.textContent = 'added ' + m.added_at.slice(0, 10);
+                    left.appendChild(added);
+                }
+                row.appendChild(left);
+                const kickBtn = document.createElement('button');
+                kickBtn.className = 'team-kick-btn';
+                kickBtn.textContent = '×';
+                kickBtn.title = 'Remove from team';
+                kickBtn.onclick = () => kickTeamMember(m.email);
+                row.appendChild(kickBtn);
+                host.appendChild(row);
+            });
+        }
+        async function inviteTeamMember() {
+            const input = document.getElementById('teamInviteEmail');
+            const statusEl = document.getElementById('teamInviteStatus');
+            const btn = document.getElementById('teamInviteBtn');
+            const email = (input.value || '').trim().toLowerCase();
+            if (!email || email.indexOf('@') < 0) {
+                statusEl.textContent = 'Enter a valid email.';
+                statusEl.style.color = '#d66';
+                return;
+            }
+            btn.disabled = true;
+            statusEl.textContent = 'Inviting…';
+            statusEl.style.color = '#888';
+            try {
+                const r = await fetch('/api/team/invite', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email }),
+                });
+                const body = await r.json();
+                if (!r.ok) {
+                    statusEl.textContent = body.error + (body.detail ? ' — ' + body.detail : '');
+                    statusEl.style.color = '#d66';
+                } else {
+                    statusEl.textContent = 'Invited ' + email + '.';
+                    statusEl.style.color = '#7d7';
+                    input.value = '';
+                    await refreshTeamList();
+                }
+            } catch (e) {
+                statusEl.textContent = 'Network error.';
+                statusEl.style.color = '#d66';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+        async function kickTeamMember(email) {
+            if (!confirm('Remove ' + email + ' from your team?')) return;
+            const statusEl = document.getElementById('teamInviteStatus');
+            try {
+                const r = await fetch('/api/team/members/' + encodeURIComponent(email),
+                                     { method: 'DELETE' });
+                if (!r.ok) {
+                    const body = await r.json();
+                    statusEl.textContent = body.error || 'Could not remove.';
+                    statusEl.style.color = '#d66';
+                    return;
+                }
+                statusEl.textContent = 'Removed ' + email + '.';
+                statusEl.style.color = '#888';
+                await refreshTeamList();
+            } catch (e) {
+                statusEl.textContent = 'Network error.';
+                statusEl.style.color = '#d66';
+            }
+        }
+        document.addEventListener('keydown', e => {
+            if (e.key === 'Enter' && document.activeElement &&
+                    document.activeElement.id === 'teamInviteEmail') {
+                e.preventDefault();
+                inviteTeamMember();
+            }
+        });
         // Close menu on outside click
         document.addEventListener('click', e => {
             const wrap = document.getElementById('profileWrap');
