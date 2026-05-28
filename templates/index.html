@@ -179,6 +179,53 @@
             color: #FFD700;
         }
 
+        /* Join card — wider variant of the welcome card, with the Skool screenshot. */
+        .join-card { width: 720px; padding: 40px; }
+        .join-screenshot {
+            margin: 22px 0 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .join-screenshot img {
+            width: 100%;
+            border-radius: 10px;
+            display: block;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+        }
+        .join-steps {
+            list-style: none;
+            text-align: left;
+            margin: 0 auto 24px;
+            padding: 0;
+            max-width: 460px;
+            counter-reset: step;
+        }
+        .join-steps li {
+            font-size: 14px;
+            color: #ccc;
+            padding: 8px 0 8px 34px;
+            position: relative;
+            line-height: 1.5;
+            counter-increment: step;
+        }
+        .join-steps li::before {
+            content: counter(step);
+            position: absolute;
+            left: 0;
+            top: 7px;
+            width: 22px;
+            height: 22px;
+            background: #FFD700;
+            color: #1a1a1a;
+            border-radius: 50%;
+            font-size: 12px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
         body {
             font-family: 'Roboto', Arial, sans-serif;
             background: #0f0f0f;
@@ -2069,6 +2116,22 @@
             <p class="welcome-q">Are you an AI Mate member?</p>
             <a href="/activate" class="welcome-btn welcome-btn-primary">Yes — I'm a member</a>
             <a href="/join" class="welcome-btn welcome-btn-secondary">Not yet</a>
+        </div>
+        {% elif join_mode %}
+        <div class="auth-card join-card">
+            <a href="/welcome" class="auth-back-link">← Back</a>
+            <img src="/static/logo.png" alt="Creator Growth">
+            <h2 class="welcome-h2">CreatorGrowth is for <span style="color:#FFD700">AI Mate members</span></h2>
+            <p class="welcome-sub">Start your 7-day free trial of AI Mate and you'll get CreatorGrowth access at no extra cost.</p>
+            <div class="join-screenshot">
+                <img src="/static/skool_post_screenshot.png" alt="Pinned AI Mate post showing how to activate CreatorGrowth">
+            </div>
+            <ol class="join-steps">
+                <li>Start your free AI Mate trial</li>
+                <li>Open the pinned post in the community</li>
+                <li>Come back here with the email you used to join</li>
+            </ol>
+            <a href="https://www.skool.com/aimate" target="_blank" rel="noopener" class="welcome-btn welcome-btn-primary">Join AI Mate — 7-day free trial</a>
         </div>
         {% else %}
         <div class="auth-card">

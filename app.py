@@ -2713,7 +2713,9 @@ def welcome():
 
 @app.route("/join")
 def join():
-    return render_template("join.html")
+    if session.get("authenticated"):
+        return redirect("/")
+    return render_template("index.html", authenticated=False, join_mode=True)
 
 
 @app.route("/activate")
