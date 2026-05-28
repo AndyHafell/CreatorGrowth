@@ -1754,10 +1754,14 @@ def admin_stop_impersonating():
 def _require_workspace_owner():
     """Returns (workspace_uid, None) when the caller is the workspace owner;
     otherwise (None, error_response). The workspace owner is the user whose
-    own users.id matches session.user_id (identity_user_id == user_id)."""
-    identity_uid = session.get("identity_user_id")
+    own users.id matches session.user_id (identity_user_id == user_id).
+
+    Pre-team-model sessions only have `user_id` set (no identity_user_id);
+    those users are solo by definition, so we treat the missing key as a
+    fallback that equals user_id. Same backfill auth_status() applies."""
     workspace_uid = session.get("user_id")
-    if identity_uid is None or workspace_uid is None or identity_uid != workspace_uid:
+    identity_uid = session.get("identity_user_id") or workspace_uid
+    if workspace_uid is None or identity_uid != workspace_uid:
         return None, (jsonify({
             "error": "Only the workspace owner can manage the team",
         }), 403)
