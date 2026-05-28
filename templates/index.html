@@ -2297,10 +2297,10 @@
             {% set fake_videos = [
                 ('QoQBzR1NIqI', 'CLAUDE CODE FULL COURSE 4 HOURS: Build & Sell (2026)', '1.7M views', 'Nick Saraev'),
                 ('mpALXah_PBg', 'Build & Sell with Claude Code (10+ Hour Course)', '653K views', 'Nate Herk'),
-                ('-X9ymqNGNOU', 'How To Create A News Channel With ChatGPT & AI News Video Generator', '628K views', 'AI Andy'),
-                ('TZUTe7s11-I', 'Claude Code + Nano Banana 2 = Insane $10,000 Websites', '603K views', 'Jack Roberts'),
+                ('e6c_uwQwV9A', 'Google AI Studio: the Death of Software Tutorial Videos?', '572K views', 'AI Andy'),
                 ('bhPHwVsrTo0', 'Antigravity + Flutter + Stitch builds Insane Mobile Apps', '305K views', 'RoboNuggets'),
                 ('qOvc9IUKEIc', 'How Anthropic Engineers ACTUALLY Prompt Claude Code', '295K views', 'Austin Marchese'),
+                ('haBy-Rhkl4g', 'AntiGravity + Stitch builds Insane Websites (NEW Skill)', '253K views', 'Jack Roberts'),
                 ('-tGH2tLwCEw', 'Claude Design is INSANE', '243K views', 'Chase AI'),
                 ('8uP2IrP3IG8', 'I Built a FREE OpenClaw (no Mac Mini or API Fees)', '177K views', 'Stephen G. Pope'),
                 ('rVzGu5OYYS0', 'I Replaced OpenClaw and Hermes With This Claude Code Setup', '102K views', 'Mark Kashef'),
@@ -2310,7 +2310,8 @@
             ] %}
             {% for vid, title, views, creator in fake_videos %}
             <div class="fake-card">
-                <img src="https://i.ytimg.com/vi/{{ vid }}/maxresdefault.jpg" alt="" loading="lazy">
+                <img src="https://i.ytimg.com/vi/{{ vid }}/maxresdefault.jpg" alt="" loading="lazy"
+                     onerror="this.onerror=null;this.src='https://i.ytimg.com/vi/{{ vid }}/hqdefault.jpg';">
                 <div class="fake-card-body">
                     <div class="fake-card-title">{{ title }}</div>
                     <div class="fake-card-meta">{{ views }} · {{ creator }}</div>
