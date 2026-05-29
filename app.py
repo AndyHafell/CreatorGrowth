@@ -579,6 +579,15 @@ def migrate_schema():
         # session.identity_user_id / identity_email retain the real user for audit.
         ("team_owner_user_id", "INTEGER"), # FK→users.id; SQLite ALTER can't add FK constraint, so it's just int
         ("team_role",          "TEXT"),    # 'owner' | 'member'; NULL = solo tenant
+        # ── Settings v2: per-user creds + prompt presets ──
+        # Plaintext for v1. The repo is public but the DB lives only on the VPS
+        # (single-tenant file); no secrets are committed. Encrypt-at-rest is a
+        # later hardening pass. Keys are NEVER echoed back to the client — the
+        # /api/settings/api-keys GET returns only {set, masked}.
+        ("replicate_api_key",         "TEXT"),  # BYO Replicate token for thumb gen
+        ("airtable_token",            "TEXT"),  # BYO Airtable PAT (future use)
+        ("prompt_preset_pixel_face",  "TEXT"),  # override for the pixel-face thumb prompt; NULL = channel default
+        ("prompt_preset_faceless",    "TEXT"),  # override for the faceless thumb prompt; NULL = channel default
     ]
     for name, typ in user_cols:
         try:
@@ -2125,14 +2134,17 @@ def uploads_finalize(upload_id):
 @app.route("/api/uploads", methods=["GET"])
 def uploads_list():
     uid = current_user_id()
+    kind = (request.args.get("kind") or "").strip()
     conn = get_db()
     try:
-        rows = conn.execute(
-            "SELECT id, original_filename, kind, content_type, size_bytes, "
-            "uploaded, created_at, finalized_at FROM uploads "
-            "WHERE user_id = ? ORDER BY created_at DESC LIMIT 200",
-            (uid,),
-        ).fetchall()
+        sql = ("SELECT id, original_filename, kind, content_type, size_bytes, "
+               "uploaded, created_at, finalized_at FROM uploads WHERE user_id = ?")
+        params = [uid]
+        if kind:
+            sql += " AND kind = ?"
+            params.append(kind)
+        sql += " ORDER BY created_at DESC LIMIT 200"
+        rows = conn.execute(sql, params).fetchall()
     finally:
         conn.close()
     return jsonify([dict(r) for r in rows])
@@ -2181,6 +2193,131 @@ def uploads_delete(upload_id):
             except Exception:
                 pass
         conn.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
+
+
+# ── Settings v2: per-user API keys ──────────────────────────
+# Section 1 of the Settings v2 modal. Keys live on the users row (see
+# migrate_schema). They are write-only from the client's perspective: GET
+# returns only {set, masked} so a stolen session can't exfiltrate the raw key.
+_API_KEY_FIELDS = ("replicate_api_key", "airtable_token")
+
+
+def _mask_key(val: str) -> str:
+    """Last-4 hint for a stored secret, e.g. 'r8_abcd1234' → '…1234'."""
+    if not val:
+        return ""
+    return "…" + val[-4:]
+
+
+@app.route("/api/settings/api-keys", methods=["GET"])
+def settings_api_keys_get():
+    uid = current_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
+    conn = get_db()
+    try:
+        row = conn.execute(
+            f"SELECT {', '.join(_API_KEY_FIELDS)} FROM users WHERE id = ?", (uid,)
+        ).fetchone()
+    finally:
+        conn.close()
+    out = {}
+    for f in _API_KEY_FIELDS:
+        val = (row[f] if row else None) or ""
+        out[f] = {"set": bool(val), "masked": _mask_key(val)}
+    return jsonify(out)
+
+
+@app.route("/api/settings/api-keys", methods=["POST"])
+def settings_api_keys_post():
+    """Merge-update: only fields present in the body are touched. An empty
+    string clears (sets NULL) that key. Raw values are never returned."""
+    uid = current_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.get_json(force=True, silent=True) or {}
+    updates = {f: data[f] for f in _API_KEY_FIELDS if f in data}
+    if not updates:
+        return jsonify({"error": "no recognized api-key fields"}), 400
+    conn = get_db()
+    try:
+        for f, raw in updates.items():
+            stored = (raw or "").strip() or None  # empty string → NULL (clear)
+            conn.execute(f"UPDATE users SET {f} = ? WHERE id = ?", (stored, uid))
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
+
+
+# ── Settings v2: per-user prompt presets ────────────────────
+# Section 4 of the Settings v2 modal. Each user can override the channel's
+# default thumb prompt for pixel-face / faceless. NULL column → fall back to
+# the bundled default (so the thumb route + the UI always have something to
+# substitute). The defaults double as the seed the Thumb Studio prefills.
+def _default_prompt_preset(kind: str) -> str:
+    """Channel-default prompt text for a thumb `kind`. These match what the
+    Gemini routes use today so a fresh user's output equals Andy's: pixel-face
+    uses the locked template; faceless embeds the full SOP file."""
+    if kind == "pixel_face":
+        return _PIXEL_FACE_PROMPT_TEMPLATE
+    if kind == "faceless":
+        return _FACELESS_SOP_PATH.read_text() if _FACELESS_SOP_PATH.exists() else ""
+    return ""
+
+
+_PROMPT_PRESET_KINDS = {
+    "pixel_face": "prompt_preset_pixel_face",
+    "faceless": "prompt_preset_faceless",
+}
+
+
+@app.route("/api/settings/prompt-presets", methods=["GET"])
+def settings_prompt_presets_get():
+    uid = current_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
+    conn = get_db()
+    try:
+        row = conn.execute(
+            f"SELECT {', '.join(_PROMPT_PRESET_KINDS.values())} FROM users WHERE id = ?",
+            (uid,),
+        ).fetchone()
+    finally:
+        conn.close()
+    out = {}
+    for kind, col in _PROMPT_PRESET_KINDS.items():
+        stored = (row[col] if row else None)
+        if stored:
+            out[kind] = stored
+            out[f"{kind}_is_default"] = False
+        else:
+            out[kind] = _default_prompt_preset(kind)
+            out[f"{kind}_is_default"] = True
+    return jsonify(out)
+
+
+@app.route("/api/settings/prompt-presets", methods=["POST"])
+def settings_prompt_presets_post():
+    """Merge-update by kind. Empty string resets that kind to the channel
+    default (stores NULL)."""
+    uid = current_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
+    data = request.get_json(force=True, silent=True) or {}
+    updates = {kind: data[kind] for kind in _PROMPT_PRESET_KINDS if kind in data}
+    if not updates:
+        return jsonify({"error": "no recognized preset kinds"}), 400
+    conn = get_db()
+    try:
+        for kind, raw in updates.items():
+            col = _PROMPT_PRESET_KINDS[kind]
+            stored = (raw or "").strip() or None  # empty → NULL → default
+            conn.execute(f"UPDATE users SET {col} = ? WHERE id = ?", (stored, uid))
         conn.commit()
     finally:
         conn.close()

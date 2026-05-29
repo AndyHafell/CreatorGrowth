@@ -548,6 +548,8 @@
             min-width: 420px;
             max-width: 520px;
             padding: 24px;
+            max-height: 86vh;
+            overflow-y: auto;
             box-shadow: 0 24px 60px rgba(0,0,0,0.6);
         }
         .settings-header {
@@ -721,6 +723,129 @@
         }
         .team-invite-row button:disabled { opacity: 0.5; cursor: not-allowed; }
         .team-invite-status { font-size: 12px; color: #888; margin-top: 6px; min-height: 16px; }
+
+        /* ── Settings v2 sections ── */
+        .apikey-field { margin-bottom: 12px; }
+        .apikey-field > label,
+        .preset-field > label {
+            display: block;
+            color: #bbb;
+            font-size: 12px;
+            margin-bottom: 4px;
+        }
+        .apikey-input-row { display: flex; gap: 6px; }
+        .apikey-input-row input {
+            flex: 1;
+            background: #0e0e0e;
+            border: 1px solid #333;
+            border-radius: 6px;
+            color: #eee;
+            padding: 8px 10px;
+            font-size: 13px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        }
+        .apikey-input-row input:focus { outline: none; border-color: #FFD700; }
+        .apikey-reveal {
+            background: #272727;
+            border: 1px solid #333;
+            border-radius: 6px;
+            color: #aaa;
+            cursor: pointer;
+            padding: 0 10px;
+            font-size: 14px;
+        }
+        .apikey-reveal:hover { color: #fff; }
+        .apikey-hint { font-size: 11px; color: #777; margin-top: 4px; min-height: 14px; }
+        .apikey-hint.set { color: #5e5; }
+
+        .settings-save-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 12px;
+        }
+        .settings-save-btn {
+            background: #FFD700;
+            color: #161616;
+            border: none;
+            border-radius: 6px;
+            padding: 7px 14px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .settings-save-btn:hover { background: #ffe34d; }
+        .settings-save-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .settings-reset-btn {
+            background: #272727;
+            color: #aaa;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding: 7px 12px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .settings-reset-btn:hover { color: #fff; }
+        .settings-save-status { font-size: 12px; color: #888; min-height: 16px; }
+        .settings-save-status.ok { color: #5e5; }
+        .settings-save-status.err { color: #e55; }
+
+        .face-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+            gap: 8px;
+        }
+        .face-empty { color: #777; font-size: 12px; grid-column: 1 / -1; padding: 4px 0; }
+        .face-thumb {
+            position: relative;
+            aspect-ratio: 1;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid #333;
+            background: #0e0e0e;
+        }
+        .face-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .face-thumb.pending { display: flex; align-items: center; justify-content: center; }
+        .face-thumb.pending::after {
+            content: '…'; color: #777; font-size: 18px;
+        }
+        .face-thumb .face-del {
+            position: absolute;
+            top: 3px; right: 3px;
+            width: 18px; height: 18px;
+            border-radius: 50%;
+            border: none;
+            background: rgba(0,0,0,0.7);
+            color: #fff;
+            font-size: 12px;
+            line-height: 18px;
+            cursor: pointer;
+            padding: 0;
+            display: none;
+        }
+        .face-thumb:hover .face-del { display: block; }
+
+        .preset-field { margin-bottom: 12px; }
+        .preset-field textarea {
+            width: 100%;
+            box-sizing: border-box;
+            background: #0e0e0e;
+            border: 1px solid #333;
+            border-radius: 6px;
+            color: #ddd;
+            padding: 8px 10px;
+            font-size: 12px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            line-height: 1.4;
+            resize: vertical;
+        }
+        .preset-field textarea:focus { outline: none; border-color: #FFD700; }
+        .preset-default-tag {
+            font-size: 10px;
+            color: #777;
+            margin-left: 6px;
+        }
+        .preset-default-tag.custom { color: #ffb84d; }
 
         /* ---- Tabs (YouTube chip style) ---- */
         .tabs-bar {
@@ -2417,6 +2542,78 @@
                 <div>
                     <div class="settings-row-label">Email</div>
                     <div class="settings-row-sub" id="settingsEmail">…</div>
+                </div>
+            </div>
+
+            <!-- Settings v2 §1: API Keys -->
+            <div class="settings-section" id="settingsApiKeysSection">
+                <h4>API Keys</h4>
+                <div class="settings-row-sub" style="margin-bottom: 10px;">
+                    Your own keys power your generations. Stored on the server; for security we never show them again after saving.
+                </div>
+                <div class="apikey-field">
+                    <label>Replicate API token</label>
+                    <div class="apikey-input-row">
+                        <input type="password" id="apiKeyReplicate" placeholder="r8_…"
+                               autocomplete="off" spellcheck="false">
+                        <button class="apikey-reveal" data-target="apiKeyReplicate"
+                                onclick="toggleReveal(this)" title="Show / hide">👁</button>
+                    </div>
+                    <div class="apikey-hint" id="apiKeyReplicateHint"></div>
+                </div>
+                <div class="apikey-field">
+                    <label>Airtable token</label>
+                    <div class="apikey-input-row">
+                        <input type="password" id="apiKeyAirtable" placeholder="pat…"
+                               autocomplete="off" spellcheck="false">
+                        <button class="apikey-reveal" data-target="apiKeyAirtable"
+                                onclick="toggleReveal(this)" title="Show / hide">👁</button>
+                    </div>
+                    <div class="apikey-hint" id="apiKeyAirtableHint"></div>
+                </div>
+                <div class="settings-save-row">
+                    <button class="settings-save-btn" onclick="saveApiKeys()">Save keys</button>
+                    <span class="settings-save-status" id="apiKeysStatus"></span>
+                </div>
+            </div>
+
+            <!-- Settings v2 §3: Face Library -->
+            <div class="settings-section" id="settingsFaceSection">
+                <h4>Face Library</h4>
+                <div class="settings-row-sub" style="margin-bottom: 10px;">
+                    Reference photos of your face for pixel-face thumbnails. Use clear, well-lit head shots — front-facing works best.
+                </div>
+                <div class="face-grid" id="faceGrid">
+                    <div class="face-empty" id="faceEmpty" style="display:none;">No face photos yet.</div>
+                </div>
+                <div class="settings-save-row">
+                    <input type="file" id="faceFileInput" accept="image/png,image/jpeg" multiple
+                           style="display:none;" onchange="uploadFaceRefs(this.files)">
+                    <button class="settings-save-btn" onclick="document.getElementById('faceFileInput').click()">Add photos</button>
+                    <span class="settings-save-status" id="faceStatus"></span>
+                </div>
+            </div>
+
+            <!-- Settings v2 §4: Prompt Presets -->
+            <div class="settings-section" id="settingsPresetsSection">
+                <h4>Prompt Presets</h4>
+                <div class="settings-row-sub" style="margin-bottom: 10px;">
+                    The exact prompt used when you generate thumbnails. Edit to taste, or Reset to the channel default.
+                </div>
+                <div class="preset-field">
+                    <label>Pixel-face prompt <span class="preset-default-tag" id="pixelFaceDefaultTag"></span></label>
+                    <textarea id="presetPixelFace" rows="6" spellcheck="false"
+                              placeholder="Loading…"></textarea>
+                </div>
+                <div class="preset-field">
+                    <label>Faceless prompt <span class="preset-default-tag" id="facelessDefaultTag"></span></label>
+                    <textarea id="presetFaceless" rows="6" spellcheck="false"
+                              placeholder="Loading…"></textarea>
+                </div>
+                <div class="settings-save-row">
+                    <button class="settings-save-btn" onclick="savePromptPresets()">Save prompts</button>
+                    <button class="settings-reset-btn" onclick="resetPromptPresets()">Reset to default</button>
+                    <span class="settings-save-status" id="presetsStatus"></span>
                 </div>
             </div>
 
@@ -6065,7 +6262,7 @@
             const email = document.getElementById('profileMenuEmail').textContent;
             document.getElementById('settingsEmail').textContent = email || '';
             document.getElementById('settingsOverlay').classList.add('open');
-            await Promise.all([maybeLoadAdminTools(), maybeLoadTeamTools()]);
+            await Promise.all([maybeLoadAdminTools(), maybeLoadTeamTools(), loadSettingsV2()]);
         }
         function closeSettings() {
             document.getElementById('settingsOverlay').classList.remove('open');
@@ -6073,6 +6270,184 @@
         document.addEventListener('keydown', e => {
             if (e.key === 'Escape') closeSettings();
         });
+
+        // ── Settings v2: API keys / face library / prompt presets ──
+        function _setStatus(id, msg, cls) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.textContent = msg || '';
+            el.className = 'settings-save-status' + (cls ? ' ' + cls : '');
+        }
+        async function loadSettingsV2() {
+            await Promise.all([loadApiKeys(), loadFaceRefs(), loadPromptPresets()]);
+        }
+        function toggleReveal(btn) {
+            const input = document.getElementById(btn.dataset.target);
+            if (!input) return;
+            input.type = input.type === 'password' ? 'text' : 'password';
+        }
+        // §1 — API keys
+        async function loadApiKeys() {
+            let data;
+            try { data = await (await fetch('/api/settings/api-keys')).json(); }
+            catch (e) { return; }
+            const map = { replicate_api_key: 'apiKeyReplicate', airtable_token: 'apiKeyAirtable' };
+            for (const [field, inputId] of Object.entries(map)) {
+                const info = data[field] || {};
+                const input = document.getElementById(inputId);
+                const hint = document.getElementById(inputId + 'Hint');
+                if (input) { input.value = ''; input.placeholder = info.set ? '•••••••• (saved)' : input.placeholder; }
+                if (hint) {
+                    hint.textContent = info.set ? ('Saved ' + (info.masked || '')) : 'Not set';
+                    hint.className = 'apikey-hint' + (info.set ? ' set' : '');
+                }
+            }
+        }
+        async function saveApiKeys() {
+            const payload = {};
+            const rep = document.getElementById('apiKeyReplicate').value.trim();
+            const air = document.getElementById('apiKeyAirtable').value.trim();
+            // Only send fields the user actually typed into (empty = leave as-is).
+            if (rep) payload.replicate_api_key = rep;
+            if (air) payload.airtable_token = air;
+            if (!Object.keys(payload).length) {
+                _setStatus('apiKeysStatus', 'Nothing to save — type a key first.', 'err');
+                return;
+            }
+            _setStatus('apiKeysStatus', 'Saving…');
+            try {
+                const r = await fetch('/api/settings/api-keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                if (!r.ok) throw new Error(await r.text());
+                _setStatus('apiKeysStatus', 'Saved.', 'ok');
+                await loadApiKeys();
+            } catch (e) { _setStatus('apiKeysStatus', 'Save failed.', 'err'); }
+        }
+        // §3 — Face library
+        async function loadFaceRefs() {
+            const grid = document.getElementById('faceGrid');
+            const empty = document.getElementById('faceEmpty');
+            let items;
+            try { items = await (await fetch('/api/uploads?kind=face_ref')).json(); }
+            catch (e) { return; }
+            grid.querySelectorAll('.face-thumb').forEach(n => n.remove());
+            const uploaded = (items || []).filter(i => i.uploaded);
+            if (empty) empty.style.display = uploaded.length ? 'none' : '';
+            for (const it of uploaded) {
+                const cell = document.createElement('div');
+                cell.className = 'face-thumb pending';
+                cell.dataset.id = it.id;
+                const del = document.createElement('button');
+                del.className = 'face-del';
+                del.textContent = '×';
+                del.title = 'Delete';
+                del.onclick = () => deleteFaceRef(it.id);
+                cell.appendChild(del);
+                grid.appendChild(cell);
+                // Lazily resolve the signed URL per item.
+                fetch(`/api/uploads/${it.id}/download`).then(r => r.json()).then(d => {
+                    if (d && d.download_url) {
+                        cell.classList.remove('pending');
+                        const img = document.createElement('img');
+                        img.src = d.download_url;
+                        img.alt = it.original_filename || 'face';
+                        cell.insertBefore(img, del);
+                    }
+                }).catch(() => {});
+            }
+        }
+        async function uploadFaceRefs(fileList) {
+            const files = Array.from(fileList || []);
+            if (!files.length) return;
+            _setStatus('faceStatus', `Uploading ${files.length}…`);
+            let done = 0, failed = 0;
+            for (const file of files) {
+                try {
+                    const pre = await (await fetch('/api/uploads/presign', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            filename: file.name, kind: 'face_ref',
+                            content_type: file.type || 'image/png',
+                        }),
+                    })).json();
+                    if (!pre.upload_url) throw new Error('presign failed');
+                    const put = await fetch(pre.upload_url, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': file.type || 'image/png' },
+                        body: file,
+                    });
+                    if (!put.ok) throw new Error('S3 PUT failed');
+                    await fetch(`/api/uploads/${pre.upload_id}/finalize`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ size_bytes: file.size }),
+                    });
+                    done++;
+                } catch (e) { failed++; }
+            }
+            document.getElementById('faceFileInput').value = '';
+            _setStatus('faceStatus', failed ? `${done} added, ${failed} failed.` : `${done} added.`,
+                       failed ? 'err' : 'ok');
+            await loadFaceRefs();
+        }
+        async function deleteFaceRef(id) {
+            try {
+                await fetch(`/api/uploads/${id}`, { method: 'DELETE' });
+            } catch (e) {}
+            await loadFaceRefs();
+        }
+        // §4 — Prompt presets
+        async function loadPromptPresets() {
+            let data;
+            try { data = await (await fetch('/api/settings/prompt-presets')).json(); }
+            catch (e) { return; }
+            const pf = document.getElementById('presetPixelFace');
+            const fl = document.getElementById('presetFaceless');
+            if (pf) pf.value = data.pixel_face || '';
+            if (fl) fl.value = data.faceless || '';
+            _markPresetTag('pixelFaceDefaultTag', data.pixel_face_is_default);
+            _markPresetTag('facelessDefaultTag', data.faceless_is_default);
+        }
+        function _markPresetTag(id, isDefault) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.textContent = isDefault ? '· channel default' : '· customized';
+            el.className = 'preset-default-tag' + (isDefault ? '' : ' custom');
+        }
+        async function savePromptPresets() {
+            const payload = {
+                pixel_face: document.getElementById('presetPixelFace').value,
+                faceless: document.getElementById('presetFaceless').value,
+            };
+            _setStatus('presetsStatus', 'Saving…');
+            try {
+                const r = await fetch('/api/settings/prompt-presets', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                if (!r.ok) throw new Error(await r.text());
+                _setStatus('presetsStatus', 'Saved.', 'ok');
+                await loadPromptPresets();
+            } catch (e) { _setStatus('presetsStatus', 'Save failed.', 'err'); }
+        }
+        async function resetPromptPresets() {
+            _setStatus('presetsStatus', 'Resetting…');
+            try {
+                const r = await fetch('/api/settings/prompt-presets', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pixel_face: '', faceless: '' }),
+                });
+                if (!r.ok) throw new Error(await r.text());
+                _setStatus('presetsStatus', 'Reset to channel default.', 'ok');
+                await loadPromptPresets();
+            } catch (e) { _setStatus('presetsStatus', 'Reset failed.', 'err'); }
+        }
 
         // ── Admin: impersonate ──────────────────────────────
         async function maybeLoadAdminTools() {
