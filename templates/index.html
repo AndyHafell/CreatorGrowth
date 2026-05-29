@@ -2274,8 +2274,7 @@
             <span class="fake-tab">Edited <em>3</em></span>
             <span class="fake-tab">Published <em>397</em></span>
             <span class="fake-tab">Archived <em>61</em></span>
-            <span class="fake-tab" style="margin-left:auto;">Keywords <em>18</em></span>
-            <span class="fake-tab">Creators <em>9</em></span>
+            <span class="fake-tab" style="margin-left:auto;">Creators <em>9</em></span>
             <span class="fake-tab">Content</span>
             <span class="fake-tab">Twitter</span>
         </div>
@@ -2501,10 +2500,7 @@
         <button class="tab" data-tab="archived" onclick="setTab('archived')" ondragover="tabDragOver(event, 'archived')" ondragleave="tabDragLeave(event)" ondrop="tabDrop(event, 'archived')">
             Archived <span class="tab-count" id="countArchived">0</span>
         </button>
-        <button class="tab" data-tab="keywords" onclick="setTab('keywords')" style="margin-left:auto;">
-            Keywords <span class="tab-count" id="countKeywords">0</span>
-        </button>
-        <button class="tab" data-tab="creators" onclick="setTab('creators')">
+        <button class="tab" data-tab="creators" onclick="setTab('creators')" style="margin-left:auto;">
             Creators <span class="tab-count" id="countCreators">0</span>
         </button>
         <button class="tab" data-tab="content" onclick="setTab('content')">
@@ -2550,34 +2546,6 @@
             <button class="creator-add-btn" onclick="addCreator()">Add Creator</button>
         </div>
         <div class="creator-list" id="creatorList"></div>
-    </div>
-    <div class="keywords-container" id="keywordsContainer">
-        <div class="keywords-header">
-            <h2>Keywords</h2>
-            <div class="keywords-header-actions">
-                <div class="kw-filter-bar">
-                    <button class="kw-filter-btn active" data-kwfilter="all" onclick="setKwFilter('all')">All</button>
-                    <button class="kw-filter-btn" data-kwfilter="favorites" onclick="setKwFilter('favorites')">Favorites</button>
-                    <button class="kw-filter-btn" data-kwfilter="youtube" onclick="setKwFilter('youtube')">YouTube</button>
-                </div>
-            </div>
-        </div>
-        <div class="kw-table-wrap">
-            <table class="kw-table">
-                <thead>
-                    <tr>
-                        <th class="kw-th-keyword" onclick="setKwSort('keyword')">Keyword</th>
-                        <th onclick="setKwSort('search_volume')">Search Vol</th>
-                        <th onclick="setKwSort('competition')">Competition</th>
-                        <th onclick="setKwSort('overall')">Overall</th>
-                        <th onclick="setKwSort('searches_30d')">30d Searches</th>
-                        <th onclick="setKwSort('word_count')">Words</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="kwTableBody"></tbody>
-            </table>
-        </div>
     </div>
     <div class="grid" id="videoGrid"></div>
     <!-- Video Detail Modal -->
@@ -3150,10 +3118,8 @@
                         <input id="tsNudge" type="text" placeholder="Extra direction for Claude (optional)…" style="background:#0a0a14; border:1px solid #2a2a4a; color:#ddd; padding:9px 11px; border-radius:6px; font-size:13px; font-family:inherit; outline:none;">
                     </div>
                     <div id="thumbGenButtons" style="display:flex; gap:10px; flex-wrap:wrap;">
-                        <button class="thumb-gen-btn" onclick="tsGenerate('pixel_face')" style="background:#1a1018; border:1px solid #e87a5b; color:#e87a5b; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GENERATE 3 PIXEL FACE</button>
-                        <button class="thumb-gen-btn" onclick="tsGenerate('faceless')" style="background:#0d1620; border:1px solid #5b9bd5; color:#5b9bd5; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GENERATE 3 FACELESS</button>
-                        <button class="thumb-gen-btn" onclick="tsGeminiDirect('faceless')" title="Pure Gemini, no Claude judgment, faceless SOP as prompt. ~$0.12 / 3 thumbs, ~30s, runs on VPS." style="background:#101820; border:1px solid #7ad17a; color:#7ad17a; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GEMINI DIRECT (FACELESS)</button>
-                        <button class="thumb-gen-btn" onclick="tsGeminiDirect('pixel-face')" title="Pure Gemini + 4 face refs, no Claude judgment, pixel-face SOP as prompt. ~$0.12 / 3 thumbs, ~30s, runs on VPS. No brand logo." style="background:#1a1410; border:1px solid #f5b942; color:#f5b942; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GEMINI DIRECT (PIXEL FACE)</button>
+                        <button class="thumb-gen-btn" onclick="tsGeminiDirect('pixel-face')" title="Pixel-face SOP + your face refs. ~$0.12 / 3 thumbs, ~30s." style="background:#1a1410; border:1px solid #f5b942; color:#f5b942; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GENERATE 3 PIXEL FACE</button>
+                        <button class="thumb-gen-btn" onclick="tsGeminiDirect('faceless')" title="Faceless SOP. ~$0.12 / 3 thumbs, ~30s." style="background:#101820; border:1px solid #7ad17a; color:#7ad17a; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GENERATE 3 FACELESS</button>
                     </div>
                     <div id="thumbGenPlaceholder" style="display:none; padding:14px 16px; background:#1a1410; border:1px dashed #5a4830; border-radius:6px; color:#a8895a; font-size:12px;">
                         🔒 Thumb generation unlocks when you upload your own face references in <strong>Settings v2</strong> — coming this week.
@@ -3664,25 +3630,20 @@
                 t.classList.toggle('active', t.dataset.tab === tab);
             });
             const isCreators = tab === 'creators';
-            const isKeywords = tab === 'keywords';
             const isContent = tab === 'content';
             document.getElementById('newVideoBtn').style.display = tab === 'packaging' ? '' : 'none';
             const isTwitter = tab === 'twitter';
-            const isSpecial = isCreators || isKeywords || isContent || isTwitter;
+            const isSpecial = isCreators || isContent || isTwitter;
             document.getElementById('videoGrid').style.display = isSpecial ? 'none' : '';
             document.getElementById('creatorsContainer').classList.toggle('visible', isCreators);
-            document.getElementById('keywordsContainer').classList.toggle('visible', isKeywords);
             document.getElementById('contentContainer').style.display = isContent ? 'block' : 'none';
             document.getElementById('twitterContainer').style.display = isTwitter ? 'block' : 'none';
             document.getElementById('channelsBar').style.display = isSpecial ? 'none' : '';
             document.querySelector('.sort-bar').style.display = isSpecial ? 'none' : '';
             document.getElementById('syncPublishedBtn').style.display = tab === 'published' ? '' : 'none';
             document.getElementById('syncVisibleBtn').style.display = (tab === 'options' || tab === 'best') ? '' : 'none';
-            // (batch-brief button removed — briefs are per-card now)
             if (isCreators) {
                 renderCreatorList();
-            } else if (isKeywords) {
-                loadKeywords();
             } else if (isContent) {
                 loadContentList();
             } else if (isTwitter) {
@@ -5963,127 +5924,8 @@
                 console.log('Auto-scrape failed:', e);
             }
         }
-        // ── Keywords ──────────────────────────────────────
-        let allKeywords = [];
-        let kwFilter = 'all';
-        let kwSort = 'search_volume';
-        let kwSortDir = -1; // -1 = desc
-
-        async function loadKeywords() {
-            try {
-                const res = await fetch(`/api/keywords?filter=${kwFilter}`);
-                if (!res.ok) return;
-                allKeywords = await res.json();
-                document.getElementById('countKeywords').textContent = allKeywords.length;
-                renderKeywords();
-            } catch (e) { console.error('loadKeywords:', e); }
-        }
-
-        function setKwFilter(f) {
-            kwFilter = f;
-            document.querySelectorAll('.kw-filter-btn').forEach(b => {
-                b.classList.toggle('active', b.dataset.kwfilter === f);
-            });
-            loadKeywords();
-        }
-
-        function setKwSort(col) {
-            if (kwSort === col) {
-                kwSortDir *= -1;
-            } else {
-                kwSort = col;
-                kwSortDir = col === 'keyword' ? 1 : -1;
-            }
-            renderKeywords();
-        }
-
-        function formatVolume(n) {
-            if (!n) return '0';
-            if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-            if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k';
-            return n.toLocaleString();
-        }
-
-        function scoreClass(val) {
-            if (val >= 70) return 'high';
-            if (val >= 40) return 'medium';
-            return 'low';
-        }
-
-        function compClass(val) {
-            if (val <= 35) return 'low';
-            if (val <= 65) return 'medium';
-            return 'high';
-        }
-
-        function renderKeywords() {
-            const sorted = [...allKeywords].sort((a, b) => {
-                const av = a[kwSort], bv = b[kwSort];
-                if (typeof av === 'string') return av.localeCompare(bv) * kwSortDir;
-                return ((av || 0) - (bv || 0)) * kwSortDir;
-            });
-            const tbody = document.getElementById('kwTableBody');
-            if (!sorted.length) {
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:#555;">No keywords yet. Click "Import from Airtable" to get started.</td></tr>';
-                return;
-            }
-            tbody.innerHTML = sorted.map(k => `
-                <tr>
-                    <td class="kw-keyword-cell">${esc(k.keyword)}</td>
-                    <td class="kw-num">${formatVolume(k.search_volume)}</td>
-                    <td class="kw-num"><span class="kw-comp ${compClass(k.competition)}">${k.competition}</span></td>
-                    <td class="kw-num"><span class="kw-score ${scoreClass(k.overall)}">${k.overall}</span></td>
-                    <td class="kw-num">${formatVolume(k.searches_30d)}</td>
-                    <td class="kw-num">${k.word_count}</td>
-                    <td>
-                        <div class="kw-actions">
-                            <button class="kw-action-btn ${k.is_favorite ? 'active-fav' : ''}" onclick="toggleKwFav(${k.id})" title="Favorite">&#9733;</button>
-                            <button class="kw-action-btn ${k.is_youtube ? 'active-yt' : ''}" onclick="toggleKwYt(${k.id})" title="YouTube">&#9654;</button>
-                            <button class="kw-action-btn" onclick="deleteKw(${k.id})" title="Remove">&#10005;</button>
-                        </div>
-                    </td>
-                </tr>
-            `).join('');
-        }
-
-        async function toggleKwFav(id) {
-            const res = await fetch(`/api/keywords/${id}/favorite`, { method: 'POST' });
-            if (res.ok) {
-                const data = await res.json();
-                const kw = allKeywords.find(k => k.id === id);
-                if (kw) kw.is_favorite = data.is_favorite;
-                if (kwFilter === 'favorites' && !data.is_favorite) {
-                    allKeywords = allKeywords.filter(k => k.id !== id);
-                }
-                renderKeywords();
-            }
-        }
-
-        async function toggleKwYt(id) {
-            const res = await fetch(`/api/keywords/${id}/youtube`, { method: 'POST' });
-            if (res.ok) {
-                const data = await res.json();
-                const kw = allKeywords.find(k => k.id === id);
-                if (kw) kw.is_youtube = data.is_youtube;
-                if (kwFilter === 'youtube' && !data.is_youtube) {
-                    allKeywords = allKeywords.filter(k => k.id !== id);
-                }
-                renderKeywords();
-            }
-        }
-
-        async function deleteKw(id) {
-            const res = await fetch(`/api/keywords/${id}`, { method: 'DELETE' });
-            if (res.ok) {
-                allKeywords = allKeywords.filter(k => k.id !== id);
-                document.getElementById('countKeywords').textContent = allKeywords.length;
-                renderKeywords();
-                showToast('Keyword removed');
-            }
-        }
-
-        // Removed 2026-05-28: importKeywords() / Airtable import button.
-        // Pulled from admin-only Airtable. Re-add via Settings v2 BYO keys.
+        // Removed 2026-05-29: Keywords tab + all related JS. Tab unused.
+        // Backend routes also gone (see app.py). DB table preserved for now.
 
         // ── Auth: email → 6-digit code (or admin override) ─────
         let authPendingEmail = null;

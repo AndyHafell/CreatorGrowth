@@ -2368,17 +2368,6 @@ def channel_owner_required(f):
     return decorated
 
 
-def keyword_owner_required(f):
-    """Decorator: 404s when the current user doesn't own the keyword."""
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        kid = kwargs.get("kid")
-        if kid is not None and not _owns_scoped("keywords", "id", kid):
-            return jsonify({"error": "not found"}), 404
-        return f(*args, **kwargs)
-    return decorated
-
-
 def show_doc_owner_required(f):
     """Decorator: 404s when the current user doesn't own the show_doc."""
     @wraps(f)
@@ -5661,76 +5650,9 @@ def video_publish_status(vid):
     return jsonify({"ok": True, "results": results})
 
 
-# ── Keywords ──────────────────────────────────────────────
-
-@app.route("/api/keywords", methods=["GET"])
-def list_keywords():
-    uid = _request_user_id()
-    if uid is None:
-        return jsonify({"error": "Unauthorized"}), 401
-    filter_type = request.args.get("filter", "all")  # all, favorites, youtube
-    conn = get_db()
-    if filter_type == "favorites":
-        rows = conn.execute(
-            "SELECT * FROM keywords WHERE user_id = ? AND is_favorite = 1 "
-            "ORDER BY search_volume DESC", (uid,)
-        ).fetchall()
-    elif filter_type == "youtube":
-        rows = conn.execute(
-            "SELECT * FROM keywords WHERE user_id = ? AND is_youtube = 1 "
-            "ORDER BY search_volume DESC", (uid,)
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM keywords WHERE user_id = ? ORDER BY search_volume DESC", (uid,)
-        ).fetchall()
-    conn.close()
-    return jsonify([dict(r) for r in rows])
-
-
-@app.route("/api/keywords/<int:kid>/favorite", methods=["POST"])
-@keyword_owner_required
-def toggle_favorite(kid):
-    conn = get_db()
-    row = conn.execute("SELECT is_favorite FROM keywords WHERE id = ?", (kid,)).fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"error": "Not found"}), 404
-    new_val = 0 if row["is_favorite"] else 1
-    conn.execute("UPDATE keywords SET is_favorite = ? WHERE id = ?", (new_val, kid))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True, "is_favorite": new_val})
-
-
-@app.route("/api/keywords/<int:kid>/youtube", methods=["POST"])
-@keyword_owner_required
-def toggle_youtube(kid):
-    conn = get_db()
-    row = conn.execute("SELECT is_youtube FROM keywords WHERE id = ?", (kid,)).fetchone()
-    if not row:
-        conn.close()
-        return jsonify({"error": "Not found"}), 404
-    new_val = 0 if row["is_youtube"] else 1
-    conn.execute("UPDATE keywords SET is_youtube = ? WHERE id = ?", (new_val, kid))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True, "is_youtube": new_val})
-
-
-@app.route("/api/keywords/<int:kid>", methods=["DELETE"])
-@keyword_owner_required
-def delete_keyword(kid):
-    conn = get_db()
-    conn.execute("DELETE FROM keywords WHERE id = ?", (kid,))
-    conn.commit()
-    conn.close()
-    return jsonify({"ok": True})
-
-
-# Removed 2026-05-28: /api/keywords/import-airtable route. It pulled from an
-# admin-owned Airtable base/table no other user could reach. Re-add behind
-# per-user Airtable credentials in Settings v2 if there is demand.
+# ── Keywords (removed 2026-05-29) ─────────────────────────
+# Tab + 5 routes removed; not used in production. DB table preserved.
+# To restore: see git history pre-2026-05-29.
 
 
 
