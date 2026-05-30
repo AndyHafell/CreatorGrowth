@@ -585,6 +585,7 @@ def migrate_schema():
         # later hardening pass. Keys are NEVER echoed back to the client — the
         # /api/settings/api-keys GET returns only {set, masked}.
         ("replicate_api_key",         "TEXT"),  # BYO Replicate token for thumb gen
+        ("fal_api_key",               "TEXT"),  # BYO fal.ai token (thumb/image gen)
         ("airtable_token",            "TEXT"),  # BYO Airtable PAT (future use)
         ("prompt_preset_pixel_face",  "TEXT"),  # override for the pixel-face thumb prompt; NULL = channel default
         ("prompt_preset_faceless",    "TEXT"),  # override for the faceless thumb prompt; NULL = channel default
@@ -2240,7 +2241,7 @@ def uploads_delete(upload_id):
 # Section 1 of the Settings v2 modal. Keys live on the users row (see
 # migrate_schema). They are write-only from the client's perspective: GET
 # returns only {set, masked} so a stolen session can't exfiltrate the raw key.
-_API_KEY_FIELDS = ("replicate_api_key", "airtable_token")
+_API_KEY_FIELDS = ("replicate_api_key", "fal_api_key", "airtable_token")
 
 
 def _mask_key(val: str) -> str:
@@ -11012,6 +11013,182 @@ def gemini_pixel_face(vid):
         prompt_builder=_build_pixel_face_prompt,
         slug="gemini_pixel_face",
     )
+
+
+# ── BYO-key faceless generation (Replicate Flux) ────────────────────
+# The first "works for any member" thumb button. No face refs, no server
+# Gemini key — runs on the signed-in user's stored Replicate key, with a
+# transparent prompt taken from their editable faceless preset (or an explicit
+# prompt_override sent from the Thumb Studio textarea).
+
+def _replicate_flux_image(prompt, api_key, aspect_ratio="16:9"):
+    """One image via Replicate Flux 1.1 Pro on the USER's key.
+    Returns (png_bytes, error_str). Uses `Prefer: wait` to get the result in
+    one round-trip, falling back to polling the prediction's get URL."""
+    import urllib.error
+    if not api_key:
+        return None, "no replicate key"
+    body = json.dumps({"input": {
+        "prompt": prompt,
+        "aspect_ratio": aspect_ratio,
+        "output_format": "png",
+        "safety_tolerance": 5,
+    }}).encode()
+    req = Request(
+        "https://api.replicate.com/v1/models/black-forest-labs/flux-1.1-pro/predictions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Prefer": "wait",
+        },
+        method="POST",
+    )
+    try:
+        with urlopen(req, timeout=90) as resp:
+            data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "ignore")[:200]
+        return None, f"replicate http {e.code}: {detail}"
+    except Exception as e:
+        return None, f"replicate network: {e}"
+    status = data.get("status")
+    get_url = (data.get("urls") or {}).get("get")
+    polls = 0
+    while status not in ("succeeded", "failed", "canceled") and get_url and polls < 30:
+        time.sleep(2)
+        polls += 1
+        try:
+            with urlopen(Request(get_url, headers={"Authorization": f"Bearer {api_key}"}),
+                         timeout=30) as r2:
+                data = json.loads(r2.read())
+            status = data.get("status")
+        except Exception as e:
+            return None, f"replicate poll: {e}"
+    if status != "succeeded":
+        return None, f"replicate status {status}: {str(data.get('error'))[:160]}"
+    out = data.get("output")
+    img_url = out[0] if isinstance(out, list) and out else (out if isinstance(out, str) else None)
+    if not img_url:
+        return None, "replicate: no output url"
+    try:
+        with urlopen(img_url, timeout=60) as ir:
+            return ir.read(), None
+    except Exception as e:
+        return None, f"replicate fetch: {e}"
+
+
+def _compose_faceless_prompt(preset_text, title, nudge=""):
+    """Wrap the user's faceless preset (a style guide) with the video title +
+    optional nudge. Mirrors the Gemini faceless builder so output matches."""
+    prompt = (
+        f"Make a YouTube thumbnail for a video titled: \"{title}\".\n\n"
+        f"Follow this style guide exactly — the channel signature, locked style "
+        f"constants, and one of its layout patterns. Pick the layout that best "
+        f"fits the title. Output 16:9 (1920x1080), pure 16-bit pixel art, NO "
+        f"human face.\n\n"
+        f"=== STYLE GUIDE START ===\n{preset_text}\n=== STYLE GUIDE END ==="
+    )
+    return _wrap_with_nudge(prompt, nudge)
+
+
+@app.route("/api/videos/<int:vid>/generate-thumb", methods=["POST"])
+@login_required
+@video_owner_required
+def generate_thumb(vid):
+    """Faceless thumbnails on the user's OWN Replicate key + transparent prompt.
+    Body: {kind:'faceless', count, nudge, prompt_override?}."""
+    from concurrent.futures import ThreadPoolExecutor
+    body = request.get_json(silent=True) or {}
+    kind = (body.get("kind") or "faceless").strip()
+    if kind != "faceless":
+        return jsonify({"error": "only 'faceless' is supported right now"}), 400
+    try:
+        n = int(body.get("count", 3))
+    except (TypeError, ValueError):
+        n = 3
+    n = max(1, min(n, 6))
+    nudge = (body.get("nudge") or "").strip()
+    prompt_override = (body.get("prompt_override") or "").strip()
+
+    uid = current_user_id()
+    conn = get_db()
+    krow = conn.execute(
+        "SELECT replicate_api_key, fal_api_key, prompt_preset_faceless "
+        "FROM users WHERE id=?", (uid,),
+    ).fetchone()
+    rep_key = (krow["replicate_api_key"] if krow else None) or ""
+    fal_key = (krow["fal_api_key"] if krow else None) or ""
+    if not rep_key:
+        conn.close()
+        if fal_key:
+            return jsonify({
+                "error": "thumb_key_required",
+                "detail": "Fal AI generation is coming next — add a Replicate "
+                          "token in Settings → API Keys to generate now.",
+            }), 403
+        return jsonify({
+            "error": "thumb_key_required",
+            "detail": "Add your Replicate (or Fal) API key in Settings → API "
+                      "Keys to generate thumbnails.",
+        }), 403
+
+    state = _read_video_thumb_state(conn, vid)
+    if state is None:
+        conn.close()
+        return jsonify({"error": "video not found"}), 404
+    title, thumbs, titles, drow_exists = state
+    if not title:
+        conn.close()
+        return jsonify({"error": "video has no title"}), 400
+    empty_slots = _allocate_thumb_slots(thumbs, titles, n)
+
+    preset = prompt_override or (
+        krow["prompt_preset_faceless"] if (krow and krow["prompt_preset_faceless"])
+        else _default_prompt_preset("faceless")
+    )
+    prompt = _compose_faceless_prompt(preset, title, nudge)
+
+    results = [None] * n
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        futures = {ex.submit(_replicate_flux_image, prompt, rep_key): i for i in range(n)}
+        for fut in futures:
+            i = futures[fut]
+            png, err = fut.result()
+            results[i] = {"png": png, "error": err}
+
+    out_root = UPLOAD_DIR / "thumbs" / str(vid)
+    out_root.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time())
+    written, failures = [], []
+    for variant_idx, res in enumerate(results):
+        slot = empty_slots[variant_idx]
+        if res["png"]:
+            out_path = out_root / f"replicate_faceless_{ts}_{variant_idx + 1}.png"
+            out_path.write_bytes(res["png"])
+            rel_url = "/" + str(out_path.relative_to(Path(app.root_path))).replace(os.sep, "/")
+            thumbs[slot] = rel_url
+            written.append({"slot_index": slot, "slot_label": slot + 1, "url": rel_url})
+        else:
+            failures.append({"slot_label": slot + 1, "error": res["error"] or "unknown"})
+
+    if not written:
+        conn.close()
+        return jsonify({"error": "all replicate calls failed", "failures": failures}), 502
+
+    _persist_thumb_state(conn, vid, thumbs, titles, drow_exists)
+    conn.close()
+    return jsonify({
+        "ok": True,
+        "kind": "faceless",
+        "count": len(written),
+        "requested": n,
+        "thumbs": written,
+        "failures": failures,
+        "original_thumbs": thumbs,
+        "original_titles": titles,
+        "prompt_chars": len(prompt),
+    })
 
 
 @app.route("/videos/<int:vid>/thumb-edit/<int:slot>", methods=["GET"])

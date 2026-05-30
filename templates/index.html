@@ -2564,6 +2564,16 @@
                     <div class="apikey-hint" id="apiKeyReplicateHint"></div>
                 </div>
                 <div class="apikey-field">
+                    <label>Fal AI key</label>
+                    <div class="apikey-input-row">
+                        <input type="password" id="apiKeyFal" placeholder="fal-…"
+                               autocomplete="off" spellcheck="false">
+                        <button class="apikey-reveal" data-target="apiKeyFal"
+                                onclick="toggleReveal(this)" title="Show / hide">👁</button>
+                    </div>
+                    <div class="apikey-hint" id="apiKeyFalHint"></div>
+                </div>
+                <div class="apikey-field">
                     <label>Airtable token</label>
                     <div class="apikey-input-row">
                         <input type="password" id="apiKeyAirtable" placeholder="pat…"
@@ -3321,7 +3331,21 @@
                         <button class="thumb-gen-btn" onclick="tsGeminiDirect('faceless')" title="Faceless SOP. ~$0.12 / 3 thumbs, ~30s." style="background:#101820; border:1px solid #7ad17a; color:#7ad17a; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GENERATE 3 FACELESS</button>
                     </div>
                     <div id="thumbGenPlaceholder" style="display:none; padding:14px 16px; background:#1a1410; border:1px dashed #5a4830; border-radius:6px; color:#a8895a; font-size:12px;">
-                        🔒 Thumb generation unlocks when you upload your own face references in <strong>Settings v2</strong> — coming this week.
+                        🔒 Pixel-face generation unlocks when you upload your own face references in <strong>Settings → Face Library</strong>.
+                    </div>
+
+                    <!-- Faceless on your OWN key — available to every user, no face refs -->
+                    <div id="facelessByoSection" style="display:flex; flex-direction:column; gap:8px; padding-top:14px; border-top:1px solid #1f1f30;">
+                        <div style="display:flex; align-items:center; justify-content:space-between;">
+                            <div style="color:#7ad17a; font-size:11px; letter-spacing:1px; font-weight:700;">FACELESS · YOUR KEY</div>
+                            <button onclick="toggleFacelessPrompt()" id="facelessPromptToggle" style="background:none; border:1px solid #2a2a4a; color:#888; padding:3px 9px; border-radius:4px; font-size:10px; cursor:pointer;">View / edit prompt</button>
+                        </div>
+                        <textarea id="facelessByoPrompt" rows="7" spellcheck="false" placeholder="Loading your faceless prompt…" style="display:none; background:#0a0a14; border:1px solid #2a2a4a; color:#cfcfcf; padding:9px 11px; border-radius:6px; font-size:11px; font-family:ui-monospace,Menlo,monospace; line-height:1.4; resize:vertical;"></textarea>
+                        <div style="display:flex; gap:10px; align-items:center;">
+                            <button class="thumb-gen-btn" onclick="tsGenerateFaceless()" title="Faceless pixel-art on your own Replicate key. No face photos needed." style="background:#101820; border:1px solid #7ad17a; color:#7ad17a; padding:11px 20px; border-radius:6px; font-size:12px; letter-spacing:1px; font-weight:700; cursor:pointer;">GENERATE 3 FACELESS</button>
+                            <span id="facelessByoStatus" style="font-size:11px; color:#888;"></span>
+                        </div>
+                        <div style="color:#555; font-size:10px;">Runs on your Replicate key (Settings → API Keys). No face photos needed. Fal AI support coming next.</div>
                     </div>
                 </div>
 
@@ -6301,7 +6325,7 @@
             let data;
             try { data = await (await fetch('/api/settings/api-keys')).json(); }
             catch (e) { return; }
-            const map = { replicate_api_key: 'apiKeyReplicate', airtable_token: 'apiKeyAirtable' };
+            const map = { replicate_api_key: 'apiKeyReplicate', fal_api_key: 'apiKeyFal', airtable_token: 'apiKeyAirtable' };
             for (const [field, inputId] of Object.entries(map)) {
                 const info = data[field] || {};
                 const input = document.getElementById(inputId);
@@ -6316,9 +6340,11 @@
         async function saveApiKeys() {
             const payload = {};
             const rep = document.getElementById('apiKeyReplicate').value.trim();
+            const fal = document.getElementById('apiKeyFal').value.trim();
             const air = document.getElementById('apiKeyAirtable').value.trim();
             // Only send fields the user actually typed into (empty = leave as-is).
             if (rep) payload.replicate_api_key = rep;
+            if (fal) payload.fal_api_key = fal;
             if (air) payload.airtable_token = air;
             if (!Object.keys(payload).length) {
                 _setStatus('apiKeysStatus', 'Nothing to save — type a key first.', 'err');
@@ -7633,6 +7659,7 @@
         var t = document.getElementById('modalTitle');
         document.getElementById('tsVideoTitle').textContent = (t && t.textContent.trim()) || 'untitled';
         tsSetStatus('Ready', '#4caf50');
+        loadFacelessByoPrompt();
     }
     function closeThumbnailsStudio() {
         document.getElementById('thumbnailsStudio').style.display = 'none';
@@ -7758,6 +7785,75 @@
               }
           })
           .catch(function(err) { tsFailProgress(); tsSetStatus('Failed: ' + err.message, '#e07070'); });
+    }
+
+    // ── Faceless on the user's OWN key (Replicate) — transparent prompt ──
+    var _facelessPromptLoaded = false;
+    function loadFacelessByoPrompt() {
+        var box = document.getElementById('facelessByoPrompt');
+        if (!box || _facelessPromptLoaded) return;
+        fetch('/api/settings/prompt-presets').then(function(r){return r.json();})
+          .then(function(d){ box.value = d.faceless || ''; _facelessPromptLoaded = true; })
+          .catch(function(){});
+    }
+    function toggleFacelessPrompt() {
+        var box = document.getElementById('facelessByoPrompt');
+        var btn = document.getElementById('facelessPromptToggle');
+        if (!box) return;
+        var showing = box.style.display !== 'none';
+        box.style.display = showing ? 'none' : '';
+        if (btn) btn.textContent = showing ? 'View / edit prompt' : 'Hide prompt';
+    }
+    function tsGenerateFaceless() {
+        var vid = _getStudioVideoId();
+        if (!vid) { alert('Open a video first.'); return; }
+        var nudge = (document.getElementById('tsNudge').value || '').trim();
+        var box = document.getElementById('facelessByoPrompt');
+        var override = (box && box.value || '').trim();
+        var payload = { kind: 'faceless', count: 3, nudge: nudge };
+        if (override) payload.prompt_override = override;  // transparent / editable
+        var statusEl = document.getElementById('facelessByoStatus');
+        statusEl.style.color = '#f5b942';
+        statusEl.textContent = 'Generating 3 faceless on your key…';
+        tsSetStatus('Generating 3 faceless on your Replicate key', '#f5b942', true);
+        tsStartProgress(40);
+        fetch('/api/videos/' + vid + '/generate-thumb', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        }).then(function(r){ return r.json().then(function(j){ return {ok:r.ok, j:j}; }); })
+          .then(function(res){
+              var j = res.j;
+              if (!res.ok || j.error) {
+                  if (j.error === 'thumb_key_required') {
+                      tsFailProgress();
+                      statusEl.style.color = '#e07070';
+                      statusEl.innerHTML = (j.detail || 'Add your Replicate key in Settings.') +
+                          ' <a href="#" onclick="closeThumbnailsStudio();openSettings();return false;" style="color:#7ad17a;">Open Settings →</a>';
+                      tsSetStatus('No API key — add one in Settings', '#e07070');
+                      return;
+                  }
+                  throw new Error(j.error || ('HTTP ' + ''));
+              }
+              var slots = (j.thumbs || []).map(function(t){ return t.slot_label; }).join(', ');
+              tsCompleteProgress();
+              statusEl.style.color = '#4caf50';
+              statusEl.textContent = 'Done → ' + j.count + '/' + j.requested + ' in slots ' + slots;
+              tsSetStatus('Done → ' + j.count + '/' + j.requested + ' in slots ' + slots, '#4caf50');
+              tsAppendBatch('replicate', 'faceless', 'slots ' + slots, false);
+              if (typeof modalDetails !== 'undefined' && modalDetails) {
+                  modalDetails.original_thumbs = j.original_thumbs || modalDetails.original_thumbs;
+                  modalDetails.original_titles = j.original_titles || modalDetails.original_titles;
+                  if (typeof renderThumbs === 'function') renderThumbs('original', modalDetails.original_thumbs);
+                  if (typeof renderTitles === 'function') renderTitles('original', modalDetails.original_titles || []);
+              }
+          })
+          .catch(function(err){
+              tsFailProgress();
+              statusEl.style.color = '#e07070';
+              statusEl.textContent = 'Failed: ' + err.message;
+              tsSetStatus('Failed: ' + err.message, '#e07070');
+          });
     }
 
     // Listener: thumb editor (separate tab) posts back after Save → re-render
