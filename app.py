@@ -589,6 +589,12 @@ def migrate_schema():
         ("airtable_token",            "TEXT"),  # BYO Airtable PAT (future use)
         ("prompt_preset_pixel_face",  "TEXT"),  # override for the pixel-face thumb prompt; NULL = channel default
         ("prompt_preset_faceless",    "TEXT"),  # override for the faceless thumb prompt; NULL = channel default
+        # ── Per-user card-push API token ──
+        # Self-serve token (user generates it in Settings) that authenticates
+        # programmatic card pushes from Claude Code / scripts via
+        # `Authorization: Bearer <token>` on POST /api/cards/push. Distinct from
+        # the env-provisioned THUMB_QUEUE_USERS map (cron/poller). NULL = none.
+        ("api_token",                 "TEXT"),  # 'cg_<urlsafe>'; resolved by _api_token_user_id()
     ]
     for name, typ in user_cols:
         try:
@@ -2362,6 +2368,61 @@ def settings_prompt_presets_post():
     return jsonify({"ok": True})
 
 
+# ── Settings v2: per-user card-push API token ───────────────
+# The full token is shown to the client EXACTLY ONCE (on generate/regenerate);
+# thereafter GET returns only {set, masked}. Mirrors the api-keys write-only
+# pattern. The token authenticates POST /api/cards/push (see _api_token_user_id).
+def _mask_token(tok: str) -> str:
+    if not tok:
+        return ""
+    return tok[:6] + "…" + tok[-4:] if len(tok) > 12 else "…"
+
+
+@app.route("/api/settings/api-token", methods=["GET"])
+def settings_api_token_get():
+    uid = current_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT api_token FROM users WHERE id = ?", (uid,)).fetchone()
+    finally:
+        conn.close()
+    tok = (row["api_token"] if row else None) or ""
+    return jsonify({"set": bool(tok), "masked": _mask_token(tok)})
+
+
+@app.route("/api/settings/api-token", methods=["POST"])
+def settings_api_token_post():
+    """Generate (or regenerate) the caller's card-push token. Returns the full
+    token once. Regenerating invalidates the previous token immediately."""
+    uid = current_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
+    token = _generate_api_token()
+    conn = get_db()
+    try:
+        conn.execute("UPDATE users SET api_token = ? WHERE id = ?", (token, uid))
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "token": token, "masked": _mask_token(token)})
+
+
+@app.route("/api/settings/api-token", methods=["DELETE"])
+def settings_api_token_delete():
+    uid = current_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized"}), 401
+    conn = get_db()
+    try:
+        conn.execute("UPDATE users SET api_token = NULL WHERE id = ?", (uid,))
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
+
+
 @app.before_request
 def require_auth():
     open_paths = {
@@ -2382,6 +2443,8 @@ def require_auth():
     if path.startswith("/api/thumb-queue"):
         return None
     if path.startswith("/api/show-docs"):
+        return None
+    if path == "/api/cards/push":
         return None
     if path == "/api/auth/skool/dm-code/admin-verify":
         return None
@@ -3189,6 +3252,36 @@ def _bearer_user_email():
     for email, expected in THUMB_QUEUE_USERS.items():
         if secret == expected:
             return email
+    return None
+
+
+def _generate_api_token() -> str:
+    """Mint a fresh per-user card-push token. The `cg_` prefix makes it
+    self-identifying in logs / curl snippets."""
+    return "cg_" + secrets.token_urlsafe(32)
+
+
+def _api_token_user_id():
+    """Resolve `Authorization: Bearer <token>` against users.api_token and
+    return that user's id, or None. This is the self-serve counterpart to
+    _bearer_user_email() (which uses the env THUMB_QUEUE_USERS map). The token
+    is compared with a constant-time check to avoid timing leaks."""
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Bearer "):
+        return None
+    token = header[7:]
+    if not token:
+        return None
+    conn = get_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, api_token FROM users WHERE api_token IS NOT NULL AND api_token != ''"
+        ).fetchall()
+    finally:
+        conn.close()
+    for r in rows:
+        if secrets.compare_digest(token, r["api_token"]):
+            return r["id"]
     return None
 
 
@@ -4234,6 +4327,68 @@ def create_blank_video():
     row = conn.execute("SELECT * FROM videos WHERE video_id = ?", (video_id,)).fetchone()
     conn.close()
     return jsonify(row_to_dict(row)), 201
+
+
+@app.route("/api/cards/push", methods=["POST"])
+def push_card():
+    """Programmatic card creation via a per-user API token (the card-push API).
+
+    Auth: `Authorization: Bearer <api_token>` (generated in Settings → API).
+    Body: {
+        "title":       str   (required),
+        "status":      str   (optional, default 'options' = the Ideas inbox),
+        "content_doc": str   (optional markdown — written into the caller's
+                              tenant + linked as the card's 'Content Doc' field),
+        "doc_filename": str  (optional stem for the content doc file)
+    }
+    The card and any content doc are scoped to the token's user — never another
+    tenant. Returns the created card + the content-doc relative path (if any).
+    """
+    uid = _api_token_user_id()
+    if uid is None:
+        return jsonify({"error": "Unauthorized", "detail": "Provide a valid card-push token in the Authorization: Bearer header."}), 401
+    data = request.get_json(force=True, silent=True) or {}
+    title = (data.get("title") or "").strip()
+    if not title:
+        return jsonify({"error": "title is required"}), 400
+    status = (data.get("status") or "options").strip() or "options"
+    content_doc = data.get("content_doc")
+
+    video_id = "cg_" + uuid.uuid4().hex[:10]
+    conn = get_db()
+    try:
+        conn.execute(
+            """INSERT INTO videos (video_id, title, channel_title, channel_thumb, thumbnail_url,
+                   view_count, duration, published_at, status, outlier_score, channel_avg_views, user_id)
+               VALUES (?, ?, 'AI Andy', '', '', 0, '', '', ?, 0, 0, ?)""",
+            (video_id, title, status, uid),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM videos WHERE video_id = ? AND user_id = ?", (video_id, uid)
+        ).fetchone()
+
+        content_doc_path = None
+        if isinstance(content_doc, str) and content_doc.strip():
+            raw_stem = (data.get("doc_filename") or title)
+            stem = re.sub(r"[^a-zA-Z0-9_\-]", "_", str(raw_stem))[:120].strip("_") or uuid.uuid4().hex[:12]
+            docs_dir = CONTENT_DIR / f"u{int(uid)}" / "content_docs"
+            docs_dir.mkdir(parents=True, exist_ok=True)
+            filepath = docs_dir / f"{stem}.md"
+            if filepath.exists():
+                filepath = docs_dir / f"{stem}_{uuid.uuid4().hex[:6]}.md"
+            filepath.write_text(content_doc, encoding="utf-8")
+            content_doc_path = f"content_docs/{filepath.name}"  # relative to the tenant root
+            fields = [{"key": "Content Doc", "value": content_doc_path}]
+            conn.execute(
+                """INSERT INTO video_details (video_id, inspo_thumbs, inspo_titles, original_thumbs, original_titles, custom_fields)
+                   VALUES (?, '["","",""]', '["","",""]', ?, ?, ?)""",
+                (row["id"], json.dumps([""] * 9), json.dumps([""] * 9), json.dumps(fields)),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True, "card": row_to_dict(row), "content_doc_path": content_doc_path}), 201
 
 
 @app.route("/api/content", methods=["GET"])

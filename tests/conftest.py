@@ -25,6 +25,10 @@ def app_module(tmp_path, monkeypatch):
     state."""
     db_path = tmp_path / "videos_test.db"
     monkeypatch.setenv("DB_PATH", str(db_path))
+    # Isolate per-tenant content writes to a temp dir so tests never touch the
+    # real content_docs folder. CONTENT_DIR is read at import, and app_module
+    # reloads the module fresh per test, so this takes effect.
+    monkeypatch.setenv("CONTENT_DIR", str(tmp_path / "content"))
     monkeypatch.setenv("SECRET_KEY", "pytest-secret-key")
     monkeypatch.setenv("DM_VERIFY_TOKEN", "pytest-dm-token")
     monkeypatch.setenv("PAID_WEBHOOK_TOKEN", "pytest-paid-token")

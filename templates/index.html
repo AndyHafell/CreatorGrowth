@@ -2589,6 +2589,31 @@
                 </div>
             </div>
 
+            <!-- Settings v2: Card-push API token -->
+            <div class="settings-section" id="settingsApiTokenSection">
+                <h4>API Access</h4>
+                <div class="settings-row-sub" style="margin-bottom: 10px;">
+                    Generate a personal token to push cards into your workspace from Claude Code or any script.
+                    Shown once — copy it now. Regenerating invalidates the old token.
+                </div>
+                <div class="apikey-field">
+                    <label>Card-push token</label>
+                    <div class="apikey-input-row">
+                        <input type="text" id="apiTokenValue" readonly placeholder="Not generated yet"
+                               autocomplete="off" spellcheck="false" style="font-family:monospace;">
+                        <button class="apikey-reveal" onclick="copyApiToken()" title="Copy">⧉</button>
+                    </div>
+                    <div class="apikey-hint" id="apiTokenHint"></div>
+                </div>
+                <div class="settings-save-row">
+                    <button class="settings-save-btn" onclick="generateApiToken()" id="apiTokenGenBtn">Generate token</button>
+                    <button class="settings-save-btn" onclick="revokeApiToken()" id="apiTokenRevokeBtn"
+                            style="background:#3a2326;border-color:#5a2a2a;display:none;">Revoke</button>
+                    <span class="settings-save-status" id="apiTokenStatus"></span>
+                </div>
+                <pre id="apiTokenUsage" style="display:none;margin-top:12px;padding:10px 12px;background:#0f0f0f;border:1px solid #2a2a2a;border-radius:6px;font-size:11px;color:#9aa;overflow-x:auto;white-space:pre-wrap;"></pre>
+            </div>
+
             <!-- Settings v2 §3: Face Library -->
             <div class="settings-section" id="settingsFaceSection">
                 <h4>Face Library</h4>
@@ -6252,8 +6277,12 @@
                 }
                 statusEl.textContent = 'Signed in — loading…';
                 statusEl.style.color = '#5e5';
-                document.getElementById('authOverlay').classList.add('hidden');
-                if (typeof loadVideos === 'function') loadVideos();
+                // Full redirect to '/', NOT an in-place overlay hide: '/' re-renders
+                // with authenticated=True, which drops the fake-dashboard backdrop
+                // (z-index:100, opaque) that the front-door pages stack over the real
+                // SPA. Hiding only the auth-overlay would leave that mockup covering
+                // the user's real dashboard until a manual reload.
+                window.location.href = '/';
             } catch (e) {
                 errEl.textContent = 'Connection error';
                 verifyBtn.disabled = false;
@@ -6313,7 +6342,71 @@
             el.className = 'settings-save-status' + (cls ? ' ' + cls : '');
         }
         async function loadSettingsV2() {
-            await Promise.all([loadApiKeys(), loadFaceRefs(), loadPromptPresets()]);
+            await Promise.all([loadApiKeys(), loadFaceRefs(), loadPromptPresets(), loadApiToken()]);
+        }
+        // Card-push API token
+        function _apiTokenUsageSnippet(token) {
+            const t = token || '<YOUR_TOKEN>';
+            return 'curl -X POST ' + window.location.origin + '/api/cards/push \\\n'
+                 + '  -H "Authorization: Bearer ' + t + '" \\\n'
+                 + '  -H "Content-Type: application/json" \\\n'
+                 + '  -d \'{"title":"My idea","status":"options","content_doc":"# Notes\\n..."}\'';
+        }
+        async function loadApiToken() {
+            let data;
+            try { data = await (await fetch('/api/settings/api-token')).json(); }
+            catch (e) { return; }
+            const input = document.getElementById('apiTokenValue');
+            const hint = document.getElementById('apiTokenHint');
+            const genBtn = document.getElementById('apiTokenGenBtn');
+            const revBtn = document.getElementById('apiTokenRevokeBtn');
+            const usage = document.getElementById('apiTokenUsage');
+            input.value = '';
+            input.placeholder = data.set ? (data.masked || '•••••••• (saved)') : 'Not generated yet';
+            hint.textContent = data.set ? 'Active — full token shown only when generated' : 'No token yet';
+            hint.className = 'apikey-hint' + (data.set ? ' set' : '');
+            genBtn.textContent = data.set ? 'Regenerate token' : 'Generate token';
+            revBtn.style.display = data.set ? '' : 'none';
+            usage.style.display = data.set ? '' : 'none';
+            if (data.set) usage.textContent = _apiTokenUsageSnippet(null);
+        }
+        async function generateApiToken() {
+            const genBtn = document.getElementById('apiTokenGenBtn');
+            const existing = document.getElementById('apiTokenRevokeBtn').style.display !== 'none';
+            if (existing && !confirm('Regenerate? Your current token will stop working immediately.')) return;
+            genBtn.disabled = true;
+            try {
+                const r = await fetch('/api/settings/api-token', { method: 'POST' });
+                const data = await r.json();
+                if (!r.ok) { _setStatus('apiTokenStatus', data.error || 'Failed', 'error'); return; }
+                const input = document.getElementById('apiTokenValue');
+                input.value = data.token;
+                document.getElementById('apiTokenHint').textContent = 'Copy this now — it won\'t be shown again.';
+                document.getElementById('apiTokenRevokeBtn').style.display = '';
+                genBtn.textContent = 'Regenerate token';
+                const usage = document.getElementById('apiTokenUsage');
+                usage.style.display = '';
+                usage.textContent = _apiTokenUsageSnippet(data.token);
+                _setStatus('apiTokenStatus', 'Generated', 'success');
+            } catch (e) {
+                _setStatus('apiTokenStatus', 'Network error', 'error');
+            } finally { genBtn.disabled = false; }
+        }
+        async function copyApiToken() {
+            const input = document.getElementById('apiTokenValue');
+            const val = input.value.trim();
+            if (!val) { _setStatus('apiTokenStatus', 'Generate a token first', 'error'); return; }
+            try { await navigator.clipboard.writeText(val); _setStatus('apiTokenStatus', 'Copied', 'success'); }
+            catch (e) { input.select(); document.execCommand('copy'); _setStatus('apiTokenStatus', 'Copied', 'success'); }
+        }
+        async function revokeApiToken() {
+            if (!confirm('Revoke your card-push token? Scripts using it will stop working.')) return;
+            try {
+                const r = await fetch('/api/settings/api-token', { method: 'DELETE' });
+                if (!r.ok) { _setStatus('apiTokenStatus', 'Failed', 'error'); return; }
+                _setStatus('apiTokenStatus', 'Revoked', 'success');
+                await loadApiToken();
+            } catch (e) { _setStatus('apiTokenStatus', 'Network error', 'error'); }
         }
         function toggleReveal(btn) {
             const input = document.getElementById(btn.dataset.target);
