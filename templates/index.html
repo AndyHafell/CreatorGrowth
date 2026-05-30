@@ -2448,7 +2448,7 @@
 
     <!-- Auth Overlay -->
     <div class="auth-overlay {% if authenticated %}hidden{% endif %}" id="authOverlay">
-        {% if welcome_mode %}
+        {% if welcome_mode and not open_signup %}
         <div class="auth-card welcome-card">
             <img src="/static/logo.png" alt="Creator Growth">
             <h2 class="welcome-h2">The <span style="color:#FFD700">Agent OS</span> for your YouTube channel</h2>
@@ -2463,7 +2463,7 @@
             <a href="/join" class="welcome-btn welcome-btn-primary">Yes — Become a member</a>
             <a href="/activate" class="welcome-btn welcome-btn-secondary">Sign in</a>
         </div>
-        {% elif join_mode %}
+        {% elif join_mode and not open_signup %}
         <div class="auth-card join-card">
             <a href="/welcome" class="auth-back-link">← Back</a>
             <img src="/static/logo.png" alt="Creator Growth">
@@ -2486,7 +2486,7 @@
             {% endif %}
             <img src="/static/logo.png" alt="Creator Growth">
             <h2>Creator Growth</h2>
-            <p id="authPrompt">Enter your Skool email to get started</p>
+            <p id="authPrompt">{% if open_signup %}Enter your email to sign in{% else %}Enter your Skool email to get started{% endif %}</p>
             <div class="auth-error" id="authError"></div>
 
             <!-- Step 1: email → send code -->
@@ -2516,10 +2516,12 @@
                 <div id="authCodeStatus" style="font-size: 12px; color: #888; text-align: center; min-height: 16px; margin-top: 10px;"></div>
             </div>
 
+            {% if not open_signup %}
             <div class="auth-divider"></div>
             <div class="auth-cta">
                 Don't have access? <a href="https://www.skool.com/aimate" target="_blank">Join AI Mate</a>
             </div>
+            {% endif %}
         </div>
         {% endif %}
     </div>
@@ -6173,6 +6175,14 @@
                 document.getElementById('authPrompt').textContent = 'Check your inbox';
                 if (data.throttled) {
                     document.getElementById('authCodeStatus').textContent = data.detail || '';
+                }
+                // Self-host with no email provider: the server hands the code
+                // back directly so there's nothing to check in an inbox.
+                if (data.dev_code) {
+                    document.getElementById('authPrompt').textContent = 'Self-host mode — your code:';
+                    const cs = document.getElementById('authCodeStatus');
+                    cs.innerHTML = 'No email configured — use code <strong>' + data.dev_code + '</strong>';
+                    document.getElementById('authCodeInput').value = data.dev_code;
                 }
                 document.getElementById('authCodeInput').focus();
             } catch (e) {

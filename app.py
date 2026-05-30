@@ -866,6 +866,15 @@ def _is_admin_email(email: str) -> bool:
     return bool(email) and email.strip().lower() in ADMIN_EMAILS
 
 
+def _open_signup_enabled() -> bool:
+    """Self-host escape hatch. When OPEN_SIGNUP is truthy the Skool gate is
+    disabled: any email that activates gets permanent full access and no authed
+    request is ever revoked. Read live (not cached) so tests can toggle it and
+    a self-hoster can flip it without a code change. Hosted creatorgrowth.com
+    leaves it UNSET — the Skool trial-then-revoke gate stays in force."""
+    return os.environ.get("OPEN_SIGNUP", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _can_publish_blotato() -> bool:
     """Pre-Settings-v2 gate. The Blotato account IDs (X, YouTube, TikTok, …) are
     hardcoded in env vars to the admin's accounts, so allowing non-admins to
@@ -915,6 +924,9 @@ def auth_status():
         "is_admin": _is_admin_email(email) or _is_admin_email(session.get("impersonator_email", "")),
         "impersonating": bool(session.get("impersonator_email")),
         "impersonator_email": session.get("impersonator_email", ""),
+        # Self-host flag: when true the frontend hides Skool join CTAs + trial
+        # banners (there's no Skool, no trial, no paywall in open mode).
+        "open_signup": _open_signup_enabled(),
         # Pre-Settings-v2 capability flags. Once Settings v2 ships per-user
         # social/API-key storage, these become true for any user with creds.
         "can_publish_blotato": _can_publish_blotato(),
@@ -1570,7 +1582,13 @@ def auth_skool_request_code():
         code = _mint_login_code(conn, email)
         conn.commit()
         _send_login_email(email, code)
-        return jsonify({"ok": True, "sent_to": email})
+        resp = {"ok": True, "sent_to": email}
+        # Self-host without an email provider configured: hand the code back so
+        # login works with no inbox. Strictly gated to open mode AND no Resend —
+        # hosted creatorgrowth.com never leaks codes.
+        if _open_signup_enabled() and not RESEND_API_KEY:
+            resp["dev_code"] = code
+        return jsonify(resp)
     finally:
         conn.close()
 
@@ -1623,7 +1641,26 @@ def auth_skool_activate():
             (email,),
         ).fetchone()
 
-        if row is None:
+        if _open_signup_enabled():
+            # Self-host: no Skool, no trial, no revoke. Any email that gets
+            # here is a permanent, fully-allowlisted user.
+            if row is None:
+                conn.execute(
+                    "INSERT INTO users (email, last_login, allowlisted, "
+                    "allowlist_source, allowlisted_at, trial_end) "
+                    "VALUES (?, datetime('now'), 1, 'open', datetime('now'), NULL)",
+                    (email,),
+                )
+            else:
+                conn.execute(
+                    "UPDATE users SET last_login=datetime('now'), allowlisted=1, "
+                    "allowlist_source='open', trial_end=NULL, revoked_at=NULL "
+                    "WHERE id=?", (row["id"],))
+            conn.commit()
+            uid = conn.execute(
+                "SELECT id FROM users WHERE email = ?", (email,)
+            ).fetchone()["id"]
+        elif row is None:
             # New user → start 7-day trial. Skool's own trial timer runs in
             # parallel; if they convert, the Zap webhook flips them to 'paid'.
             conn.execute(
@@ -2369,6 +2406,11 @@ def require_auth():
     if impersonator and _is_admin_email(impersonator):
         return None
 
+    # Self-host open mode: authed users always pass — no Skool allowlist, no
+    # trial clock, no revoke. (They still had to be authenticated above.)
+    if _open_signup_enabled():
+        return None
+
     # Live allowlist re-check + trial-expiry — runs on every authed request.
     # Cancelled or expired members get 401 on their very next hit.
     if uid is not None:
@@ -2842,6 +2884,13 @@ def fetch_tweet_metadata(tweet_id: str) -> dict | None:
             "media": [{"url": m.get("url"), "thumbnail_url": m.get("thumbnail_url"), "type": m.get("type")} for m in media_all],
         },
     }
+
+
+@app.context_processor
+def _inject_open_signup():
+    """Expose the self-host flag to every template so Skool CTAs / trial copy
+    can be hidden in open mode."""
+    return {"open_signup": _open_signup_enabled()}
 
 
 @app.route("/")

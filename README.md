@@ -13,7 +13,7 @@ It started as a thumbnail/idea dashboard and grew into a multi-tenant workspace:
 - **Raw Cut editor.** A browser video editor (an OpenCut fork — see [Related repos](#related-repos)) embedded at `/editor`, including **Raw Cut**: a TimeBolt-style silence cutter that turns a 2-hour talking-head take into a tight cut with keyboard shortcuts, then sends the result to the timeline.
 - **Diagrams & chapters.** In-editor asset producers (`diagram_image_editor`) for explainer visuals and auto-chapters.
 - **Multi-tenant by design.** Each creator gets their own workspace with bring-your-own API keys, face references, and prompt presets. Team workspaces let an owner invite collaborators.
-- **Skool-gated access.** Membership is verified against a Skool community (handle-based allowlist + DM-code verification), with a nightly sync that revokes cancelled members.
+- **Skool-gated access (or open).** The hosted creatorgrowth.com verifies membership against a Skool community (email login → 7-day trial → paid conversion). Running your own copy? Set `OPEN_SIGNUP=1` and the gate disappears — any email gets permanent full access. See [Self-hosting](#self-hosting).
 
 ## Stack
 
@@ -64,6 +64,22 @@ python app.py        # http://localhost:5000
 ```
 
 The SQLite databases are created on first run and are **not** tracked in git.
+
+## Self-hosting
+
+The default auth path gates access behind a Skool community — that's for the hosted creatorgrowth.com. To run your own instance, flip on **open mode**:
+
+```bash
+export OPEN_SIGNUP=1
+```
+
+With `OPEN_SIGNUP=1`:
+
+- Any email that signs in gets **permanent, full access** — no 7-day trial, no day-7 auto-revoke, no Skool membership required.
+- The "Join AI Mate" CTAs and the membership funnel are hidden; the front door is a plain email → code login.
+- If you haven't configured an email provider (`RESEND_API_KEY`), the 6-digit login code is shown right on the login screen (and printed to the container logs), so you can sign in with no inbox at all.
+
+Everything else still works in open mode — multi-tenant workspaces, team invites, bring-your-own API keys (set your own Replicate / Gemini keys per user in Settings), face references, and prompt presets.
 
 ## Configuration
 
